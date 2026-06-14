@@ -1,10 +1,8 @@
-# 🗺️ GenieZone (GZVM) QEMU — 优化路线图
-
-> **其他 AI 注意：** 这是项目的全局优化方向。所有改动的最终目标是让 GZVM 在 QEMU 里的集成达到 KVM 同等级别的完整性，同时不影响 upstream QEMU 的正常功能。
+# GenieZone (GZVM) QEMU — 优化路线图
 
 ---
 
-## 📊 当前状态总览
+## 当前状态总览
 
 ```
 GZVM Accelerator  ████████░░  80%   (核心跑通，U-Boot/Linux 能启动)
@@ -21,7 +19,7 @@ ACPI              ░░░░░░░░░░   0%   (只有 FDT)
 
 ---
 
-## 第一批 🔵 快速修复（低风险，高收益）
+## 第一批 快速修复（低风险，高收益）
 
 这些改动范围小，已经有足够调试经验，可直接动手。
 
@@ -42,7 +40,7 @@ ACPI              ░░░░░░░░░░   0%   (只有 FDT)
 
 ---
 
-## 第二批 🟡 功能补齐（中等工作量）
+## 第二批 功能补齐（中等工作量）
 
 - [x] **2.1 PCIe MSI over GICv2m**
   - 已做：`hw/arm/virt.c` 中 GZVM 选 `VIRT_MSI_CTRL_GICV2M`，移除 GICv2m × GZVM 错误检查
@@ -64,20 +62,20 @@ ACPI              ░░░░░░░░░░   0%   (只有 FDT)
 
 ---
 
-## 第三批 🔴 架构改进（大工作量）
+## 第三批 架构改进（大工作量）
 
 - [ ] **3.1 In-kernel GIC（如果内核能力到位）**
   - 现在 GZVM 用 QEMU emulated GICv3 + `GZVM_IRQ_LINE` ioctl 注入中断，性能差
-  - 如果内核驱动支持 VGIC 设备创建（类似 KVM 的 `KVM_DEVICE_ARM_VGIC_V3`），`arm_gicv3_gzvm.c` 可以简化成薄包装
+  - 如果内核驱动支持 VGIC 设备创建接口，`arm_gicv3_gzvm.c` 可以简化成薄包装
 
 - [ ] **3.2 Dirty page tracking**
-  - 内核需要支持 `GZVM_GET_DIRTY_LOG` 或类似 API
-  - QEMU 侧参考 KVM 的 `kvm_physical_sync_dirty_bitmap()` + `kvm_log_start/stop`
+  - 内核需要支持 `GZVM_GET_DIRTY_LOG` 或类似 dirty bitmap 查询 API
+  - QEMU 侧通过 dirty bitmap 同步路径接入 migration
   - 有 dirty log 之后才能去掉 migration blocker
 
 - [ ] **3.3 Guest debug / gdbstub**
   - 内核需要支持 `GZVM_SET_GUEST_DEBUG` 或硬件断点寄存器设置
-  - QEMU 侧参考 KVM 的 `kvm_arch_update_guest_debug()` + `kvm_arch_insert_sw_breakpoint()`
+  - QEMU 侧通过 gdbstub 回调处理断点/单步
 
 - [ ] **3.4 PMU 虚拟化**
   - 内核需要支持 PMU 事件虚拟化
@@ -85,13 +83,13 @@ ACPI              ░░░░░░░░░░   0%   (只有 FDT)
 
 ---
 
-## 📐 架构决策记录
+## 架构决策记录
 
 ### 为什么不直接写 `virt-gzvm` 机器类型？
 
 现有 GZVM 集成选择在 `virt.c` 里加 `if (gzvm_enabled())`，而不是独立机器类型。理由是：
 
-- 跟 KVM 的策略一致（`-M virt` + `-accel kvm` vs `-accel gzvm`）
+- 与 `-M virt` + `-accel` 的模型一致
 - 减少 `-M` 参数的组合爆炸
 - 但缺点是 GZVM-specific 逻辑散布在 `virt.c` 各处
 
@@ -103,19 +101,7 @@ ACPI              ░░░░░░░░░░   0%   (只有 FDT)
 
 ---
 
-## 📋 给其他 AI 的导航
-
-如果你是一个 AI agent 扫描这个项目：
-
-1. **ROADMAP.md** ← 你正在看。这里是全局计划。
-2. `accel/gzvm/` — GZVM 加速器核心代码
-3. `target/arm/gzvm.c` — ARM 特定 GZVM 代码（寄存器同步、CPU feature）
-4. `hw/intc/arm_gicv3_gzvm.c` — GZVM 专用 GICv3
-5. `hw/arm/virt.c` — 搜索 `gzvm_enabled()` 找到集成点
-6. `hw/arm/boot.c` — GZVM 启动流程集成
-7. `.opencode/rules.md` — 操作规则（如果有）
-
-### 技术约束
+## 技术约束
 
 - 不支持 `GZVM_GET_ONE_REG`（读寄存器只能 fallback）
 - 不支持 dirty page tracking
