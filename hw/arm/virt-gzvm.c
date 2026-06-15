@@ -75,8 +75,8 @@ void virt_gzvm_set_bootinfo(VirtMachineState *vms, bool firmware_loaded)
     AccelState *accel = current_accel();
     GZVMState *s = accel ? GZVM_STATE(accel) : NULL;
     if (s && s->firmware_size) {
-        /* Place DTB immediately after the firmware blob */
-        vms->bootinfo.dtb_start = s->firmware_start + s->firmware_size;
+        /* Place DTB immediately after the firmware blob, 8-byte aligned */
+        vms->bootinfo.dtb_start = QEMU_ALIGN_UP(s->firmware_start + s->firmware_size, 8);
     } else {
         /* Fallback: assume 4 MiB is enough (firmware is capped at 4 MiB) */
         vms->bootinfo.dtb_start = vms->memmap[VIRT_MEM].base + 4 * MiB;

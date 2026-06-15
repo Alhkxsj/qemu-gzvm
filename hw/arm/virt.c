@@ -1958,6 +1958,10 @@ static bool virt_firmware_init(VirtMachineState *vms,
                                                 &address_space_memory, NULL);
             if (image_size > 0) {
                 gzvm_set_firmware(fw_addr, image_size);
+            } else if (image_size == 0) {
+                error_report("Could not load ROM image '%s' (empty file)",
+                             bios_name);
+                exit(1);
             }
         } else {
             mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(vms->flash[0]), 0);
