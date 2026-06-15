@@ -16,7 +16,7 @@ jobs:
     - name: 部署
       run: |
         sudo apt update
-        sudo apt install -y build-essential ninja-build pkg-config xz-utils device-tree-compiler
+        sudo apt install --no-install-recommends -y build-essential device-tree-compiler ninja-build pkg-config unzip wget xz-utils
         sudo pip3 install --upgrade meson
         wget https://dl.google.com/android/repository/android-ndk-r30-beta1-linux.zip -O ndk.zip
         unzip -q ndk.zip -d $HOME
@@ -25,7 +25,7 @@ jobs:
         ./1.sh
     - name: 拉取
       run: |
-        git clone --depth 1 --single-branch --recurse-submodules --shallow-submodules https://github.com/AnyLaySys/qemu-gzvm.git build/src/qemu-gzvm-main
+        git clone --depth 1 --single-branch --no-tags --filter=blob:none --recurse-submodules --shallow-submodules --also-filter-submodules --jobs $(nproc) https://github.com/AnyLaySys/qemu-gzvm.git build/src/qemu-gzvm-main
         mkdir -p build/src/qemu-gzvm-main/pyvenv
         wget https://raw.githubusercontent.com/qemu/qemu/master/pyvenv/meson.build -O build/src/qemu-gzvm-main/pyvenv/meson.build
         mkdir -p build/src/qemu-gzvm-main/subprojects/packagefiles/berkeley-softfloat-3 build/src/qemu-gzvm-main/subprojects/packagefiles/berkeley-testfloat-3
