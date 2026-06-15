@@ -457,6 +457,7 @@ static void gzvm_mask_sve_sme(ARMISARegisters *isar)
 
     uint64_t pfr1 = GET_IDREG(isar, ID_AA64PFR1);
     pfr1 = FIELD_DP64(pfr1, ID_AA64PFR1, SME, 0);
+    pfr1 = FIELD_DP64(pfr1, ID_AA64PFR1, NMI, 0);
     SET_IDREG(isar, ID_AA64PFR1, pfr1);
 
     SET_IDREG(isar, ID_AA64SMFR0, 0);
@@ -507,6 +508,7 @@ void gzvm_arm_set_cpu_features_from_host(ARMCPU *cpu)
 void arm_cpu_gzvm_set_irq(void *arm_cpu, int irq, int level)
 {
     ARMCPU *cpu = arm_cpu;
+    CPUState *cs = CPU(cpu);
     CPUARMState *env = &cpu->env;
     struct gzvm_irq_level irq_level;
     uint32_t linestate_bit;
@@ -541,6 +543,33 @@ void arm_cpu_gzvm_set_irq(void *arm_cpu, int irq, int level)
             env->irq_line_state &= ~CPU_INTERRUPT_VFIQ;
         }
         arm_cpu_update_vfiq(cpu);
+        return;
+    case ARM_CPU_NMI:
+        /*
+         * GZVM kernel UAPI has no NMI type for GZVM_IRQ_LINE.
+         * Track the line state locally so 'info qom-tree' and
+         * migration see the correct value, but do NOT send to
+         * the kernel hypervisor.
+         */
+        if (level) {
+            env->irq_line_state |= CPU_INTERRUPT_NMI;
+            cpu_interrupt(cs, CPU_INTERRUPT_NMI);
+        } else {
+            env->irq_line_state &= ~CPU_INTERRUPT_NMI;
+            cpu_reset_interrupt(cs, CPU_INTERRUPT_NMI);
+        }
+        return;
+    case ARM_CPU_VINMI:
+        /*
+         * Virtual NMI is maintained entirely in QEMU's GICv3 cpuif
+         * model — no kernel involvement needed.
+         */
+        if (level) {
+            env->irq_line_state |= CPU_INTERRUPT_VINMI;
+        } else {
+            env->irq_line_state &= ~CPU_INTERRUPT_VINMI;
+        }
+        arm_cpu_update_vinmi(cpu);
         return;
     default:
         g_assert_not_reached();
