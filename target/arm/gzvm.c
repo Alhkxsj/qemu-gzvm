@@ -508,7 +508,6 @@ void gzvm_arm_set_cpu_features_from_host(ARMCPU *cpu)
 void arm_cpu_gzvm_set_irq(void *arm_cpu, int irq, int level)
 {
     ARMCPU *cpu = arm_cpu;
-    CPUState *cs = CPU(cpu);
     CPUARMState *env = &cpu->env;
     struct gzvm_irq_level irq_level;
     uint32_t linestate_bit;
@@ -549,27 +548,28 @@ void arm_cpu_gzvm_set_irq(void *arm_cpu, int irq, int level)
          * GZVM kernel UAPI has no NMI type for GZVM_IRQ_LINE.
          * Track the line state locally so 'info qom-tree' and
          * migration see the correct value, but do NOT send to
-         * the kernel hypervisor.
+         * the kernel hypervisor.  Also do NOT call cpu_interrupt()
+         * here — GZVM's VCPU exec loop never clears exit_request,
+         * so a kick would wedge the VCPU in immediate_exit.
+         * The kernel VGIC handles interrupt delivery.
          */
         if (level) {
             env->irq_line_state |= CPU_INTERRUPT_NMI;
-            cpu_interrupt(cs, CPU_INTERRUPT_NMI);
         } else {
             env->irq_line_state &= ~CPU_INTERRUPT_NMI;
-            cpu_reset_interrupt(cs, CPU_INTERRUPT_NMI);
         }
         return;
     case ARM_CPU_VINMI:
         /*
-         * Virtual NMI is maintained entirely in QEMU's GICv3 cpuif
-         * model — no kernel involvement needed.
+         * Same reasoning as ARM_CPU_NMI above: update irq_line_state
+         * only, skip cpu_interrupt() because GZVM's exec loop does
+         * not handle the interrupt_request flags.
          */
         if (level) {
             env->irq_line_state |= CPU_INTERRUPT_VINMI;
         } else {
             env->irq_line_state &= ~CPU_INTERRUPT_VINMI;
         }
-        arm_cpu_update_vinmi(cpu);
         return;
     default:
         g_assert_not_reached();
