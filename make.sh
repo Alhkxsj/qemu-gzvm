@@ -34,7 +34,7 @@ fi
   --disable-tcg --disable-kvm \
   --disable-hvf --disable-whpx --disable-nitro --disable-mshv --disable-nvmm \
   --disable-xen \
-  --disable-opengl --disable-virglrenderer --disable-docs \
+  --enable-opengl --enable-virglrenderer --disable-docs \
   --disable-vde \
   --disable-curl --disable-libiscsi --disable-libnfs --disable-rbd \
   --disable-libssh \
