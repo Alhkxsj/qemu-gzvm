@@ -1255,7 +1255,6 @@ static void arm_cpu_initfn(Object *obj)
     cpu->kvm_target = QEMU_KVM_ARM_TARGET_NONE;
 
     if (tcg_enabled() || hvf_enabled() || gzvm_enabled()) {
-        /* TCG, HVF and GZVM implement PSCI 1.1 */
         cpu->psci_version = QEMU_PSCI_VERSION_1_1;
     } else if (whpx_enabled()) {
         cpu->psci_version = QEMU_PSCI_VERSION_1_3;

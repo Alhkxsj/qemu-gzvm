@@ -11,13 +11,6 @@
 #include "gzvm-internal.h"
 #include "trace.h"
 
-/*
- * Determine the correct MemTxAttrs for an MMIO access.
- * Use our O(log n) slot lookup instead of address_space_translate
- * to avoid a full memory-tree walk.  Backed slots (slot->mem != NULL)
- * are RAM/ROM and work with UNSPECIFIED; everything else (device MMIO
- * or unmapped) needs secure attributes on GZVM.
- */
 static MemTxAttrs gzvm_mmio_attrs(hwaddr addr)
 {
     gzvm_slot *slot = gzvm_find_slot_by_addr(addr);
@@ -27,10 +20,6 @@ static MemTxAttrs gzvm_mmio_attrs(hwaddr addr)
     return (MemTxAttrs) { .secure = true };
 }
 
-/*
- * Caller must hold slots_lock.  On success, *slot_addr_out is set to
- * the (possibly IPA-corrected) address and the slot pointer is returned.
- */
 static gzvm_slot *gzvm_find_slot_for_mmio_locked(GZVMState *s, hwaddr addr,
                                                    hwaddr *slot_addr_out)
 {
@@ -40,13 +29,6 @@ static gzvm_slot *gzvm_find_slot_for_mmio_locked(GZVMState *s, hwaddr addr,
         return slot;
     }
 
-    /*
-     * GZVM_IPA_WORKAROUND (compile-time): some firmware/platforms
-     * generate MMIO exits with an IPA having bit-30 cleared and
-     * bit-26 set instead of the expected address.  Remap those
-     * patterns to the correct IPA when a matching slot exists.
-     * Remove once the platform firmware is fixed.
-     */
 #if defined(GZVM_IPA_WORKAROUND)
     if ((addr >> 28) == 0x4) {
         hwaddr corrected = (addr & 0x0FFFFFFF) | 0x04000000;

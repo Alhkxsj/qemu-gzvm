@@ -18,25 +18,9 @@ void virt_gzvm_init(VirtMachineState *vms)
 
     gzvm_set_ram_base(vms->memmap[VIRT_MEM].base);
 
-    /*
-     * GZVM hypervisor only forwards stage-2 MMIO faults for
-     * GPAs < 0x10000000.  Accesses above that threshold return
-     * GZVM_EXIT_INTERNAL_ERROR and QEMU never gets to emulate
-     * the device.  Relocate PCI windows below the boundary.
-     */
-
-    /* PCI ECAM: 0x3f000000 → 0x0f000000 (16 MiB) */
     vms->highmem_ecam = false;
     vms->memmap[VIRT_PCIE_ECAM].base = 0x0F000000ULL;
 
-    /*
-     * PCI MMIO32: 0x10000000 → 0x0b000000 (16 MiB).
-     * Fits between virtio-mmio (ends ~0x0a004000) and
-     * platform bus (0x0c000000).
-     *
-     * Also disable the 64-bit MMIO window (highmem_mmio);
-     * it sits above 4 GiB, which is always ≥ 0x10000000.
-     */
     vms->highmem_mmio = false;
     vms->memmap[VIRT_PCIE_MMIO].base = 0x0B000000ULL;
     vms->memmap[VIRT_PCIE_MMIO].size = 16 * MiB;
@@ -98,10 +82,8 @@ void virt_gzvm_set_bootinfo(VirtMachineState *vms, bool firmware_loaded)
     AccelState *accel = current_accel();
     GZVMState *s = accel ? GZVM_STATE(accel) : NULL;
     if (s && s->firmware_size) {
-        /* Place DTB immediately after the firmware blob, 8-byte aligned */
         vms->bootinfo.dtb_start = QEMU_ALIGN_UP(s->firmware_start + s->firmware_size, 8);
     } else {
-        /* Fallback: assume 4 MiB is enough (firmware is capped at 4 MiB) */
         vms->bootinfo.dtb_start = vms->memmap[VIRT_MEM].base + 4 * MiB;
     }
 }

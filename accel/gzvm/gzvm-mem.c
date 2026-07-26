@@ -20,10 +20,6 @@ static void gzvm_assert_mutex_locked(QemuMutex *m)
     assert(ret == EBUSY);
 }
 
-/*
- * Binary-search sorted_ids[] for the first slot whose start >= addr.
- * Returns nr_active_slots if none found.
- */
 static int gzvm_find_first_ge(GZVMState *s, uint64_t addr)
 {
     int lo = 0, hi = (int)s->nr_active_slots - 1;
@@ -263,7 +259,6 @@ gzvm_add_mem_range(GZVMState *s, MemoryRegionSection *section,
     uint64_t offset;
     uint8_t *hva;
 
-    /* Sanity check: ensure gpa is within the section bounds */
     if (gpa < section_start || gpa + size > section_end) {
         error_report("gzvm: memory range [0x%" PRIx64 ", 0x%" PRIx64 
                      ") is out of section bounds [0x%" PRIx64 ", 0x%" PRIx64 ")",
@@ -278,13 +273,6 @@ gzvm_add_mem_range(GZVMState *s, MemoryRegionSection *section,
     return gzvm_add_mem_slot(s, hva, gpa, size, flags);
 }
 
-/*
- * Handle firmware region splitting for protected VMs.
- * Returns: 0 if no FW overlap (caller continues with normal add),
- *          1 if FW split was done (caller skips normal add),
- *         -1 on error (caller skips normal add).
- * Caller holds slots_lock.
- */
 static int gzvm_set_phys_mem_fw_split(GZVMState *s,
                                        MemoryRegionSection *section,
                                        uint64_t section_start,

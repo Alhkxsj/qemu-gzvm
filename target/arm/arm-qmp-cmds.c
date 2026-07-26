@@ -113,7 +113,6 @@ CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
         bool supported = false;
 
         if (!strcmp(model->name, "host") || !strcmp(model->name, "max")) {
-            /* These are the recommended cpu types for KVM/GZVM */
             supported = true;
         } else if (current_machine->cpu_type) {
             const char *cpu_type = current_machine->cpu_type;

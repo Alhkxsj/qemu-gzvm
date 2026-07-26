@@ -99,12 +99,6 @@ void gzvm_set_gic_bases(uint64_t dist_base, uint64_t redist_base,
     state->gic_redist_base = redist_base;
     state->gic_redist_size = redist_size;
 
-    /*
-     * Kernel driver creates VGIC DIST/REDIST devices with hardcoded base
-     * addresses (0x08000000 / 0x080A0000) during gzvm_create_vm() and
-     * ignores the dev_addr fields.  If the machine memory map differs,
-     * the kernel and QEMU will be out of sync — warn here.
-     */
     if (dist_base != 0x08000000ULL || redist_base != 0x080A0000ULL) {
         warn_report("gzvm: GIC base address mismatch:");
         warn_report("  QEMU virt: DIST=0x%08" PRIx64
@@ -146,17 +140,6 @@ static int gzvm_get_one_reg_sw(CPUState *cs, uint64_t id, void *target)
 
 int gzvm_arch_get_registers(CPUState *cs, int level)
 {
-    /*
-     * STUB: The GZVM kernel driver does not support GZVM_GET_ONE_REG
-     * (returns -EOPNOTSUPP).  Until that UAPI is added, we cannot
-     * read live register state back from the hypervisor.
-     *
-     * As a best-effort fallback, gzvm_get_one_reg_sw() reads PSTATE,
-     * PC, and X0 from env — values that QEMU already set during
-     * gzvm_arch_put_registers().  This means 'info registers' and
-     * GDB will show stale data after the guest has run.  Callers
-     * should not rely on the returned values being accurate.
-     */
     trace_gzvm_get_registers_stub();
     ARMCPU *cpu = ARM_CPU(cs);
     CPUARMState *env = &cpu->env;
@@ -194,11 +177,6 @@ int gzvm_arch_put_registers(CPUState *cs, int level)
 
     gzvm_arch_set_id_regs(cs);
 
-    /*
-     * GenieZone owns EL2.  Match crosvm's GenieZone reset path and enter
-     * the guest at EL1h with interrupts masked.  Secondary vCPUs are kept
-     * powered off by the hypervisor and are completed by PSCI CPU_ON.
-     */
     val = PSTATE_DAIF | PSTATE_MODE_EL1h;
     ret = gzvm_set_one_reg_err(cs, GZVM_CORE_REG(GZVM_REGS_PSTATE),
                                 &val, "pstate");
@@ -284,34 +262,6 @@ static bool gzvm_read_host_sysreg(const char *name, uint64_t *value)
     return ok;
 }
 
-/*
- * Fallback: read identification register directly via MRS from userspace.
- *
- * On arm64 only a subset of the ID registers is reachable from EL0:
- *
- *   - The AArch64 feature ID registers (op0=3, op1=0, CRn=0, CRm>=4) are
- *     trap-and-emulated by the kernel, but only when it advertises the
- *     'cpuid' HWCAP.  Without that hwcap the MRS raises SIGILL.
- *   - CTR_EL0 / DCZID_EL0 (op1=3) are architecturally readable at EL0.
- *
- * Everything else in the CRn=0 space is NOT accessible from EL0 on an
- * AArch64-only core and raises SIGILL: the AArch32 ID registers
- * (op1=0, CRm 1..3 -- ID_PFR*, ID_ISAR*, ID_MMFR*, MVFR*, ...) and
- * CLIDR_EL1 (op1=1).  The kernel's EL0 MRS emulation hook only matches
- * op1=0 AArch64 ID registers, so it never fixes those up.
- *
- * We must therefore NOT execute the MRS for those registers.  A SIGILL
- * from such a probe is not reliably recoverable via siglongjmp on all
- * kernel/libc combinations (it can terminate the process instead of
- * returning through the handler below), so relying on the signal handler
- * alone is unsafe.  The compile-time guard in the switch skips every
- * register that is not known to be EL0-readable; the signal handler is
- * kept only as defence-in-depth for the registers we do probe.
- *
- * MRS instruction encoding: 0xD5200000 | (sysreg_enc << 5) | Rt
- * where sysreg_enc = (op0 << 14) | (op1 << 11) | (CRn << 7) | (CRm << 3) | op2
- * and Rt=0 (X0).  The variable v is pinned to x0 to match.
- */
 static sigjmp_buf gzvm_sysreg_jmp;
 
 static void gzvm_sysreg_sigill(int sig)
@@ -330,19 +280,6 @@ static bool gzvm_read_sysreg_direct(int idx, uint64_t *value)
         cpuid_checked = true;
     }
 
-    /*
-     * SA_NODEFER is intentional: this handler must be re-entrant for
-     * probing.  If SIGILL were masked during handler execution, a
-     * second SIGILL (from a nested probe) would deadlock.  With
-     * SA_NODEFER the nested SIGILL re-enters gzvm_sysreg_sigill and
-     * jumps back to the sigsetjmp in the outer call.
-     *
-     * To minimize the race window between handler setup and sigsetjmp:
-     * 1. Install handler BEFORE sigsetjmp (below) to catch early SIGILLs
-     * 2. Use sigaction return value to detect errors
-     * 3. A SIGILL in the remaining narrow window is acceptable as it
-     *    indicates an unrecoverable system state (HW fault during boot)
-     */
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = gzvm_sysreg_sigill;
     sa.sa_flags = SA_NODEFER;
@@ -352,14 +289,6 @@ static bool gzvm_read_sysreg_direct(int idx, uint64_t *value)
 
     if (sigsetjmp(gzvm_sysreg_jmp, 1) == 0) {
         switch (idx) {
-        /*
-         * Only emit the MRS for registers that are actually readable from
-         * EL0: AArch64 ID registers (op1==0, CRm>=4) when the kernel
-         * advertises HWCAP_CPUID, and the natively EL0-readable registers
-         * (op1==3, e.g. CTR_EL0/DCZID_EL0).  For every other register the
-         * body collapses to a plain 'break' at compile time, so no
-         * faulting instruction is ever executed.
-         */
 #define DEF(NAME, OP0, OP1, CRN, CRM, OP2) \
         case NAME##_IDX: { \
             if (!(((OP1) == 3) || \
@@ -454,24 +383,13 @@ static bool gzvm_arm_read_host_cpu_features(ARMCPU *cpu)
 
 static void gzvm_override_ipa_size(ARMISARegisters *isar)
 {
-    /*
-     * Kernel sanitizes ID_AA64MMFR0_EL1.PARANGE for EL0 MRS accesses
-     * (returns 0 = 32-bit).  Query GZVM's actual IPA capability and
-     * override PARANGE so arm_pamax() returns the correct value.
-     */
     uint64_t cap = GZVM_CAP_ARM_VM_IPA_SIZE;
     int r = gzvm_vm_ioctl(GZVM_CHECK_EXTENSION, &cap);
     unsigned int gzvm_parange;
     if (r == 0 && cap > 0) {
         gzvm_parange = round_down_to_parange_index(cap);
     } else {
-        /*
-         * Old kernel driver does not support GZVM_CAP_ARM_VM_IPA_SIZE.
-         * The kernel sanitises ID_AA64MMFR0_EL1.PARANGE to 0 (32-bit)
-         * on MRS access, which would limit the guest to 4 GB.  Default
-         * to 40-bit IPA to support guests with up to 1 TB of RAM.
-         */
-        gzvm_parange = 2; /* 40-bit */
+        gzvm_parange = 2;
     }
     {
         unsigned int cur_parange =
@@ -486,12 +404,6 @@ static void gzvm_override_ipa_size(ARMISARegisters *isar)
 
 static void gzvm_mask_sve_sme(ARMISARegisters *isar)
 {
-    /*
-     * GZVM kernel driver has no SVE/SME register type (no
-     * GZVM_REG_ARM64_SVE in the UAPI), so we cannot save/restore
-     * SVE/SME state.  Mask these features out of the ID registers
-     * until kernel support arrives.
-     */
     uint64_t pfr0 = GET_IDREG(isar, ID_AA64PFR0);
     pfr0 = FIELD_DP64(pfr0, ID_AA64PFR0, SVE, 0);
     SET_IDREG(isar, ID_AA64PFR0, pfr0);
@@ -507,22 +419,10 @@ static void gzvm_mask_sve_sme(ARMISARegisters *isar)
 static void gzvm_mask_pmu(ARMISARegisters *isar, CPUARMState *env,
                            ARMCPU *cpu)
 {
-    /*
-     * GZVM kernel has no PMU interrupt routing UAPI (no
-     * equivalent of KVM_ARM_VCPU_PMU_V3_CTRL), so PMU overflow
-     * interrupts cannot reach the guest.  Mask PMU out until
-     * kernel support arrives.
-     */
     uint64_t dfr0 = GET_IDREG(isar, ID_AA64DFR0);
     dfr0 = FIELD_DP64(dfr0, ID_AA64DFR0, PMUVER, 0);
     SET_IDREG(isar, ID_AA64DFR0, dfr0);
 
-    /*
-     * PMUVER masked in ID_AA64DFR0 above; now clear the feature bit
-     * to prevent the guest from using the PMU.  env->features was
-     * set from the original ID registers before masking, so the
-     * ARM_FEATURE_PMU bit may still be set at this point.
-     */
     env->features &= ~BIT(ARM_FEATURE_PMU);
     cpu->has_pmu = false;
 }
@@ -585,15 +485,6 @@ void arm_cpu_gzvm_set_irq(void *arm_cpu, int irq, int level)
         arm_cpu_update_vfiq(cpu);
         return;
     case ARM_CPU_NMI:
-        /*
-         * GZVM kernel UAPI has no NMI type for GZVM_IRQ_LINE.
-         * Track the line state locally so 'info qom-tree' and
-         * migration see the correct value, but do NOT send to
-         * the kernel hypervisor.  Also do NOT call cpu_interrupt()
-         * here — GZVM's VCPU exec loop never clears exit_request,
-         * so a kick would wedge the VCPU in immediate_exit.
-         * The kernel VGIC handles interrupt delivery.
-         */
         if (level) {
             env->irq_line_state |= CPU_INTERRUPT_NMI;
         } else {
@@ -601,11 +492,6 @@ void arm_cpu_gzvm_set_irq(void *arm_cpu, int irq, int level)
         }
         return;
     case ARM_CPU_VINMI:
-        /*
-         * Same reasoning as ARM_CPU_NMI above: update irq_line_state
-         * only, skip cpu_interrupt() because GZVM's exec loop does
-         * not handle the interrupt_request flags.
-         */
         if (level) {
             env->irq_line_state |= CPU_INTERRUPT_VINMI;
         } else {

@@ -70,20 +70,12 @@ static int gzvm_cpu_exec(CPUState *cpu)
     case GZVM_EXIT_IRQ:
         return EXCP_INTERRUPT;
     case GZVM_EXIT_HYPERCALL:
-        /*
-         * GenieZone at EL2 handles PSCI CPU_ON/OFF/SUSPEND etc.
-         * in-kernel.  Hypercalls reaching QEMU are unrecognised.
-         * The return value in x0 is left as the kernel set it.
-         */
         warn_report("gzvm: VCPU%u unhandled hypercall fn=0x%" PRIx64,
                     cpu->cpu_index, (uint64_t)run->hypercall.args[0]);
         return EXCP_INTERRUPT;
     case GZVM_EXIT_GZ:
         return EXCP_INTERRUPT;
     case GZVM_EXIT_IPI:
-        /* IPIs between vCPUs of the same VM are handled by the
-         * in-kernel VGIC.  This exit is informational; re-enter
-         * the guest to pick up any pending interrupts. */
         trace_gzvm_exit_ipi(cpu->cpu_index);
         return EXCP_INTERRUPT;
     case GZVM_EXIT_DEBUG:
@@ -102,10 +94,6 @@ static int gzvm_cpu_exec(CPUState *cpu)
                      (uint64_t)run->exception.fault_gpa);
         return -1;
     case 0:
-        /* exit_reason == 0 means the vCPU hasn't actually run yet
-         * (kernel initialises it on the stack).  If this persists,
-         * the hypervisor SMC call may have failed silently.
-         */
         warn_report_once("gzvm: VCPU%u exit_reason=0 (vCPU may not have run)",
                          cpu->cpu_index);
         return 0;

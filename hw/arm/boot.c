@@ -729,12 +729,6 @@ static void do_cpu_reset(void *opaque)
             if (cpu == info->primary_cpu) {
                 AddressSpace *as = arm_boot_address_space(cpu, info);
 
-                /*
-                 * GenieZone hypervisor enters the guest directly at the
-                 * kernel entry point (no bootloader). Match crosvm's
-                 * GenieZone backend which writes PC=kernel_entry and
-                 * X0=dtb_addr before the first GZVM_RUN.
-                 */
                 if (gzvm_enabled()) {
                     cpu_set_pc(cs, info->entry);
                     env->xregs[0] = info->dtb_start;
@@ -1274,11 +1268,6 @@ void arm_load_kernel(ARMCPU *cpu, MachineState *ms, struct arm_boot_info *info)
                                     &error_abort);
             /* Secondary CPUs start in PSCI powered-down state.  */
             if (ARM_CPU(cs) != info->primary_cpu && !gzvm_enabled()) {
-                /*
-                 * GenieZone handles PSCI power state in-kernel. QEMU must not
-                 * halt secondary VCPUs — the VCPU thread must keep calling
-                 * GZVM_RUN so the hypervisor can wake them on PSCI CPU_ON.
-                 */
                 object_property_set_bool(cpuobj, "start-powered-off", true,
                                          &error_abort);
             }

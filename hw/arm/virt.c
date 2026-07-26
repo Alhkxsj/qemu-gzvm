@@ -2607,7 +2607,6 @@ static VirtGICType finalize_gic_version_do(const char *accel_name,
             exit(1);
         }
 
-        /* For KVM/GZVM, gic-version=host means gic-version=max */
         return finalize_gic_version_do(accel_name, VIRT_GIC_VERSION_MAX,
                                        gics_supported, max_cpus);
     case VIRT_GIC_VERSION_MAX:
@@ -2776,11 +2775,6 @@ static void finalize_msi_controller(VirtMachineState *vms)
         }  else if (hvf_enabled() && hvf_irqchip_in_kernel()) {
             vms->msi_controller = VIRT_MSI_CTRL_GICV2M;
         } else if (gzvm_enabled()) {
-            /*
-             * GICv2m frame at 0x08020000 is outside the kernel's DIST/REDIST
-             * range, so MSI writes trap to QEMU's arm-gicv2m device, which
-             * delivers SPIs via GZVM_IRQ_LINE.
-             */
             vms->msi_controller = VIRT_MSI_CTRL_GICV2M;
         } else if (vms->gic_version == VIRT_GIC_VERSION_5) {
             /* GICv5 ITS is not yet implemented */
@@ -2977,10 +2971,6 @@ static void machvirt_init(MachineState *machine)
         vms->psci_conduit = QEMU_PSCI_CONDUIT_DISABLED;
     } else if (vms->virt) {
         if (gzvm_enabled()) {
-            /*
-             * GZVM only supports HVC conduit. If future versions add
-             * SMC support, check GZVM_CAP_ARM_SMC_CONDUIT here.
-             */
             vms->psci_conduit = QEMU_PSCI_CONDUIT_HVC;
         } else {
             vms->psci_conduit = QEMU_PSCI_CONDUIT_SMC;
@@ -3236,11 +3226,6 @@ static void machvirt_init(MachineState *machine)
     vms->highmem_ecam &= (!firmware_loaded || aarch64);
 
     if (gzvm_enabled() && vms->ras) {
-        /*
-         * RAS is not yet supported on GZVM (no MCE error injection path).
-         * Consider upgrading this to exit(1) once confirmed that no guest
-         * relies on booting with ras=on under GZVM.
-         */
         warn_report("GZVM: RAS not supported (no MCE error injection path; "
                      "guest will not receive hardware error notifications)");
     }
