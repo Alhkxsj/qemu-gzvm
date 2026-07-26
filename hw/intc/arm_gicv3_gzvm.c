@@ -4,6 +4,7 @@
 #include "cpu.h"
 #include "hw/intc/arm_gicv3_common.h"
 #include "qemu/error-report.h"
+#include "qemu/log.h"
 #include "qemu/module.h"
 #include "system/gzvm.h"
 #include "system/gzvm_int.h"
@@ -34,6 +35,7 @@ static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
     GICv3CPUState *cs;
     int irqtype;
     int cpu;
+    int knum;
 
     /*
      * QEMU GICv3 GPIO array layout (from gicv3_init_irqs_and_mmio):
@@ -47,23 +49,32 @@ static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
      *   PPIs  = 16..31  (private per-CPU)
      *   SPIs  = 32..287 (shared, extended to 1019 in GICv3)
      *
-     * For SPI GPIO lines (irq < N): convert the GPIO index to the
-     * actual GIC SPI number by adding GIC_INTERNAL (32).
+     * The GZVM kernel VGIC expects the *0-based* SPI number in
+     * GZVM_IRQ_LINE (matching the FDT "GIC_SPI n" cell): it adds the
+     * GIC_INTERNAL (32) private-IRQ offset itself.  So the number handed
+     * to the kernel (knum) is the raw SPI GPIO index, NOT the INTID.
+     * Do NOT add GIC_INTERNAL here or the interrupt is delivered 32 IDs
+     * too high (e.g. INTID 38 -> 70), which the guest sees as an
+     * "Unexpected interrupt".
      *
-     * For PPI GPIO lines (irq >= N): decode the CPU index and
-     * the per-CPU PPI number (0..31).  The kernel GZVM_IRQ_TYPE_PPI
-     * interface handles SGIs (0..15) as part of the PPI range;
-     * only PPIs (16..31) are actually wired as GPIO inputs.
+     * QEMU's own shadow GIC model (gicv3_gicd_level_replace) still wants
+     * the full INTID, so we keep 'irq' as the INTID for that call and use
+     * a separate 'knum' for the kernel.
+     *
+     * For PPI GPIO lines (irq >= N): decode the CPU index and the per-CPU
+     * PPI number (0..31); PPIs already use a 0-based per-CPU number.
      */
     if (irq < (int)(s->num_irq - GIC_INTERNAL)) {
         irqtype = GZVM_IRQ_TYPE_SPI;
         cpu = 0;
-        irq += GIC_INTERNAL;
+        knum = irq;              /* 0-based SPI number for the kernel */
+        irq += GIC_INTERNAL;     /* INTID for QEMU's shadow GIC model */
     } else {
         irqtype = GZVM_IRQ_TYPE_PPI;
         irq -= s->num_irq - GIC_INTERNAL;
         cpu = irq / GIC_INTERNAL;
         irq %= GIC_INTERNAL;
+        knum = irq;              /* per-CPU PPI number (0..31) */
     }
 
     cs = &s->cpu[cpu];
@@ -93,12 +104,18 @@ static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
     irq_level.irq = (irqtype << GZVM_IRQ_TYPE_SHIFT) |
                     ((cpu & GZVM_IRQ_VCPU_MASK) << GZVM_IRQ_VCPU_SHIFT) |
                     (((cpu >> 8) & GZVM_IRQ_VCPU2_MASK) << GZVM_IRQ_VCPU2_SHIFT) |
-                    (irq << GZVM_IRQ_NUM_SHIFT);
+                    (knum << GZVM_IRQ_NUM_SHIFT);
     irq_level.level = level;
+
+    qemu_log_mask(CPU_LOG_INT,
+                  "gzvm inject: type=%s cpu=%d spi/ppi=%d (intid=%d) level=%d\n",
+                  irqtype == GZVM_IRQ_TYPE_SPI ? "SPI" : "PPI",
+                  cpu, knum, irqtype == GZVM_IRQ_TYPE_SPI ? knum + GIC_INTERNAL : irq,
+                  level);
 
     if (gzvm_vm_ioctl(GZVM_IRQ_LINE, &irq_level)) {
         warn_report("gzvm: GZVM_IRQ_LINE failed for irq=%d level=%d: %s",
-                    irq, level, strerror(errno));
+                    knum, level, strerror(errno));
     }
 }
 

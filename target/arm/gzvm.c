@@ -10,6 +10,14 @@
 #include "cpu-sysregs.h"
 #include "trace/trace-accel_gzvm.h"
 
+#ifdef CONFIG_LINUX
+#include <sys/auxv.h>
+#include <asm/hwcap.h>
+#endif
+#ifndef HWCAP_CPUID
+#define HWCAP_CPUID (1 << 11)
+#endif
+
 #define GZVM_CORE_REG(offset)  (GZVM_REG_ARM64 | GZVM_REG_SIZE_U64 | \
                                 GZVM_REG_ARM_CORE | ((offset) / 4))
 
@@ -278,13 +286,27 @@ static bool gzvm_read_host_sysreg(const char *name, uint64_t *value)
 
 /*
  * Fallback: read identification register directly via MRS from userspace.
- * On arm64 the ID_AA64* and other identification registers are accessible
- * at EL0 when the kernel exposes the 'cpuid' hwcap.  Use .inst with the
- * raw encoding to bypass assembler validation of newer register names.
  *
- * Some registers may not exist on older CPU implementations and will
- * trigger SIGILL.  We catch the signal with sigsetjmp/siglongjmp so
- * that unavailable registers are silently skipped.
+ * On arm64 only a subset of the ID registers is reachable from EL0:
+ *
+ *   - The AArch64 feature ID registers (op0=3, op1=0, CRn=0, CRm>=4) are
+ *     trap-and-emulated by the kernel, but only when it advertises the
+ *     'cpuid' HWCAP.  Without that hwcap the MRS raises SIGILL.
+ *   - CTR_EL0 / DCZID_EL0 (op1=3) are architecturally readable at EL0.
+ *
+ * Everything else in the CRn=0 space is NOT accessible from EL0 on an
+ * AArch64-only core and raises SIGILL: the AArch32 ID registers
+ * (op1=0, CRm 1..3 -- ID_PFR*, ID_ISAR*, ID_MMFR*, MVFR*, ...) and
+ * CLIDR_EL1 (op1=1).  The kernel's EL0 MRS emulation hook only matches
+ * op1=0 AArch64 ID registers, so it never fixes those up.
+ *
+ * We must therefore NOT execute the MRS for those registers.  A SIGILL
+ * from such a probe is not reliably recoverable via siglongjmp on all
+ * kernel/libc combinations (it can terminate the process instead of
+ * returning through the handler below), so relying on the signal handler
+ * alone is unsafe.  The compile-time guard in the switch skips every
+ * register that is not known to be EL0-readable; the signal handler is
+ * kept only as defence-in-depth for the registers we do probe.
  *
  * MRS instruction encoding: 0xD5200000 | (sysreg_enc << 5) | Rt
  * where sysreg_enc = (op0 << 14) | (op1 << 11) | (CRn << 7) | (CRm << 3) | op2
@@ -300,6 +322,13 @@ static void gzvm_sysreg_sigill(int sig)
 static bool gzvm_read_sysreg_direct(int idx, uint64_t *value)
 {
     struct sigaction sa, old;
+    static bool cpuid_checked;
+    static bool cpuid_present;
+
+    if (!cpuid_checked) {
+        cpuid_present = (qemu_getauxval(AT_HWCAP) & HWCAP_CPUID) != 0;
+        cpuid_checked = true;
+    }
 
     /*
      * SA_NODEFER is intentional: this handler must be re-entrant for
@@ -323,8 +352,20 @@ static bool gzvm_read_sysreg_direct(int idx, uint64_t *value)
 
     if (sigsetjmp(gzvm_sysreg_jmp, 1) == 0) {
         switch (idx) {
+        /*
+         * Only emit the MRS for registers that are actually readable from
+         * EL0: AArch64 ID registers (op1==0, CRm>=4) when the kernel
+         * advertises HWCAP_CPUID, and the natively EL0-readable registers
+         * (op1==3, e.g. CTR_EL0/DCZID_EL0).  For every other register the
+         * body collapses to a plain 'break' at compile time, so no
+         * faulting instruction is ever executed.
+         */
 #define DEF(NAME, OP0, OP1, CRN, CRM, OP2) \
         case NAME##_IDX: { \
+            if (!(((OP1) == 3) || \
+                  ((OP1) == 0 && (CRM) >= 4 && cpuid_present))) { \
+                break; \
+            } \
             register uint64_t v asm("x0"); \
              asm volatile(".inst " \
                 stringify(0xd5200000 | ((((OP0 << 14) | (OP1 << 11) | (CRN << 7) | (CRM << 3) | OP2) << 5) | 0)) \

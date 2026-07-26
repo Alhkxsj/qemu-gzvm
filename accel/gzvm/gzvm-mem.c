@@ -332,19 +332,13 @@ static void gzvm_set_phys_mem(GZVMState *s, MemoryRegionSection *section, bool a
     uint64_t section_start = section->offset_within_address_space;
     uint64_t section_size = int128_get64(section->size);
 
-    if (!add) {
-        gzvm_slots_lock(s);
-        gzvm_remove_overlap_slots_locked(s, section_start, section_size);
-        gzvm_slots_unlock(s);
-        return;
-    }
-
     if (!memory_region_is_ram(area) && !memory_region_is_rom(area) &&
         !memory_region_is_romd(area)) {
         return;
     }
 
-    if (!QEMU_IS_ALIGNED(section_size, page_size) ||
+    if (!section_size || section_start > UINT64_MAX - section_size ||
+        !QEMU_IS_ALIGNED(section_size, page_size) ||
         !QEMU_IS_ALIGNED(section_start, page_size)) {
         return;
     }
@@ -352,6 +346,13 @@ static void gzvm_set_phys_mem(GZVMState *s, MemoryRegionSection *section, bool a
     if (section_start < s->ram_base &&
         !memory_region_is_rom(area) && !memory_region_is_romd(area)) {
         trace_gzvm_skip_region(section_start, section_size, s->ram_base);
+        return;
+    }
+
+    if (!add) {
+        gzvm_slots_lock(s);
+        gzvm_remove_overlap_slots_locked(s, section_start, section_size);
+        gzvm_slots_unlock(s);
         return;
     }
 

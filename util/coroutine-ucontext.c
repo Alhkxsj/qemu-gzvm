@@ -42,6 +42,85 @@
 #include <sanitizer/tsan_interface.h>
 #endif
 
+/*
+ * On Android/bionic aarch64, setjmp()/longjmp() are protected with
+ * pointer authentication (paciasp/autiasp).  QEMU coroutines save a
+ * jmp_buf while running on one stack and restore it while running on a
+ * different, libucontext-created stack; on cores implementing FEAT_FPAC
+ * the autiasp inside bionic's longjmp() then fails authentication and
+ * raises SIGILL (ILL_ILLOPN), killing the process on the first coroutine
+ * switch (e.g. the first block-layer I/O).
+ *
+ * Provide a private, PAC-free setjmp/longjmp used solely for coroutine
+ * switching.  It saves the callee-saved GPRs, the FP callee-saved regs,
+ * SP and the return address, and restores SP before returning to the
+ * saved address -- no pointer authentication involved, so it is safe to
+ * resume on a different stack.
+ */
+#if defined(__aarch64__) && defined(__BIONIC__)
+#define QEMU_CO_PRIVATE_JMP 1
+
+typedef unsigned long qemu_co_jmp_buf[24];
+
+extern int qemu_co_setjmp(qemu_co_jmp_buf env) __attribute__((returns_twice));
+extern void qemu_co_longjmp(qemu_co_jmp_buf env, int val)
+    __attribute__((noreturn));
+
+asm(
+"   .text\n"
+"   .align  2\n"
+"   .global qemu_co_setjmp\n"
+"   .hidden qemu_co_setjmp\n"
+"   .type   qemu_co_setjmp, %function\n"
+"qemu_co_setjmp:\n"
+"   hint    #34\n"                 /* bti c */
+"   stp     x19, x20, [x0, #0]\n"
+"   stp     x21, x22, [x0, #16]\n"
+"   stp     x23, x24, [x0, #32]\n"
+"   stp     x25, x26, [x0, #48]\n"
+"   stp     x27, x28, [x0, #64]\n"
+"   stp     x29, x30, [x0, #80]\n"
+"   mov     x1, sp\n"
+"   str     x1, [x0, #96]\n"
+"   stp     d8,  d9,  [x0, #104]\n"
+"   stp     d10, d11, [x0, #120]\n"
+"   stp     d12, d13, [x0, #136]\n"
+"   stp     d14, d15, [x0, #152]\n"
+"   mov     w0, #0\n"
+"   ret\n"
+"   .size   qemu_co_setjmp, .-qemu_co_setjmp\n"
+"\n"
+"   .global qemu_co_longjmp\n"
+"   .hidden qemu_co_longjmp\n"
+"   .type   qemu_co_longjmp, %function\n"
+"qemu_co_longjmp:\n"
+"   hint    #34\n"                 /* bti c */
+"   ldp     x19, x20, [x0, #0]\n"
+"   ldp     x21, x22, [x0, #16]\n"
+"   ldp     x23, x24, [x0, #32]\n"
+"   ldp     x25, x26, [x0, #48]\n"
+"   ldp     x27, x28, [x0, #64]\n"
+"   ldp     x29, x30, [x0, #80]\n"
+"   ldr     x2, [x0, #96]\n"
+"   mov     sp, x2\n"
+"   ldp     d8,  d9,  [x0, #104]\n"
+"   ldp     d10, d11, [x0, #120]\n"
+"   ldp     d12, d13, [x0, #136]\n"
+"   ldp     d14, d15, [x0, #152]\n"
+"   cmp     w1, #0\n"
+"   csinc   w0, w1, wzr, ne\n"     /* return val ? val : 1 */
+"   ret\n"
+"   .size   qemu_co_longjmp, .-qemu_co_longjmp\n"
+);
+
+#define CO_SETJMP(env)        qemu_co_setjmp(env)
+#define CO_LONGJMP(env, val)  qemu_co_longjmp(env, val)
+#else
+typedef sigjmp_buf qemu_co_jmp_buf;
+#define CO_SETJMP(env)        sigsetjmp(env, 0)
+#define CO_LONGJMP(env, val)  siglongjmp(env, val)
+#endif
+
 typedef struct {
     Coroutine base;
     void *stack;
@@ -51,7 +130,7 @@ typedef struct {
     void *unsafe_stack;
     size_t unsafe_stack_size;
 #endif
-    sigjmp_buf env;
+    qemu_co_jmp_buf env;
 
 #ifdef CONFIG_TSAN
     void *tsan_co_fiber;
@@ -160,13 +239,13 @@ static void coroutine_trampoline(int i0, int i1)
     co = &self->base;
 
     /* Initialize longjmp environment and switch back the caller */
-    if (!sigsetjmp(self->env, 0)) {
+    if (!CO_SETJMP(self->env)) {
         CoroutineUContext *leaderp = get_ptr_leader();
 
         start_switch_fiber_asan(&fake_stack_save,
                                 leaderp->stack, leaderp->stack_size);
         start_switch_fiber_tsan(&fake_stack_save, self, true); /* true=caller */
-        siglongjmp(*(sigjmp_buf *)co->entry_arg, 1);
+        CO_LONGJMP(*(qemu_co_jmp_buf *)co->entry_arg, 1);
     }
 
     finish_switch_fiber(fake_stack_save);
@@ -181,7 +260,7 @@ Coroutine *qemu_coroutine_new(void)
 {
     CoroutineUContext *co;
     ucontext_t old_uc, uc;
-    sigjmp_buf old_env;
+    qemu_co_jmp_buf old_env;
     union cc_arg arg = {0};
     void *fake_stack_save = NULL;
 
@@ -223,7 +302,7 @@ Coroutine *qemu_coroutine_new(void)
                 2, arg.i[0], arg.i[1]);
 
     /* swapcontext() in, siglongjmp() back out */
-    if (!sigsetjmp(old_env, 0)) {
+    if (!CO_SETJMP(old_env)) {
         start_switch_fiber_asan(&fake_stack_save, co->stack, co->stack_size);
         start_switch_fiber_tsan(&fake_stack_save,
                                 co, false); /* false=not caller */
@@ -274,7 +353,7 @@ static void coroutine_fn terminate_asan(void *opaque)
     set_current(opaque);
     start_switch_fiber_asan(NULL, to->stack, to->stack_size);
     G_STATIC_ASSERT(!IS_ENABLED(CONFIG_TSAN));
-    siglongjmp(to->env, COROUTINE_ENTER);
+    CO_LONGJMP(to->env, COROUTINE_ENTER);
 }
 #endif
 
@@ -318,7 +397,7 @@ qemu_coroutine_switch(Coroutine *from_, Coroutine *to_,
 
     set_current(to_);
 
-    ret = sigsetjmp(from->env, 0);
+    ret = CO_SETJMP(from->env);
     if (ret == 0) {
         start_switch_fiber_asan(IS_ENABLED(CONFIG_COROUTINE_POOL) ||
                                 action != COROUTINE_TERMINATE ?
@@ -326,7 +405,7 @@ qemu_coroutine_switch(Coroutine *from_, Coroutine *to_,
                                 to->stack, to->stack_size);
         start_switch_fiber_tsan(&fake_stack_save,
                                 to, false); /* false=not caller */
-        siglongjmp(to->env, action);
+        CO_LONGJMP(to->env, action);
     }
 
     finish_switch_fiber(fake_stack_save);
