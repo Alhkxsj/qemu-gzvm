@@ -1,30 +1,6 @@
-/*
- * QEMU System Emulator
- *
- * Copyright (c) 2003-2008 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "qapi/qapi-commands-ui.h"
 #include "ui/console.h"
 #include "keymaps.h"
 #include "ui/input.h"
@@ -34,7 +10,6 @@ struct QEMUPutMouseEntry {
     void *qemu_put_mouse_event_opaque;
     int qemu_put_mouse_event_absolute;
 
-    /* new input core */
     QemuInputHandler h;
     QemuInputHandlerState *s;
     int axis[INPUT_AXIS__MAX];
@@ -56,49 +31,8 @@ struct QEMUPutLEDEntry {
 static QTAILQ_HEAD(, QEMUPutLEDEntry) led_handlers =
     QTAILQ_HEAD_INITIALIZER(led_handlers);
 
-int index_from_key(const char *key, size_t key_length)
-{
-    int i;
-
-    for (i = 0; i < Q_KEY_CODE__MAX; i++) {
-        if (!strncmp(key, QKeyCode_str(i), key_length) &&
-            !QKeyCode_str(i)[key_length]) {
-            break;
-        }
-    }
-
-    /* Return Q_KEY_CODE__MAX if the key is invalid */
-    return i;
-}
-
-void qmp_send_key(KeyValueList *keys, bool has_hold_time, int64_t hold_time,
-                  Error **errp)
-{
-    KeyValueList *p;
-    unsigned int *up = NULL;
-    int count = 0;
-
-    if (!has_hold_time) {
-        hold_time = 0; /* use default */
-    }
-
-    for (p = keys; p != NULL; p = p->next) {
-        up = g_realloc(up, sizeof(*up) * (count+1));
-        up[count] = qemu_input_key_value_to_linux(p->value);
-        qemu_input_event_send_key_linux(NULL, up[count], true);
-        qemu_input_event_send_key_delay(hold_time);
-        count++;
-    }
-    while (count) {
-        count--;
-        qemu_input_event_send_key_linux(NULL, up[count], false);
-        qemu_input_event_send_key_delay(hold_time);
-    }
-    g_free(up);
-}
-
 static void legacy_mouse_event(DeviceState *dev, QemuConsole *src,
-                               QemuInputEvent *evt)
+                               InputEvent *evt)
 {
     static const int bmap[INPUT_BUTTON__MAX] = {
         [INPUT_BUTTON_LEFT]   = MOUSE_EVENT_LBUTTON,
@@ -106,36 +40,39 @@ static void legacy_mouse_event(DeviceState *dev, QemuConsole *src,
         [INPUT_BUTTON_RIGHT]  = MOUSE_EVENT_RBUTTON,
     };
     QEMUPutMouseEntry *s = (QEMUPutMouseEntry *)dev;
+    InputBtnEvent *btn;
+    InputMoveEvent *move;
 
     switch (evt->type) {
     case INPUT_EVENT_KIND_BTN:
-        if (evt->btn.down) {
-            s->buttons |= bmap[evt->btn.button];
+        btn = evt->u.btn.data;
+        if (btn->down) {
+            s->buttons |= bmap[btn->button];
         } else {
-            s->buttons &= ~bmap[evt->btn.button];
+            s->buttons &= ~bmap[btn->button];
         }
-        if (evt->btn.down && evt->btn.button == INPUT_BUTTON_WHEEL_UP) {
+        if (btn->down && btn->button == INPUT_BUTTON_WHEEL_UP) {
             s->qemu_put_mouse_event(s->qemu_put_mouse_event_opaque,
                                     s->axis[INPUT_AXIS_X],
                                     s->axis[INPUT_AXIS_Y],
                                     -1,
                                     s->buttons);
         }
-        if (evt->btn.down && evt->btn.button == INPUT_BUTTON_WHEEL_DOWN) {
+        if (btn->down && btn->button == INPUT_BUTTON_WHEEL_DOWN) {
             s->qemu_put_mouse_event(s->qemu_put_mouse_event_opaque,
                                     s->axis[INPUT_AXIS_X],
                                     s->axis[INPUT_AXIS_Y],
                                     1,
                                     s->buttons);
         }
-        if (evt->btn.down && evt->btn.button == INPUT_BUTTON_WHEEL_RIGHT) {
+        if (btn->down && btn->button == INPUT_BUTTON_WHEEL_RIGHT) {
             s->qemu_put_mouse_event(s->qemu_put_mouse_event_opaque,
                                     s->axis[INPUT_AXIS_X],
                                     s->axis[INPUT_AXIS_Y],
                                     -2,
                                     s->buttons);
         }
-        if (evt->btn.down && evt->btn.button == INPUT_BUTTON_WHEEL_LEFT) {
+        if (btn->down && btn->button == INPUT_BUTTON_WHEEL_LEFT) {
             s->qemu_put_mouse_event(s->qemu_put_mouse_event_opaque,
                                     s->axis[INPUT_AXIS_X],
                                     s->axis[INPUT_AXIS_Y],
@@ -144,10 +81,12 @@ static void legacy_mouse_event(DeviceState *dev, QemuConsole *src,
         }
         break;
     case INPUT_EVENT_KIND_ABS:
-        s->axis[evt->abs.axis] = evt->abs.value;
+        move = evt->u.abs.data;
+        s->axis[move->axis] = move->value;
         break;
     case INPUT_EVENT_KIND_REL:
-        s->axis[evt->rel.axis] += evt->rel.value;
+        move = evt->u.rel.data;
+        s->axis[move->axis] += move->value;
         break;
     default:
         break;

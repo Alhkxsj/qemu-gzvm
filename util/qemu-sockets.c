@@ -1,20 +1,3 @@
-/*
- *  inet and unix socket functions for qemu
- *
- *  (c) 2008 Gerd Hoffmann <kraxel@redhat.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; under version 2 of the License.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- * Contributions after 2012-01-13 are licensed under the terms of the
- * GNU GPL, version 2 or (at your option) any later version.
- */
 #include "qemu/osdep.h"
 
 #ifdef CONFIG_AF_VSOCK
@@ -30,7 +13,6 @@
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/qobject-output-visitor.h"
 #include "qemu/cutils.h"
-#include "qemu/option.h"
 #include "trace.h"
 
 #ifndef AI_ADDRCONFIG
@@ -43,14 +25,6 @@
 
 #ifndef AI_NUMERICSERV
 # define AI_NUMERICSERV 0
-#endif
-
-/*
- * On macOS TCP_KEEPIDLE is available under a different name, TCP_KEEPALIVE.
- * https://github.com/apple/darwin-xnu/blob/xnu-4570.1.46/bsd/man/man4/tcp.4#L172
- */
-#if defined(TCP_KEEPALIVE) && !defined(TCP_KEEPIDLE)
-# define TCP_KEEPIDLE TCP_KEEPALIVE
 #endif
 
 
@@ -109,29 +83,6 @@ bool fd_is_socket(int fd)
 }
 
 
-/*
- * Matrix we're trying to apply
- *
- *  ipv4  ipv6   family
- *   -     -       PF_UNSPEC
- *   -     f       PF_INET
- *   -     t       PF_INET6
- *   f     -       PF_INET6
- *   f     f       <error>
- *   f     t       PF_INET6
- *   t     -       PF_INET
- *   t     f       PF_INET
- *   t     t       PF_INET6/PF_UNSPEC
- *
- * NB, this matrix is only about getting the necessary results
- * from getaddrinfo(). Some of the cases require further work
- * after reading results from getaddrinfo in order to fully
- * apply the logic the end user wants.
- *
- * In the first and last cases, we must set IPV6_V6ONLY=0
- * when binding, to allow a single listener to potentially
- * accept both IPv4+6 addresses.
- */
 int inet_ai_family_from_address(InetSocketAddress *addr,
                                 Error **errp)
 {
@@ -141,16 +92,6 @@ int inet_ai_family_from_address(InetSocketAddress *addr,
         return PF_UNSPEC;
     }
     if ((addr->has_ipv6 && addr->ipv6) && (addr->has_ipv4 && addr->ipv4)) {
-        /*
-         * Some backends can only do a single listener. In that case
-         * we want empty hostname to resolve to "::" and then use the
-         * flag IPV6_V6ONLY==0 to get both protocols on 1 socket. This
-         * doesn't work for addresses other than "", so they're just
-         * inevitably broken until multiple listeners can be used,
-         * and thus we honour getaddrinfo automatic protocol detection
-         * Once all backends do multi-listener, remove the PF_INET6
-         * branch entirely.
-         */
         if (!addr->host || g_str_equal(addr->host, "")) {
             return PF_INET6;
         } else {
@@ -181,10 +122,6 @@ static int try_bind(int socket, InetSocketAddress *saddr, struct addrinfo *e)
 #ifndef IPV6_V6ONLY
     return bind(socket, e->ai_addr, e->ai_addrlen);
 #else
-    /*
-     * Deals with first & last cases in matrix in comment
-     * for inet_ai_family_from_address().
-     */
     int v6only =
         ((!saddr->has_ipv4 && !saddr->has_ipv6) ||
          (saddr->has_ipv4 && saddr->ipv4 &&
@@ -202,68 +139,12 @@ static int try_bind(int socket, InetSocketAddress *saddr, struct addrinfo *e)
         return 0;
     }
 
-    /* If we got EADDRINUSE from an IPv6 bind & v6only is unset,
-     * it could be that the IPv4 port is already claimed, so retry
-     * with v6only set
-     */
     if (e->ai_family == PF_INET6 && errno == EADDRINUSE && !v6only) {
         v6only = 1;
         goto rebind;
     }
     return stat;
 #endif
-}
-
-static int inet_set_sockopts(int sock, InetSocketAddress *saddr, Error **errp)
-{
-    if (saddr->keep_alive) {
-        int keep_alive = 1;
-        int ret = setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE,
-                             &keep_alive, sizeof(keep_alive));
-
-        if (ret < 0) {
-            error_setg_errno(errp, errno,
-                             "Unable to set keep-alive option on socket");
-            return -1;
-        }
-#ifdef HAVE_TCP_KEEPCNT
-        if (saddr->has_keep_alive_count && saddr->keep_alive_count) {
-            int keep_count = saddr->keep_alive_count;
-            ret = setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keep_count,
-                             sizeof(keep_count));
-            if (ret < 0) {
-                error_setg_errno(errp, errno,
-                                 "Unable to set TCP keep-alive count option on socket");
-                return -1;
-            }
-        }
-#endif
-#ifdef HAVE_TCP_KEEPIDLE
-        if (saddr->has_keep_alive_idle && saddr->keep_alive_idle) {
-            int keep_idle = saddr->keep_alive_idle;
-            ret = setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &keep_idle,
-                             sizeof(keep_idle));
-            if (ret < 0) {
-                error_setg_errno(errp, errno,
-                                 "Unable to set TCP keep-alive idle option on socket");
-                return -1;
-            }
-        }
-#endif
-#ifdef HAVE_TCP_KEEPINTVL
-        if (saddr->has_keep_alive_interval && saddr->keep_alive_interval) {
-            int keep_interval = saddr->keep_alive_interval;
-            ret = setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &keep_interval,
-                             sizeof(keep_interval));
-            if (ret < 0) {
-                error_setg_errno(errp, errno,
-                                 "Unable to set TCP keep-alive interval option on socket");
-                return -1;
-            }
-        }
-#endif
-    }
-    return 0;
 }
 
 static int inet_listen_saddr(InetSocketAddress *saddr,
@@ -280,6 +161,12 @@ static int inet_listen_saddr(InetSocketAddress *saddr,
     int slisten = -1;
     int saved_errno = 0;
     bool socket_created = false;
+
+    if (saddr->keep_alive) {
+        error_setg(errp, "keep-alive option is not supported for passive "
+                   "sockets");
+        return -1;
+    }
 
     memset(&ai,0, sizeof(ai));
     ai.ai_flags = AI_PASSIVE;
@@ -302,7 +189,6 @@ static int inet_listen_saddr(InetSocketAddress *saddr,
         port[0] = '\0';
     }
 
-    /* lookup */
     if (port_offset) {
         uint64_t baseport;
         if (strlen(port) == 0) {
@@ -328,7 +214,6 @@ static int inet_listen_saddr(InetSocketAddress *saddr,
         return -1;
     }
 
-    /* create socket + bind/listen */
     for (e = res; e != NULL; e = e->ai_next) {
 #ifdef HAVE_IPPROTO_MPTCP
         if (saddr->has_mptcp && saddr->mptcp) {
@@ -342,64 +227,44 @@ static int inet_listen_saddr(InetSocketAddress *saddr,
         port_min = inet_getport(e);
         port_max = saddr->has_to ? saddr->to + port_offset : port_min;
         for (p = port_min; p <= port_max; p++) {
-            if (slisten >= 0) {
-                /*
-                 * We have a socket we tried with the previous port. It cannot
-                 * be rebound, we need to close it and create a new one.
-                 */
-                close(slisten);
-                slisten = -1;
-            }
             inet_setport(e, p);
 
             slisten = create_fast_reuse_socket(e);
             if (slisten < 0) {
-                /*
-                 * First time we expect we might fail to create the socket
-                 * eg if 'e' has AF_INET6 but ipv6 kmod is not loaded.
-                 * Later iterations should always succeed if first iteration
-                 * worked though, so treat that as fatal.
-                 */
                 if (p == port_min) {
                     continue;
                 } else {
                     error_setg_errno(errp, errno,
                                      "Failed to recreate failed listening socket");
-                    goto fail;
+                    goto listen_failed;
                 }
             }
             socket_created = true;
 
             rc = try_bind(slisten, saddr, e);
             if (rc < 0) {
-                if (errno == EADDRINUSE) {
-                    /* This port is already used, try the next one */
-                    continue;
+                if (errno != EADDRINUSE) {
+                    error_setg_errno(errp, errno, "Failed to bind socket");
+                    goto listen_failed;
                 }
-                error_setg_errno(errp, errno, "Failed to bind socket");
-                goto fail;
-            }
-            if (listen(slisten, num)) {
-                if (errno == EADDRINUSE) {
-                    /* This port is already used, try the next one */
-                    continue;
+            } else {
+                if (!listen(slisten, num)) {
+                    goto listen_ok;
                 }
-                error_setg_errno(errp, errno, "Failed to listen on socket");
-                goto fail;
+                if (errno != EADDRINUSE) {
+                    error_setg_errno(errp, errno, "Failed to listen on socket");
+                    goto listen_failed;
+                }
             }
-            /* We have a listening socket */
-            if (inet_set_sockopts(slisten, saddr, errp) < 0) {
-                goto fail;
-            }
-            freeaddrinfo(res);
-            return slisten;
+            close(slisten);
+            slisten = -1;
         }
     }
     error_setg_errno(errp, errno,
                      socket_created ?
                      "Failed to find an available port" :
                      "Failed to create a socket");
-fail:
+listen_failed:
     saved_errno = errno;
     if (slisten >= 0) {
         close(slisten);
@@ -407,6 +272,10 @@ fail:
     freeaddrinfo(res);
     errno = saved_errno;
     return -1;
+
+listen_ok:
+    freeaddrinfo(res);
+    return slisten;
 }
 
 #ifdef _WIN32
@@ -429,7 +298,6 @@ static int inet_connect_addr(const InetSocketAddress *saddr,
         return -1;
     }
 
-    /* connect to peer */
     do {
         rc = 0;
         if (connect(sock, addr->ai_addr, addr->ai_addrlen) < 0) {
@@ -472,14 +340,8 @@ static struct addrinfo *inet_parse_connect_saddr(InetSocketAddress *saddr,
         return NULL;
     }
 
-    /* lookup */
     rc = getaddrinfo(saddr->host, saddr->port, &ai, &res);
 
-    /* At least FreeBSD and OS-X 10.6 declare AI_V4MAPPED but
-     * then don't implement it in their getaddrinfo(). Detect
-     * this and retry without the flag since that's preferable
-     * to a fatal error
-     */
     if (rc == EAI_BADFLAGS &&
         (ai.ai_flags & AI_V4MAPPED)) {
         qatomic_set(&useV4Mapped, 0);
@@ -494,14 +356,6 @@ static struct addrinfo *inet_parse_connect_saddr(InetSocketAddress *saddr,
     return res;
 }
 
-/**
- * Create a socket and connect it to an address.
- *
- * @saddr: Inet socket address specification
- * @errp: set on error
- *
- * Returns: -1 on error, file descriptor on success.
- */
 int inet_connect_saddr(InetSocketAddress *saddr, Error **errp)
 {
     Error *local_err = NULL;
@@ -536,9 +390,16 @@ int inet_connect_saddr(InetSocketAddress *saddr, Error **errp)
         return sock;
     }
 
-    if (inet_set_sockopts(sock, saddr, errp) < 0) {
-        close(sock);
-        return -1;
+    if (saddr->keep_alive) {
+        int val = 1;
+        int ret = setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE,
+                             &val, sizeof(val));
+
+        if (ret < 0) {
+            error_setg_errno(errp, errno, "Unable to set KEEPALIVE");
+            close(sock);
+            return -1;
+        }
     }
 
     return sock;
@@ -554,7 +415,6 @@ static int inet_dgram_saddr(InetSocketAddress *sraddr,
     const char *port;
     int sock = -1, rc;
 
-    /* lookup peer addr */
     memset(&ai,0, sizeof(ai));
     ai.ai_flags = AI_CANONNAME | AI_V4MAPPED | AI_ADDRCONFIG;
     ai.ai_socktype = SOCK_DGRAM;
@@ -579,7 +439,6 @@ static int inet_dgram_saddr(InetSocketAddress *sraddr,
         goto err;
     }
 
-    /* lookup local addr */
     memset(&ai,0, sizeof(ai));
     ai.ai_flags = AI_PASSIVE;
     ai.ai_family = peer->ai_family;
@@ -605,7 +464,6 @@ static int inet_dgram_saddr(InetSocketAddress *sraddr,
         goto err;
     }
 
-    /* create socket */
     sock = qemu_socket(peer->ai_family, peer->ai_socktype, peer->ai_protocol);
     if (sock < 0) {
         error_setg_errno(errp, errno, "Failed to create socket family %d",
@@ -614,13 +472,11 @@ static int inet_dgram_saddr(InetSocketAddress *sraddr,
     }
     socket_set_fast_reuse(sock);
 
-    /* bind socket */
     if (bind(sock, local->ai_addr, local->ai_addrlen) < 0) {
         error_setg_errno(errp, errno, "Failed to bind socket");
         goto err;
     }
 
-    /* connect to peer */
     if (connect(sock,peer->ai_addr,peer->ai_addrlen) < 0) {
         error_setg_errno(errp, errno, "Failed to connect to '%s:%s'",
                          addr, port);
@@ -645,140 +501,109 @@ err:
     return -1;
 }
 
-static QemuOptsList inet_opts = {
-    .name = "InetSocketAddress",
-    .head = QTAILQ_HEAD_INITIALIZER(inet_opts.head),
-    .implied_opt_name = "addr",
-    .desc = {
-        {
-            .name = "addr",
-            .type = QEMU_OPT_STRING,
-        },
-        {
-            .name = "numeric",
-            .type = QEMU_OPT_BOOL,
-        },
-        {
-            .name = "to",
-            .type = QEMU_OPT_NUMBER,
-        },
-        {
-            .name = "ipv4",
-            .type = QEMU_OPT_BOOL,
-        },
-        {
-            .name = "ipv6",
-            .type = QEMU_OPT_BOOL,
-        },
-        {
-            .name = "keep-alive",
-            .type = QEMU_OPT_BOOL,
-        },
-#ifdef HAVE_TCP_KEEPCNT
-        {
-            .name = "keep-alive-count",
-            .type = QEMU_OPT_NUMBER,
-        },
-#endif
-#ifdef HAVE_TCP_KEEPIDLE
-        {
-            .name = "keep-alive-idle",
-            .type = QEMU_OPT_NUMBER,
-        },
-#endif
-#ifdef HAVE_TCP_KEEPINTVL
-        {
-            .name = "keep-alive-interval",
-            .type = QEMU_OPT_NUMBER,
-        },
-#endif
-#ifdef HAVE_IPPROTO_MPTCP
-        {
-            .name = "mptcp",
-            .type = QEMU_OPT_BOOL,
-        },
-#endif
-        { /* end of list */ }
-    },
-};
+static int inet_parse_flag(const char *flagname, const char *optstr, bool *val,
+                           Error **errp)
+{
+    char *end;
+    size_t len;
+
+    end = strstr(optstr, ",");
+    if (end) {
+        if (end[1] == ',') { /* Reject 'ipv6=on,,foo' */
+            error_setg(errp, "error parsing '%s' flag '%s'", flagname, optstr);
+            return -1;
+        }
+        len = end - optstr;
+    } else {
+        len = strlen(optstr);
+    }
+    if (len == 0 || (len == 3 && strncmp(optstr, "=on", len) == 0)) {
+        *val = true;
+    } else if (len == 4 && strncmp(optstr, "=off", len) == 0) {
+        *val = false;
+    } else {
+        error_setg(errp, "error parsing '%s' flag '%s'", flagname, optstr);
+        return -1;
+    }
+    return 0;
+}
 
 int inet_parse(InetSocketAddress *addr, const char *str, Error **errp)
 {
-    QemuOpts *opts = qemu_opts_parse(&inet_opts, str, true, errp);
-    if (!opts) {
-        return -1;
-    }
+    const char *optstr, *h;
+    char host[65];
+    char port[33];
+    int to;
+    int pos;
+    char *begin;
+
     memset(addr, 0, sizeof(*addr));
 
-    /* parse address */
-    const char *addr_str = qemu_opt_get(opts, "addr");
-    if (!addr_str) {
-        error_setg(errp, "error parsing address ''");
-        return -1;
-    }
-    if (str[0] == '[') {
-        /* IPv6 addr */
-        const char *ip_end = strstr(addr_str, "]:");
-        if (!ip_end || ip_end - addr_str < 2 || strlen(ip_end) < 3) {
-            error_setg(errp, "error parsing IPv6 address '%s'", addr_str);
+    if (str[0] == ':') {
+        host[0] = '\0';
+        if (sscanf(str, ":%32[^,]%n", port, &pos) != 1) {
+            error_setg(errp, "error parsing port in address '%s'", str);
             return -1;
         }
-        addr->host = g_strndup(addr_str + 1, ip_end - addr_str - 1);
-        addr->port = g_strdup(ip_end + 2);
+    } else if (str[0] == '[') {
+        if (sscanf(str, "[%64[^]]]:%32[^,]%n", host, port, &pos) != 2) {
+            error_setg(errp, "error parsing IPv6 address '%s'", str);
+            return -1;
+        }
     } else {
-        /* no host, hostname or IPv4 addr */
-        const char *port = strchr(addr_str, ':');
-        if (!port || strlen(port) < 2) {
-            error_setg(errp, "error parsing address '%s'", addr_str);
+        if (sscanf(str, "%64[^:]:%32[^,]%n", host, port, &pos) != 2) {
+            error_setg(errp, "error parsing address '%s'", str);
             return -1;
         }
-        addr->host = g_strndup(addr_str, port - addr_str);
-        addr->port = g_strdup(port + 1);
     }
 
-    /* parse options */
-    if (qemu_opt_find(opts, "numeric")) {
-        addr->has_numeric = true,
-        addr->numeric = qemu_opt_get_bool(opts, "numeric", false);
-    }
-    if (qemu_opt_find(opts, "to")) {
+    addr->host = g_strdup(host);
+    addr->port = g_strdup(port);
+
+    optstr = str + pos;
+    h = strstr(optstr, ",to=");
+    if (h) {
+        h += 4;
+        if (sscanf(h, "%d%n", &to, &pos) != 1 ||
+            (h[pos] != '\0' && h[pos] != ',')) {
+            error_setg(errp, "error parsing to= argument");
+            return -1;
+        }
         addr->has_to = true;
-        addr->to = qemu_opt_get_number(opts, "to", 0);
+        addr->to = to;
     }
-    if (qemu_opt_find(opts, "ipv4")) {
+    begin = strstr(optstr, ",ipv4");
+    if (begin) {
+        if (inet_parse_flag("ipv4", begin + 5, &addr->ipv4, errp) < 0) {
+            return -1;
+        }
         addr->has_ipv4 = true;
-        addr->ipv4 = qemu_opt_get_bool(opts, "ipv4", false);
     }
-    if (qemu_opt_find(opts, "ipv6")) {
+    begin = strstr(optstr, ",ipv6");
+    if (begin) {
+        if (inet_parse_flag("ipv6", begin + 5, &addr->ipv6, errp) < 0) {
+            return -1;
+        }
         addr->has_ipv6 = true;
-        addr->ipv6 = qemu_opt_get_bool(opts, "ipv6", false);
     }
-    if (qemu_opt_find(opts, "keep-alive")) {
+    begin = strstr(optstr, ",keep-alive");
+    if (begin) {
+        if (inet_parse_flag("keep-alive", begin + strlen(",keep-alive"),
+                            &addr->keep_alive, errp) < 0)
+        {
+            return -1;
+        }
         addr->has_keep_alive = true;
-        addr->keep_alive = qemu_opt_get_bool(opts, "keep-alive", false);
     }
-#ifdef HAVE_TCP_KEEPCNT
-    if (qemu_opt_find(opts, "keep-alive-count")) {
-        addr->has_keep_alive_count = true;
-        addr->keep_alive_count = qemu_opt_get_number(opts, "keep-alive-count", 0);
-    }
-#endif
-#ifdef HAVE_TCP_KEEPIDLE
-    if (qemu_opt_find(opts, "keep-alive-idle")) {
-        addr->has_keep_alive_idle = true;
-        addr->keep_alive_idle = qemu_opt_get_number(opts, "keep-alive-idle", 0);
-    }
-#endif
-#ifdef HAVE_TCP_KEEPINTVL
-    if (qemu_opt_find(opts, "keep-alive-interval")) {
-        addr->has_keep_alive_interval = true;
-        addr->keep_alive_interval = qemu_opt_get_number(opts, "keep-alive-interval", 0);
-    }
-#endif
 #ifdef HAVE_IPPROTO_MPTCP
-    if (qemu_opt_find(opts, "mptcp")) {
+    begin = strstr(optstr, ",mptcp");
+    if (begin) {
+        if (inet_parse_flag("mptcp", begin + strlen(",mptcp"),
+                            &addr->mptcp, errp) < 0)
+        {
+            return -1;
+        }
         addr->has_mptcp = true;
-        addr->mptcp = qemu_opt_get_bool(opts, "mptcp", 0);
     }
 #endif
     return 0;
@@ -824,7 +649,6 @@ static int vsock_connect_addr(const VsockSocketAddress *vaddr,
         return -1;
     }
 
-    /* connect to peer */
     do {
         rc = 0;
         if (connect(sock, (const struct sockaddr *)svm, sizeof(*svm)) < 0) {
@@ -986,13 +810,6 @@ static int unix_listen_saddr(UnixSocketAddress *saddr,
     }
 
     if (pathbuf != NULL) {
-        /*
-         * This dummy fd usage silences the mktemp() insecure warning.
-         * Using mkstemp() doesn't make things more secure here
-         * though.  bind() complains about existing files, so we have
-         * to unlink first and thus re-open the race window.  The
-         * worst case possible is bind() failing, i.e. a DoS attack.
-         */
         fd = mkstemp(pathbuf);
         if (fd < 0) {
             error_setg_errno(errp, errno,
@@ -1082,7 +899,6 @@ static int unix_connect_saddr(UnixSocketAddress *saddr, Error **errp)
     } else {
         memcpy(un.sun_path, saddr->path, pathlen);
     }
-    /* connect to peer */
     do {
         rc = 0;
         if (connect(sock, (struct sockaddr *) &un, addrlen) < 0) {
@@ -1103,7 +919,6 @@ static int unix_connect_saddr(UnixSocketAddress *saddr, Error **errp)
     return -1;
 }
 
-/* compatibility wrapper */
 int unix_listen(const char *str, Error **errp)
 {
     UnixSocketAddress *saddr;
@@ -1284,16 +1099,6 @@ int socket_listen(SocketAddress *addr, int num, Error **errp)
             return -1;
         }
 
-        /*
-         * If the socket is not yet in the listen state, then transition it to
-         * the listen state now.
-         *
-         * If it's already listening then this updates the backlog value as
-         * requested.
-         *
-         * If this socket cannot listen because it's already in another state
-         * (e.g. unbound or connected) then we'll catch the error here.
-         */
         if (listen(fd, num) != 0) {
             error_setg_errno(errp, errno, "Failed to listen on fd socket");
             close(fd);
@@ -1336,10 +1141,6 @@ int socket_dgram(SocketAddress *remote, SocketAddress *local, Error **errp)
 {
     int fd;
 
-    /*
-     * TODO SOCKET_ADDRESS_TYPE_FD when fd is AF_INET or AF_INET6
-     * (although other address families can do SOCK_DGRAM, too)
-     */
     switch (remote->type) {
     case SOCKET_ADDRESS_TYPE_INET:
         fd = inet_dgram_saddr(&remote->u.inet,
@@ -1403,7 +1204,6 @@ socket_sockaddr_to_address_unix(struct sockaddr_storage *sa,
     salen -= offsetof(struct sockaddr_un, sun_path);
 #ifdef CONFIG_LINUX
     if (salen > 0 && !su->sun_path[0]) {
-        /* Linux abstract socket */
         addr->u.q_unix.path = g_strndup(su->sun_path + 1, salen - 1);
         addr->u.q_unix.has_abstract = true;
         addr->u.q_unix.abstract = true;

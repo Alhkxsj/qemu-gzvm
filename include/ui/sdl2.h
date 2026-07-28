@@ -1,25 +1,16 @@
 #ifndef SDL2_H
 #define SDL2_H
 
-/* Avoid compiler warning because macro is redefined in SDL_syswm.h. */
 #undef WIN32_LEAN_AND_MEAN
 
 #include <SDL.h>
 
-/* with Alpine / muslc SDL headers pull in directfb headers
- * which in turn trigger warning about redundant decls for
- * direct_waitqueue_deinit.
- */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wredundant-decls"
 
 #include <SDL_syswm.h>
 
 #pragma GCC diagnostic pop
-
-#ifdef CONFIG_SDL_IMAGE
-# include <SDL_image.h>
-#endif
 
 #include "ui/kbd-state.h"
 #ifdef CONFIG_OPENGL
@@ -40,12 +31,11 @@ struct sdl2_console {
     int hidden;
     int opengl;
     int updates;
-    int idle_counter;
     int ignore_hotkeys;
     bool gui_keysym;
+    bool render_pending;
     SDL_GLContext winctx;
     QKbdState *kbd;
-    bool has_dmabuf;
 #ifdef CONFIG_OPENGL
     QemuGLShader *gls;
     egl_fb guest_fb;
@@ -97,11 +87,5 @@ void sdl2_gl_scanout_texture(DisplayChangeListener *dcl,
                              void *d3d_tex2d);
 void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
                            uint32_t x, uint32_t y, uint32_t w, uint32_t h);
-void sdl2_gl_scanout_dmabuf(DisplayChangeListener *dcl,
-                            QemuDmaBuf *dmabuf);
-void sdl2_gl_release_dmabuf(DisplayChangeListener *dcl,
-                            QemuDmaBuf *dmabuf);
-bool sdl2_gl_has_dmabuf(DisplayChangeListener *dcl);
-void sdl2_gl_console_init(struct sdl2_console *scon);
 
 #endif /* SDL2_H */

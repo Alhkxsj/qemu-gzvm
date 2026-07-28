@@ -17,58 +17,37 @@ if have_system or have_tools or have_ga
   util_ss.add(files(
     'qmp-dispatch.c',
     'qmp-event.c',
-    'qmp-registry.c',
   ))
 endif
 
 qapi_all_modules = [
-  'authz',
   'block',
   'block-core',
-  'block-export',
   'char',
   'common',
   'compat',
   'control',
   'crypto',
-  'cxl',
-  'dump',
-  'ebpf',
   'error',
-  'introspect',
   'job',
   'machine-common',
   'machine',
-  'machine-s390x',
-  'migration',
+  'machine-target',
   'misc',
+  'misc-target',
   'net',
   'pragma',
   'qom',
-  'replay',
   'run-state',
   'sockets',
-  'stats',
   'trace',
-  'transaction',
-  'vfio',
   'virtio',
   'yank',
 ]
 if have_system
   qapi_all_modules += [
-    'accelerator',
-    'acpi',
-    'acpi-hest',
     'audio',
-    'cryptodev',
     'qdev',
-    'pci',
-    'rocker',
-    'misc-arm',
-    'misc-i386',
-    'tpm',
-    'uefi',
   ]
 endif
 if have_system or have_tools
@@ -78,21 +57,20 @@ if have_system or have_tools
 endif
 
 qapi_nonmodule_outputs = [
-  'qapi-introspect.c', 'qapi-introspect.h',
   'qapi-types.c', 'qapi-types.h',
   'qapi-visit.h', 'qapi-visit.c',
   'qapi-commands.h', 'qapi-commands.c',
-  'qapi-init-commands.h', 'qapi-init-commands.c',
   'qapi-events.h', 'qapi-events.c',
   'qapi-emit-events.c', 'qapi-emit-events.h',
 ]
 
-qapi_outputs = qapi_nonmodule_outputs + [
+qapi_util_outputs = [
   'qapi-builtin-types.c', 'qapi-builtin-visit.c',
   'qapi-builtin-types.h', 'qapi-builtin-visit.h',
 ]
 
 qapi_inputs = []
+qapi_specific_outputs = []
 foreach module : qapi_all_modules
   qapi_inputs += [ files(module + '.json') ]
   qapi_module_outputs = [
@@ -110,17 +88,22 @@ foreach module : qapi_all_modules
       'qapi-commands-@0@.trace-events'.format(module),
     ]
   endif
-  qapi_outputs += qapi_module_outputs
+  if module.endswith('-target')
+    qapi_specific_outputs += qapi_module_outputs
+  else
+    qapi_util_outputs += qapi_module_outputs
+  endif
 endforeach
 
 qapi_files = custom_target('shared QAPI source files',
-  output: qapi_outputs,
+  output: qapi_util_outputs + qapi_specific_outputs + qapi_nonmodule_outputs,
   input: [ files('qapi-schema.json') ],
   command: [ qapi_gen, '-o', 'qapi', '-b', '@INPUT0@' ],
   depend_files: [ qapi_inputs, qapi_gen_depends ])
 
+
 i = 0
-foreach output : qapi_outputs
+foreach output : qapi_util_outputs
   if output.endswith('.h')
     genh += qapi_files[i]
   endif
@@ -128,5 +111,16 @@ foreach output : qapi_outputs
     qapi_trace_events += qapi_files[i]
   endif
   util_ss.add(qapi_files[i])
+  i = i + 1
+endforeach
+
+foreach output : qapi_specific_outputs + qapi_nonmodule_outputs
+  if output.endswith('.h')
+    genh += qapi_files[i]
+  endif
+  if output.endswith('.trace-events')
+    qapi_trace_events += qapi_files[i]
+  endif
+  specific_ss.add(when: 'CONFIG_SYSTEM_ONLY', if_true: qapi_files[i])
   i = i + 1
 endforeach

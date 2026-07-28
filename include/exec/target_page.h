@@ -1,23 +1,7 @@
-/*
- * Target page sizes and friends for non target files
- *
- * Copyright (c) 2017 Red Hat Inc
- *
- * Authors:
- *  David Alan Gilbert <dgilbert@redhat.com>
- *  Juan Quintela <quintela@redhat.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #ifndef EXEC_TARGET_PAGE_H
 #define EXEC_TARGET_PAGE_H
 
-/*
- * If compiling per-target, get the real values.
- * For generic code, reuse the mechanism for variable page size.
- */
 #ifdef COMPILING_PER_TARGET
 #include "cpu-param.h"
 #include "exec/target_long.h"
@@ -41,6 +25,7 @@ extern const TargetPageBits target_page;
 # endif
 # define TARGET_PAGE_SIZE    (-(int)TARGET_PAGE_MASK)
 #else
+# define TARGET_PAGE_BITS_MIN TARGET_PAGE_BITS
 # define TARGET_PAGE_SIZE    (1 << TARGET_PAGE_BITS)
 # define TARGET_PAGE_MASK    ((TARGET_PAGE_TYPE)-1 << TARGET_PAGE_BITS)
 #endif
@@ -62,15 +47,7 @@ static inline int qemu_target_page_bits(void)
     return TARGET_PAGE_BITS;
 }
 
-/* Convert target pages to MiB (2**20). */
-static inline size_t qemu_target_pages_to_MiB(size_t pages)
-{
-    int page_bits = TARGET_PAGE_BITS;
-
-    /* So far, the largest (non-huge) page size is 64k, i.e. 16 bits. */
-    g_assert(page_bits < 20);
-
-    return pages >> (20 - page_bits);
-}
+int qemu_target_page_bits_min(void);
+size_t qemu_target_pages_to_MiB(size_t pages);
 
 #endif

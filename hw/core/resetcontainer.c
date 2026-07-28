@@ -1,21 +1,7 @@
-/*
- * Reset container
- *
- * Copyright (c) 2024 Linaro, Ltd
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
-/*
- * The "reset container" is an object which implements the Resettable
- * interface. It contains a list of arbitrary other objects which also
- * implement Resettable. Resetting the reset container resets all the
- * objects in it.
- */
 
 #include "qemu/osdep.h"
-#include "hw/core/resettable.h"
+#include "hw/resettable.h"
 #include "hw/core/resetcontainer.h"
 
 struct ResettableContainer {
@@ -52,7 +38,6 @@ static void resettable_container_child_foreach(Object *obj,
 
     for (unsigned int i = 0; i < len; i++) {
         cb(g_ptr_array_index(rc->children, i), opaque, type);
-        /* Detect callbacks trying to unregister themselves */
         assert(len == rc->children->len);
     }
 }
@@ -66,13 +51,9 @@ static void resettable_container_init(Object *obj)
 
 static void resettable_container_finalize(Object *obj)
 {
-    ResettableContainer *rc = RESETTABLE_CONTAINER(obj);
-
-    g_ptr_array_unref(rc->children);
 }
 
-static void resettable_container_class_init(ObjectClass *klass,
-                                            const void *data)
+static void resettable_container_class_init(ObjectClass *klass, void *data)
 {
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 

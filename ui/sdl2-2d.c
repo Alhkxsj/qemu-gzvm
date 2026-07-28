@@ -1,32 +1,20 @@
-/*
- * QEMU SDL display driver
- *
- * Copyright (c) 2003 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
-/* Ported SDL 1.2 code to 2.0 by Dave Airlie. */
 
 #include "qemu/osdep.h"
 #include "ui/console.h"
 #include "ui/input.h"
 #include "ui/sdl2.h"
+
+static void sdl2_2d_present(struct sdl2_console *scon, bool force)
+{
+    if (!scon->texture || (!force && !scon->render_pending)) {
+        return;
+    }
+
+    SDL_RenderClear(scon->real_renderer);
+    SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
+    SDL_RenderPresent(scon->real_renderer);
+    scon->render_pending = false;
+}
 
 void sdl2_2d_update(DisplayChangeListener *dcl,
                     int x, int y, int w, int h)
@@ -51,9 +39,7 @@ void sdl2_2d_update(DisplayChangeListener *dcl,
     SDL_UpdateTexture(scon->texture, &rect,
                       surface_data(surf) + surface_data_offset,
                       surface_stride(surf));
-    SDL_RenderClear(scon->real_renderer);
-    SDL_RenderCopy(scon->real_renderer, scon->texture, NULL, NULL);
-    SDL_RenderPresent(scon->real_renderer);
+    scon->render_pending = true;
 }
 
 void sdl2_2d_switch(DisplayChangeListener *dcl,
@@ -70,6 +56,7 @@ void sdl2_2d_switch(DisplayChangeListener *dcl,
     if (scon->texture) {
         SDL_DestroyTexture(scon->texture);
         scon->texture = NULL;
+        scon->render_pending = false;
     }
 
     if (surface_is_placeholder(new_surface) && qemu_console_get_index(dcl->con)) {
@@ -121,6 +108,9 @@ void sdl2_2d_switch(DisplayChangeListener *dcl,
                                       SDL_TEXTUREACCESS_STREAMING,
                                       surface_width(new_surface),
                                       surface_height(new_surface));
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    SDL_SetTextureScaleMode(scon->texture, SDL_ScaleModeNearest);
+#endif
     sdl2_2d_redraw(scon);
 }
 
@@ -129,8 +119,9 @@ void sdl2_2d_refresh(DisplayChangeListener *dcl)
     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
 
     assert(!scon->opengl);
-    qemu_console_hw_update(dcl->con);
     sdl2_poll_events(scon);
+    graphic_hw_update(dcl->con);
+    sdl2_2d_present(scon, false);
 }
 
 void sdl2_2d_redraw(struct sdl2_console *scon)
@@ -143,15 +134,12 @@ void sdl2_2d_redraw(struct sdl2_console *scon)
     sdl2_2d_update(&scon->dcl, 0, 0,
                    surface_width(scon->surface),
                    surface_height(scon->surface));
+    sdl2_2d_present(scon, true);
 }
 
 bool sdl2_2d_check_format(DisplayChangeListener *dcl,
                           pixman_format_code_t format)
 {
-    /*
-     * We let SDL convert for us a few more formats than,
-     * the native ones. These are the ones I have tested.
-     */
     return (format == PIXMAN_x8r8g8b8 ||
             format == PIXMAN_a8r8g8b8 ||
             format == PIXMAN_a8b8g8r8 ||

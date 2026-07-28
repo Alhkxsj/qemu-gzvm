@@ -1,12 +1,10 @@
 #ifndef SYSTEM_H
 #define SYSTEM_H
-/* Misc. things related to the system emulator.  */
 
 #include "qemu/timer.h"
 #include "qemu/notify.h"
 #include "qemu/uuid.h"
 
-/* vl.c */
 
 extern int only_migratable;
 extern const char *qemu_name;
@@ -15,7 +13,6 @@ extern bool qemu_uuid_set;
 
 const char *qemu_get_vm_name(void);
 
-/* Exit notifiers will run with BQL held. */
 void qemu_add_exit_notifier(Notifier *notify);
 void qemu_remove_exit_notifier(Notifier *notify);
 
@@ -29,19 +26,15 @@ void qemu_init_subsystems(void);
 extern int autostart;
 
 typedef enum {
-    VGA_NONE, VGA_STD, VGA_CIRRUS, VGA_VMWARE, VGA_XENFB, VGA_QXL,
-    VGA_TCX, VGA_CG3, VGA_DEVICE, VGA_VIRTIO,
-    VGA_TYPE_MAX,
+    VGA_NONE,
 } VGAInterfaceType;
-
-extern int vga_interface_type;
-extern bool vga_interface_created;
 
 extern int graphic_width;
 extern int graphic_height;
 extern int graphic_depth;
 extern int display_opengl;
 extern const char *keyboard_layout;
+extern int old_param;
 extern uint8_t *boot_splash_filedata;
 extern bool enable_cpu_pm;
 extern QEMUClockType rtc_clock;
@@ -69,12 +62,9 @@ extern int nb_option_roms;
 extern const char *prom_envs[MAX_PROM_ENVS];
 extern unsigned int nb_prom_envs;
 
-/* serial ports */
 
-/* Return the Chardev for serial port i, or NULL if none */
 Chardev *serial_hd(int i);
 
-/* parallel ports */
 
 #define MAX_PARALLEL_PORTS 3
 
@@ -97,7 +87,6 @@ void add_boot_device_lchs(DeviceState *dev, const char *suffix,
 void del_boot_device_lchs(DeviceState *dev, const char *suffix);
 char *get_boot_devices_lchs_list(size_t *size);
 
-/* handler to set the boot_device order for a specific type of MachineClass */
 typedef void QEMUBootSetHandler(void *opaque, const char *boot_order,
                                 Error **errp);
 void qemu_register_boot_set(QEMUBootSetHandler *func, void *opaque);
@@ -119,6 +108,5 @@ extern QemuOptsList qemu_netdev_opts;
 extern QemuOptsList qemu_nic_opts;
 extern QemuOptsList qemu_net_opts;
 extern QemuOptsList qemu_global_opts;
-extern QemuOptsList qemu_semihosting_config_opts;
 
 #endif

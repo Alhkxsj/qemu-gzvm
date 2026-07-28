@@ -1,21 +1,7 @@
-/*
- * QMP commands related to QOM
- *
- * Copyright IBM, Corp. 2011
- *
- * Authors:
- *  Anthony Liguori   <aliguori@us.ibm.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2.  See
- * the COPYING file in the top-level directory.
- *
- * Contributions after 2012-01-13 are licensed under the terms of the
- * GNU GPL, version 2 or (at your option) any later version.
- */
 
 #include "qemu/osdep.h"
 #include "block/qdict.h"
-#include "hw/core/qdev.h"
+#include "hw/qdev-core.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-qdev.h"
 #include "qapi/qapi-commands-qom.h"
@@ -28,11 +14,15 @@
 #include "qom/object_interfaces.h"
 #include "qom/qom-qobject.h"
 
-static Object *qom_resolve_path(const char *path, Error **errp)
+ObjectPropertyInfoList *qmp_qom_list(const char *path, Error **errp)
 {
+    Object *obj;
     bool ambiguous = false;
-    Object *obj = object_resolve_path(path, &ambiguous);
+    ObjectPropertyInfoList *props = NULL;
+    ObjectProperty *prop;
+    ObjectPropertyIterator iter;
 
+    obj = object_resolve_path(path, &ambiguous);
     if (obj == NULL) {
         if (ambiguous) {
             error_setg(errp, "Path '%s' is ambiguous", path);
@@ -40,19 +30,6 @@ static Object *qom_resolve_path(const char *path, Error **errp)
             error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
                       "Device '%s' not found", path);
         }
-    }
-    return obj;
-}
-
-ObjectPropertyInfoList *qmp_qom_list(const char *path, Error **errp)
-{
-    Object *obj;
-    ObjectPropertyInfoList *props = NULL;
-    ObjectProperty *prop;
-    ObjectPropertyIterator iter;
-
-    obj = qom_resolve_path(path, errp);
-    if (obj == NULL) {
         return NULL;
     }
 
@@ -67,59 +44,6 @@ ObjectPropertyInfoList *qmp_qom_list(const char *path, Error **errp)
     }
 
     return props;
-}
-
-static void qom_list_add_property_value(Object *obj, ObjectProperty *prop,
-                                        ObjectPropertyValueList **props)
-{
-    ObjectPropertyValue *item = g_new0(ObjectPropertyValue, 1);
-
-    QAPI_LIST_PREPEND(*props, item);
-
-    item->name = g_strdup(prop->name);
-    item->type = g_strdup(prop->type);
-    item->value = object_property_get_qobject(obj, prop->name, NULL);
-}
-
-static ObjectPropertyValueList *qom_get_property_value_list(const char *path,
-                                                            Error **errp)
-{
-    Object *obj;
-    ObjectProperty *prop;
-    ObjectPropertyIterator iter;
-    ObjectPropertyValueList *props = NULL;
-
-    obj = qom_resolve_path(path, errp);
-    if (obj == NULL) {
-        return NULL;
-    }
-
-    object_property_iter_init(&iter, obj);
-    while ((prop = object_property_iter_next(&iter))) {
-        qom_list_add_property_value(obj, prop, &props);
-    }
-
-    return props;
-}
-
-ObjectPropertiesValuesList *qmp_qom_list_get(strList *paths, Error **errp)
-{
-    ObjectPropertiesValuesList *head = NULL, **tail = &head;
-    strList *path;
-
-    for (path = paths; path; path = path->next) {
-        ObjectPropertiesValues *item = g_new0(ObjectPropertiesValues, 1);
-
-        QAPI_LIST_APPEND(tail, item);
-
-        item->properties = qom_get_property_value_list(path->value, errp);
-        if (!item->properties) {
-            qapi_free_ObjectPropertiesValuesList(head);
-            return NULL;
-        }
-    }
-
-    return head;
 }
 
 void qmp_qom_set(const char *path, const char *property, QObject *value,
@@ -209,7 +133,6 @@ ObjectPropertyInfoList *qmp_device_list_properties(const char *typename,
     while ((prop = object_property_iter_next(&iter))) {
         ObjectPropertyInfo *info;
 
-        /* Skip Object and DeviceState properties */
         if (strcmp(prop->name, "type") == 0 ||
             strcmp(prop->name, "realized") == 0 ||
             strcmp(prop->name, "hotpluggable") == 0 ||
@@ -218,9 +141,6 @@ ObjectPropertyInfoList *qmp_device_list_properties(const char *typename,
             continue;
         }
 
-        /* Skip legacy properties since they are just string versions of
-         * properties that we already list.
-         */
         if (strstart(prop->name, "legacy-", NULL)) {
             continue;
         }

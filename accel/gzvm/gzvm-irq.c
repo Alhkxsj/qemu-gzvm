@@ -2,7 +2,7 @@
 #include <sys/ioctl.h>
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "system/memory.h"
+#include "exec/memory.h"
 #include "qemu/event_notifier.h"
 #include "system/gzvm.h"
 #include "system/gzvm_int.h"

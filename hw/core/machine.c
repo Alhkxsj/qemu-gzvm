@@ -1,82 +1,34 @@
-/*
- * QEMU Machine
- *
- * Copyright (C) 2014 Red Hat Inc
- *
- * Authors:
- *   Marcel Apfelbaum <marcel.a@redhat.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/accel.h"
-#include "system/replay.h"
-#include "hw/core/boards.h"
-#include "hw/core/loader.h"
+#include "hw/boards.h"
+#include "hw/loader.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "qapi/qapi-visit-machine.h"
 #include "qapi/qapi-commands-machine.h"
 #include "qemu/madvise.h"
-#include "qom/compat-properties.h"
 #include "qom/object_interfaces.h"
 #include "system/cpus.h"
 #include "system/system.h"
 #include "system/reset.h"
 #include "system/runstate.h"
-#include "system/xen.h"
-#include "system/qtest.h"
 #include "hw/pci/pci_bridge.h"
-#include "hw/mem/nvdimm.h"
-#include "migration/global_state.h"
 #include "system/confidential-guest-support.h"
 #include "hw/virtio/virtio-pci.h"
 #include "hw/virtio/virtio-net.h"
 #include "hw/virtio/virtio-iommu.h"
-#include "hw/acpi/generic_event_device.h"
-#include "qemu/audio.h"
-
-GlobalProperty hw_compat_11_0[] = {
-    { "chardev-vc", "encoding", "cp437" },
-};
-const size_t hw_compat_11_0_len = G_N_ELEMENTS(hw_compat_11_0);
-
-GlobalProperty hw_compat_10_2[] = {
-    { "scsi-block", "migrate-pr", "off" },
-    { "isa-cirrus-vga", "global-vmstate", "true" },
-};
-const size_t hw_compat_10_2_len = G_N_ELEMENTS(hw_compat_10_2);
-
-GlobalProperty hw_compat_10_1[] = {
-    { TYPE_ACPI_GED, "x-has-hest-addr", "false" },
-    { TYPE_VIRTIO_NET, "host_tunnel", "off" },
-    { TYPE_VIRTIO_NET, "host_tunnel_csum", "off" },
-    { TYPE_VIRTIO_NET, "guest_tunnel", "off" },
-    { TYPE_VIRTIO_NET, "guest_tunnel_csum", "off" },
-};
-const size_t hw_compat_10_1_len = G_N_ELEMENTS(hw_compat_10_1);
-
-GlobalProperty hw_compat_10_0[] = {
-    { "scsi-hd", "dpofua", "off" },
-    { "vfio-pci", "x-migration-load-config-after-iter", "off" },
-    { "ramfb", "use-legacy-x86-rom", "true"},
-    { "vfio-pci-nohotplug", "use-legacy-x86-rom", "true" },
-    { "chardev-qemu-vdagent", "x-migration-blocked", "true" },
-};
-const size_t hw_compat_10_0_len = G_N_ELEMENTS(hw_compat_10_0);
+#include "audio/audio.h"
 
 GlobalProperty hw_compat_9_2[] = {
-    { "arm-cpu", "backcompat-pauth-default-use-qarma5", "true"},
+    {"arm-cpu", "backcompat-pauth-default-use-qarma5", "true"},
     { "virtio-balloon-pci", "vectors", "0" },
     { "virtio-balloon-pci-transitional", "vectors", "0" },
     { "virtio-balloon-pci-non-transitional", "vectors", "0" },
     { "virtio-mem-pci", "vectors", "0" },
     { "migration", "multifd-clean-tls-termination", "false" },
     { "migration", "send-switchover-start", "off"},
-    { "vfio-pci", "x-migration-multifd-transfer", "off" },
 };
 const size_t hw_compat_9_2_len = G_N_ELEMENTS(hw_compat_9_2);
 
@@ -86,12 +38,11 @@ GlobalProperty hw_compat_9_1[] = {
 const size_t hw_compat_9_1_len = G_N_ELEMENTS(hw_compat_9_1);
 
 GlobalProperty hw_compat_9_0[] = {
-    { "arm-cpu", "backcompat-cntfrq", "true" },
+    {"arm-cpu", "backcompat-cntfrq", "true" },
     { "scsi-hd", "migrate-emulated-scsi-request", "false" },
     { "scsi-cd", "migrate-emulated-scsi-request", "false" },
-    { "vfio-pci", "skip-vsc-check", "false" },
     { "virtio-pci", "x-pcie-pm-no-soft-reset", "off" },
-    { "sd-card", "spec_version", "2" },
+    {"sd-card", "spec_version", "2" },
 };
 const size_t hw_compat_9_0_len = G_N_ELEMENTS(hw_compat_9_0);
 
@@ -105,8 +56,6 @@ const size_t hw_compat_8_2_len = G_N_ELEMENTS(hw_compat_8_2);
 
 GlobalProperty hw_compat_8_1[] = {
     { TYPE_PCI_BRIDGE, "x-pci-express-writeable-slt-bug", "true" },
-    { "ramfb", "x-migrate", "off" },
-    { "vfio-pci-nohotplug", "x-ramfb-migrate", "off" },
     { "igb", "x-pcie-flr-init", "off" },
     { TYPE_VIRTIO_NET, "host_uso", "off"},
     { TYPE_VIRTIO_NET, "guest_uso4", "off"},
@@ -216,6 +165,115 @@ GlobalProperty hw_compat_4_1[] = {
     { "virtio-pci", "x-pcie-flr-init", "off" },
 };
 const size_t hw_compat_4_1_len = G_N_ELEMENTS(hw_compat_4_1);
+
+GlobalProperty hw_compat_4_0[] = {
+    { "VGA",            "edid", "false" },
+    { "secondary-vga",  "edid", "false" },
+    { "bochs-display",  "edid", "false" },
+    { "virtio-vga",     "edid", "false" },
+    { "virtio-gpu-device", "edid", "false" },
+    { "virtio-device", "use-started", "false" },
+    { "virtio-balloon-device", "qemu-4-0-config-size", "true" },
+    { "pl031", "migrate-tick-offset", "false" },
+};
+const size_t hw_compat_4_0_len = G_N_ELEMENTS(hw_compat_4_0);
+
+GlobalProperty hw_compat_3_1[] = {
+    { "pcie-root-port", "x-speed", "2_5" },
+    { "pcie-root-port", "x-width", "1" },
+    { "memory-backend-file", "x-use-canonical-path-for-ramblock-id", "true" },
+    { "memory-backend-memfd", "x-use-canonical-path-for-ramblock-id", "true" },
+    { "tpm-crb", "ppi", "false" },
+    { "tpm-tis", "ppi", "false" },
+    { "usb-kbd", "serial", "42" },
+    { "usb-mouse", "serial", "42" },
+    { "usb-tablet", "serial", "42" },
+    { "virtio-blk-device", "discard", "false" },
+    { "virtio-blk-device", "write-zeroes", "false" },
+    { "virtio-balloon-device", "qemu-4-0-config-size", "false" },
+    { "pcie-root-port-base", "disable-acs", "true" }, /* Added in 4.1 */
+};
+const size_t hw_compat_3_1_len = G_N_ELEMENTS(hw_compat_3_1);
+
+GlobalProperty hw_compat_3_0[] = {};
+const size_t hw_compat_3_0_len = G_N_ELEMENTS(hw_compat_3_0);
+
+GlobalProperty hw_compat_2_12[] = {
+    { "cirrus-vga", "global-vmstate", "true" },
+    { "VGA", "global-vmstate", "true" },
+    { "vmware-svga", "global-vmstate", "true" },
+    { "qxl-vga", "global-vmstate", "true" },
+};
+const size_t hw_compat_2_12_len = G_N_ELEMENTS(hw_compat_2_12);
+
+GlobalProperty hw_compat_2_11[] = {
+    { "hpet", "hpet-offset-saved", "false" },
+    { "virtio-blk-pci", "vectors", "2" },
+    { "vhost-user-blk-pci", "vectors", "2" },
+    { "e1000", "migrate_tso_props", "off" },
+};
+const size_t hw_compat_2_11_len = G_N_ELEMENTS(hw_compat_2_11);
+
+GlobalProperty hw_compat_2_10[] = {
+    { "virtio-mouse-device", "wheel-axis", "false" },
+    { "virtio-tablet-device", "wheel-axis", "false" },
+};
+const size_t hw_compat_2_10_len = G_N_ELEMENTS(hw_compat_2_10);
+
+GlobalProperty hw_compat_2_9[] = {
+    { "pci-bridge", "shpc", "off" },
+    { "intel-iommu", "pt", "off" },
+    { "virtio-net-device", "x-mtu-bypass-backend", "off" },
+    { "pcie-root-port", "x-migrate-msix", "false" },
+};
+const size_t hw_compat_2_9_len = G_N_ELEMENTS(hw_compat_2_9);
+
+GlobalProperty hw_compat_2_8[] = {
+    { "fw_cfg_mem", "x-file-slots", "0x10" },
+    { "fw_cfg_io", "x-file-slots", "0x10" },
+    { "pci-bridge", "shpc", "on" },
+    { TYPE_PCI_DEVICE, "x-pcie-extcap-init", "off" },
+    { "virtio-pci", "x-pcie-deverr-init", "off" },
+    { "virtio-pci", "x-pcie-lnkctl-init", "off" },
+    { "virtio-pci", "x-pcie-pm-init", "off" },
+    { "cirrus-vga", "vgamem_mb", "8" },
+    { "isa-cirrus-vga", "vgamem_mb", "8" },
+};
+const size_t hw_compat_2_8_len = G_N_ELEMENTS(hw_compat_2_8);
+
+GlobalProperty hw_compat_2_7[] = {
+    { "virtio-pci", "page-per-vq", "on" },
+    { "virtio-serial-device", "emergency-write", "off" },
+    { "ioapic", "version", "0x11" },
+    { "intel-iommu", "x-buggy-eim", "true" },
+    { "virtio-pci", "x-ignore-backend-features", "on" },
+};
+const size_t hw_compat_2_7_len = G_N_ELEMENTS(hw_compat_2_7);
+
+GlobalProperty hw_compat_2_6[] = {
+    { "virtio-mmio", "format_transport_address", "off" },
+    { "virtio-pci", "disable-modern", "on",  .optional = true },
+    { "virtio-pci", "disable-legacy", "off", .optional = true },
+};
+const size_t hw_compat_2_6_len = G_N_ELEMENTS(hw_compat_2_6);
+
+GlobalProperty hw_compat_2_5[] = {
+    { "isa-fdc", "fallback", "144" },
+    { "pvscsi", "x-old-pci-configuration", "on" },
+    { "pvscsi", "x-disable-pcie", "on" },
+    { "vmxnet3", "x-old-msi-offsets", "on" },
+    { "vmxnet3", "x-disable-pcie", "on" },
+};
+const size_t hw_compat_2_5_len = G_N_ELEMENTS(hw_compat_2_5);
+
+GlobalProperty hw_compat_2_4[] = {
+    { "e1000", "extra_mac_registers", "off" },
+    { "virtio-pci", "x-disable-pcie", "on" },
+    { "virtio-pci", "migrate-extra", "off" },
+    { "fw_cfg_mem", "dma_enabled", "off" },
+    { "fw_cfg_io", "dma_enabled", "off" }
+};
+const size_t hw_compat_2_4_len = G_N_ELEMENTS(hw_compat_2_4);
 
 MachineState *current_machine;
 
@@ -366,21 +424,6 @@ static void machine_set_dump_guest_core(Object *obj, bool value, Error **errp)
     ms->dump_guest_core = value;
 }
 
-static bool machine_get_new_accel_vmfd_on_reset(Object *obj, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    return ms->new_accel_vmfd_on_reset;
-}
-
-static void machine_set_new_accel_vmfd_on_reset(Object *obj,
-                                                bool value, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    ms->new_accel_vmfd_on_reset = value;
-}
-
 static bool machine_get_mem_merge(Object *obj, Error **errp)
 {
     MachineState *ms = MACHINE(obj);
@@ -503,39 +546,6 @@ static void machine_check_confidential_guest_support(const Object *obj,
                                                      Object *new_target,
                                                      Error **errp)
 {
-    /*
-     * So far the only constraint is that the target has the
-     * TYPE_CONFIDENTIAL_GUEST_SUPPORT interface, and that's checked
-     * by the QOM core
-     */
-}
-
-static bool machine_get_nvdimm(Object *obj, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    return ms->nvdimms_state->is_enabled;
-}
-
-static void machine_set_nvdimm(Object *obj, bool value, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    ms->nvdimms_state->is_enabled = value;
-}
-
-static bool machine_get_spcr(Object *obj, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    return ms->acpi_spcr_enabled;
-}
-
-static void machine_set_spcr(Object *obj, bool value, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    ms->acpi_spcr_enabled = value;
 }
 
 static bool machine_get_hmat(Object *obj, Error **errp)
@@ -586,6 +596,9 @@ static void machine_set_mem(Object *obj, Visitor *v, const char *name,
         mem->size = mc->default_ram_size;
     }
     mem->size = QEMU_ALIGN_UP(mem->size, 8192);
+    if (mc->fixup_ram_size) {
+        mem->size = mc->fixup_ram_size(mem->size);
+    }
     if ((ram_addr_t)mem->size != mem->size) {
         error_setg(errp, "ram size %llu exceeds permitted maximum %llu",
                    (unsigned long long)mem->size,
@@ -626,33 +639,6 @@ static void machine_set_mem(Object *obj, Visitor *v, const char *name,
     ms->ram_slots = mem->has_slots ? mem->slots : 0;
 out_free:
     qapi_free_MemorySizeConfiguration(mem);
-}
-
-static char *machine_get_nvdimm_persistence(Object *obj, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    return g_strdup(ms->nvdimms_state->persistence_string);
-}
-
-static void machine_set_nvdimm_persistence(Object *obj, const char *value,
-                                           Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-    NVDIMMState *nvdimms_state = ms->nvdimms_state;
-
-    if (strcmp(value, "cpu") == 0) {
-        nvdimms_state->persistence = 3;
-    } else if (strcmp(value, "mem-ctrl") == 0) {
-        nvdimms_state->persistence = 2;
-    } else {
-        error_setg(errp, "-machine nvdimm-persistence=%s: unsupported option",
-                   value);
-        return;
-    }
-
-    g_free(nvdimms_state->persistence_string);
-    nvdimms_state->persistence_string = g_strdup(value);
 }
 
 void machine_class_allow_dynamic_sysbus_dev(MachineClass *mc, const char *type)
@@ -698,7 +684,7 @@ static void machine_set_audiodev(Object *obj, const char *value,
 {
     MachineState *ms = MACHINE(obj);
 
-    if (!audio_be_by_name(value, errp)) {
+    if (!audio_state_by_name(value, errp)) {
         return;
     }
 
@@ -712,7 +698,6 @@ HotpluggableCPUList *machine_query_hotpluggable_cpus(MachineState *machine)
     HotpluggableCPUList *head = NULL;
     MachineClass *mc = MACHINE_GET_CLASS(machine);
 
-    /* force board to initialize possible_cpus if it hasn't been done yet */
     mc->possible_cpu_arch_ids(machine);
 
     for (i = 0; i < machine->possible_cpus->len; i++) {
@@ -733,31 +718,6 @@ HotpluggableCPUList *machine_query_hotpluggable_cpus(MachineState *machine)
     return head;
 }
 
-/**
- * machine_set_cpu_numa_node:
- * @machine: machine object to modify
- * @props: specifies which cpu objects to assign to
- *         numa node specified by @props.node_id
- * @errp: if an error occurs, a pointer to an area to store the error
- *
- * Associate NUMA node specified by @props.node_id with cpu slots that
- * match socket/core/thread-ids specified by @props. It's recommended to use
- * query-hotpluggable-cpus.props values to specify affected cpu slots,
- * which would lead to exact 1:1 mapping of cpu slots to NUMA node.
- *
- * However for CLI convenience it's possible to pass in subset of properties,
- * which would affect all cpu slots that match it.
- * Ex for pc machine:
- *    -smp 4,cores=2,sockets=2 -numa node,nodeid=0 -numa node,nodeid=1 \
- *    -numa cpu,node-id=0,socket_id=0 \
- *    -numa cpu,node-id=1,socket_id=1
- * will assign all child cores of socket 0 to node 0 and
- * of socket 1 to node 1.
- *
- * On attempt of reassigning (already assigned) cpu slot to another NUMA node,
- * return error.
- * Empty subset is disallowed and function will return with error in this case.
- */
 void machine_set_cpu_numa_node(MachineState *machine,
                                const CpuInstanceProperties *props, Error **errp)
 {
@@ -771,16 +731,13 @@ void machine_set_cpu_numa_node(MachineState *machine,
         return;
     }
 
-    /* disabling node mapping is not supported, forbid it */
     assert(props->has_node_id);
 
-    /* force board to initialize possible_cpus if it hasn't been done yet */
     mc->possible_cpu_arch_ids(machine);
 
     for (i = 0; i < machine->possible_cpus->len; i++) {
         CPUArchId *slot = &machine->possible_cpus->cpus[i];
 
-        /* reject unsupported by board properties */
         if (props->has_thread_id && !slot->props.has_thread_id) {
             error_setg(errp, "thread-id is not supported");
             return;
@@ -811,7 +768,6 @@ void machine_set_cpu_numa_node(MachineState *machine,
             return;
         }
 
-        /* skip slots with explicit mismatch */
         if (props->has_thread_id && props->thread_id != slot->props.thread_id) {
                 continue;
         }
@@ -838,9 +794,6 @@ void machine_set_cpu_numa_node(MachineState *machine,
                 continue;
         }
 
-        /* reject assignment if slot is already assigned, for compatibility
-         * of legacy cpu_index mapping with SPAPR core based mapping do not
-         * error out if cpu thread and matched core have the same node-id */
         if (slot->props.has_node_id &&
             slot->props.node_id != props->node_id) {
             error_setg(errp, "CPU is already assigned to node-id: %" PRId64,
@@ -848,7 +801,6 @@ void machine_set_cpu_numa_node(MachineState *machine,
             return;
         }
 
-        /* assign slot to node as it's matched '-numa cpu' key */
         match = true;
         slot->props.node_id = props->node_id;
         slot->props.has_node_id = props->has_node_id;
@@ -990,7 +942,6 @@ static void machine_set_boot(Object *obj, Visitor *v, const char *name,
     }
 
     machine_copy_boot_config(ms, config);
-    /* Strings live in ms->boot_config.  */
     free(config);
     return;
 
@@ -1027,7 +978,6 @@ static bool create_default_memdev(MachineState *ms, const char *path,
     }
     object_property_add_child(object_get_objects_root(), mc->default_ram_id,
                               obj);
-    /* Ensure backend's memory region name is equal to mc->default_ram_id */
     if (!object_property_set_bool(obj, "x-use-canonical-path-for-ramblock-id",
                              false, errp)) {
         goto out;
@@ -1042,26 +992,14 @@ out:
     return r;
 }
 
-static void machine_class_init(ObjectClass *oc, const void *data)
+static void machine_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
-    /* Default 128 MB as guest ram size */
     mc->default_ram_size = 128 * MiB;
     mc->rom_file_has_mr = true;
-    /*
-     * SMBIOS 3.1.0 7.18.5 Memory Device — Extended Size
-     * use max possible value that could be encoded into
-     * 'Extended Size' field (2047Tb).
-     *
-     * Unfortunately (current) Windows Server 2025 and earlier do not handle
-     * 4Tb+ DIMM size.
-     */
-    mc->smbios_memory_device_size = 2 * TiB;
+    mc->smbios_memory_device_size = 2047 * TiB;
 
-    /* numa node memory size aligned on 8MB by default.
-     * On Linux, each node's border has to be 8MB aligned
-     */
     mc->numa_mem_align_shift = 23;
 
     mc->create_default_memdev = create_default_memdev;
@@ -1129,13 +1067,6 @@ static void machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "dump-guest-core",
         "Include guest memory in a core dump");
 
-    object_class_property_add_bool(oc, "x-change-vmfd-on-reset",
-        machine_get_new_accel_vmfd_on_reset,
-        machine_set_new_accel_vmfd_on_reset);
-    object_class_property_set_description(oc, "x-change-vmfd-on-reset",
-        "Set on/off to enable/disable generating new accelerator guest handle "
-         "on guest reset. Default: off (used only for testing/debugging).");
-
     object_class_property_add_bool(oc, "mem-merge",
         machine_get_mem_merge, machine_set_mem_merge);
     object_class_property_set_description(oc, "mem-merge",
@@ -1145,8 +1076,6 @@ static void machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "aux-ram-share",
                                    machine_get_aux_ram_share,
                                    machine_set_aux_ram_share);
-    object_class_property_set_description(oc, "aux-ram-share",
-        "Use anonymous shared memory for auxiliary guest RAMs");
 #endif
 
     object_class_property_add_bool(oc, "usb",
@@ -1177,7 +1106,6 @@ static void machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "confidential-guest-support",
                                           "Set confidential guest scheme to support");
 
-    /* For compatibility */
     object_class_property_add_str(oc, "memory-encryption",
         machine_get_memory_encryption, machine_set_memory_encryption);
     object_class_property_set_description(oc, "memory-encryption",
@@ -1197,7 +1125,7 @@ static void machine_class_init(ObjectClass *oc, const void *data)
         "Memory size configuration");
 }
 
-static void machine_class_base_init(ObjectClass *oc, const void *data)
+static void machine_class_base_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
     mc->max_cpus = mc->max_cpus ?: 1;
@@ -1225,22 +1153,6 @@ static void machine_initfn(Object *obj)
     ms->ram_size = mc->default_ram_size;
     ms->maxram_size = mc->default_ram_size;
 
-    if (mc->nvdimm_supported) {
-        ms->nvdimms_state = g_new0(NVDIMMState, 1);
-        object_property_add_bool(obj, "nvdimm",
-                                 machine_get_nvdimm, machine_set_nvdimm);
-        object_property_set_description(obj, "nvdimm",
-                                        "Set on/off to enable/disable "
-                                        "NVDIMM instantiation");
-
-        object_property_add_str(obj, "nvdimm-persistence",
-                                machine_get_nvdimm_persistence,
-                                machine_set_nvdimm_persistence);
-        object_property_set_description(obj, "nvdimm-persistence",
-                                        "Set NVDIMM persistence"
-                                        "Valid values are cpu, mem-ctrl");
-    }
-
     if (mc->cpu_index_to_instance_props && mc->get_default_cpu_node_id) {
         ms->numa_state = g_new0(NumaState, 1);
         object_property_add_bool(obj, "hmat",
@@ -1251,15 +1163,6 @@ static void machine_initfn(Object *obj)
                                         "Table (HMAT)");
     }
 
-    /* SPCR */
-    ms->acpi_spcr_enabled = true;
-    object_property_add_bool(obj, "spcr", machine_get_spcr, machine_set_spcr);
-    object_property_set_description(obj, "spcr",
-                                   "Set on/off to enable/disable "
-                                   "ACPI Serial Port Console Redirection "
-                                   "Table (spcr)");
-
-    /* default to mc->default_cpus */
     ms->smp.cpus = mc->default_cpus;
     ms->smp.max_cpus = mc->default_cpus;
     ms->smp.drawers = 1;
@@ -1405,19 +1308,15 @@ static void machine_numa_finish_cpu_init(MachineState *machine)
         const CPUArchId *cpu_slot = &possible_cpus->cpus[i];
 
         if (!cpu_slot->props.has_node_id) {
-            /* fetch default mapping from board and enable it */
             CpuInstanceProperties props = cpu_slot->props;
 
             props.node_id = mc->get_default_cpu_node_id(machine, i);
             if (!default_mapping) {
-                /* record slots with not set mapping,
-                 * TODO: make it hard error in future */
                 char *cpu_str = cpu_slot_to_string(cpu_slot);
                 g_string_append_printf(s, "%sCPU %d [%s]",
                                        s->len ? ", " : "", i, cpu_str);
                 g_free(cpu_str);
 
-                /* non mapped cpus used to fallback to node 0 */
                 props.node_id = 0;
             }
 
@@ -1430,7 +1329,7 @@ static void machine_numa_finish_cpu_init(MachineState *machine)
         numa_validate_initiator(machine->numa_state);
     }
 
-    if (s->len && !qtest_enabled()) {
+    if (s->len) {
         warn_report("CPU(s) not present in any NUMA nodes: %s",
                     s->str);
         warn_report("All CPU(s) up to maxcpus should be described "
@@ -1448,15 +1347,10 @@ static void validate_cpu_cluster_to_numa_boundary(MachineState *ms)
     const CPUArchId *cpus = possible_cpus->cpus;
     int i, j;
 
-    if (qtest_enabled() || state->num_nodes <= 1 || possible_cpus->len <= 1) {
+    if (state->num_nodes <= 1 || possible_cpus->len <= 1) {
         return;
     }
 
-    /*
-     * The Linux scheduling domain can't be parsed when the multiple CPUs
-     * in one cluster have been associated with different NUMA nodes. However,
-     * it's fine to associate one NUMA node with CPUs in different clusters.
-     */
     for (i = 0; i < possible_cpus->len; i++) {
         for (j = i + 1; j < possible_cpus->len; j++) {
             if (cpus[i].props.has_socket_id &&
@@ -1497,20 +1391,9 @@ MemoryRegion *machine_consume_memdev(MachineState *machine,
 const char *machine_class_default_cpu_type(MachineClass *mc)
 {
     if (mc->valid_cpu_types && !mc->valid_cpu_types[1]) {
-        /* Only a single CPU type allowed: use it as default. */
         return mc->valid_cpu_types[0];
     }
     return mc->default_cpu_type;
-}
-
-const char *machine_default_cpu_type(const MachineState *ms)
-{
-    MachineClass *mc = MACHINE_GET_CLASS(ms);
-
-    if (mc->get_default_cpu_type) {
-        return mc->get_default_cpu_type(ms);
-    }
-    return machine_class_default_cpu_type(mc);
 }
 
 static bool is_cpu_type_supported(const MachineState *machine, Error **errp)
@@ -1520,22 +1403,14 @@ static bool is_cpu_type_supported(const MachineState *machine, Error **errp)
     CPUClass *cc;
     int i;
 
-    /*
-     * Check if the user specified CPU type is supported when the valid
-     * CPU types have been determined. Note that the user specified CPU
-     * type is provided through '-cpu' option.
-     */
     if (mc->valid_cpu_types) {
         assert(mc->valid_cpu_types[0] != NULL);
-        assert(!mc->get_valid_cpu_types);
-
         for (i = 0; mc->valid_cpu_types[i]; i++) {
             if (object_class_dynamic_cast(oc, mc->valid_cpu_types[i])) {
                 break;
             }
         }
 
-        /* The user specified CPU type isn't valid */
         if (!mc->valid_cpu_types[i]) {
             g_autofree char *requested = cpu_model_from_type(machine->cpu_type);
             error_setg(errp, "Invalid CPU model: %s", requested);
@@ -1557,35 +1432,8 @@ static bool is_cpu_type_supported(const MachineState *machine, Error **errp)
 
             return false;
         }
-    } else if (mc->get_valid_cpu_types) {
-        GPtrArray *vct = mc->get_valid_cpu_types(machine);
-        bool valid = false;
-
-        for (i = 0; i < vct->len; i++) {
-            if (object_class_dynamic_cast(oc, vct->pdata[i])) {
-                valid = true;
-                break;
-            }
-        }
-
-        if (!valid) {
-            g_autofree char *requested = cpu_model_from_type(machine->cpu_type);
-
-            error_setg(errp, "Invalid CPU model: %s", requested);
-            error_append_hint(errp, "The valid models are: ");
-            for (i = 0; i < vct->len; i++) {
-                g_autofree char *model = cpu_model_from_type(vct->pdata[i]);
-                error_append_hint(errp, "%s%s",
-                                  model, i + 1 == vct->len ? "\n" : ", ");
-            }
-        }
-        g_ptr_array_free(vct, true);
-        if (!valid) {
-            return false;
-        }
     }
 
-    /* Check if CPU type is deprecated and warn if so */
     cc = CPU_CLASS(oc);
     assert(cc != NULL);
     if (cc->deprecation_note) {
@@ -1601,17 +1449,9 @@ void machine_run_board_init(MachineState *machine, const char *mem_path, Error *
     ERRP_GUARD();
     MachineClass *machine_class = MACHINE_GET_CLASS(machine);
 
-    /* This checkpoint is required by replay to separate prior clock
-       reading from the other reads, because timer polling functions query
-       clock values from the log. */
-    replay_checkpoint(CHECKPOINT_INIT);
-
-    if (!xen_enabled()) {
-        /* On 32-bit hosts, QEMU is limited by virtual address space */
-        if (machine->ram_size > (2047 << 20) && HOST_LONG_BITS == 32) {
-            error_setg(errp, "at most 2047 MB RAM can be simulated");
-            return;
-        }
+    if (machine->ram_size > (2047 << 20) && HOST_LONG_BITS == 32) {
+        error_setg(errp, "at most 2047 MB RAM can be simulated");
+        return;
     }
 
     if (machine->memdev) {
@@ -1656,25 +1496,13 @@ void machine_run_board_init(MachineState *machine, const char *mem_path, Error *
         machine->ram = machine_consume_memdev(machine, machine->memdev);
     }
 
-    /* Check if the CPU type is supported */
     if (machine->cpu_type && !is_cpu_type_supported(machine, errp)) {
         return;
     }
 
     if (machine->cgs) {
-        /*
-         * With confidential guests, the host can't see the real
-         * contents of RAM, so there's no point in it trying to merge
-         * areas.
-         */
         machine_set_mem_merge(OBJECT(machine), false, &error_abort);
 
-        /*
-         * Virtio devices can't count on directly accessing guest
-         * memory, so they need iommu_platform=on to use normal DMA
-         * mechanisms.  That requires also disabling legacy virtio
-         * support for those virtio pci devices which allow it.
-         */
         object_register_sugar_prop(TYPE_VIRTIO_PCI, "disable-legacy",
                                    "on", true);
         object_register_sugar_prop(TYPE_VIRTIO_DEVICE, "iommu_platform",
@@ -1727,44 +1555,20 @@ void qdev_machine_creation_done(void)
         qemu_register_reset(restore_boot_order, g_strdup(current_machine->boot_config.order));
     }
 
-    /*
-     * ok, initial machine setup is done, starting from now we can
-     * only create hotpluggable devices
-     */
     phase_advance(PHASE_MACHINE_READY);
     qdev_assert_realized_properly();
 
-    /* TODO: once all bus devices are qdevified, this should be done
-     * when bus is created by qdev.c */
-    /*
-     * This is where we arrange for the sysbus to be reset when the
-     * whole simulation is reset. In turn, resetting the sysbus will cause
-     * all devices hanging off it (and all their child buses, recursively)
-     * to be reset. Note that this will *not* reset any Device objects
-     * which are not attached to some part of the qbus tree!
-     */
     qemu_register_resettable(OBJECT(sysbus_get_default()));
 
     notifier_list_notify(&machine_init_done_notifiers, NULL);
 
-    /*
-     * If the user used -machine dumpdtb=file.dtb to request that we
-     * dump the DTB to a file, do it now, and exit.
-     */
     handle_machine_dumpdtb(current_machine);
 
     if (rom_check_and_register_reset() != 0) {
         exit(1);
     }
 
-    replay_start();
-
-    /* This checkpoint is required by replay to separate prior clock
-       reading from the other reads, because timer polling functions query
-       clock values from the log. */
-    replay_checkpoint(CHECKPOINT_RESET);
     qemu_system_reset(SHUTDOWN_CAUSE_NONE);
-    register_global_state();
 }
 
 static const TypeInfo machine_info = {

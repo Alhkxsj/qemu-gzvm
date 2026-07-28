@@ -1,7 +1,3 @@
-/*
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -90,7 +86,6 @@ pixman_format_code_t qemu_default_pixman_format(int bpp, bool native_endian)
     return 0;
 }
 
-/* Note: drm is little endian, pixman is native endian */
 static const struct {
     uint32_t drm_format;
     pixman_format_code_t pixman_format;
@@ -126,34 +121,33 @@ uint32_t qemu_pixman_to_drm_format(pixman_format_code_t pixman_format)
     return 0;
 }
 
-int qemu_pixman_get_type(int rshift, int gshift, int bshift, int endian)
+int qemu_pixman_get_type(int rshift, int gshift, int bshift)
 {
     int type = PIXMAN_TYPE_OTHER;
-    bool native_endian = (endian == G_BYTE_ORDER);
 
     if (rshift > gshift && gshift > bshift) {
         if (bshift == 0) {
-            type = native_endian ? PIXMAN_TYPE_ARGB : PIXMAN_TYPE_BGRA;
+            type = PIXMAN_TYPE_ARGB;
         } else {
-            type = native_endian ? PIXMAN_TYPE_RGBA : PIXMAN_TYPE_ABGR;
+            type = PIXMAN_TYPE_RGBA;
         }
     } else if (rshift < gshift && gshift < bshift) {
         if (rshift == 0) {
-            type = native_endian ? PIXMAN_TYPE_ABGR : PIXMAN_TYPE_RGBA;
+            type = PIXMAN_TYPE_ABGR;
         } else {
-            type = native_endian ? PIXMAN_TYPE_BGRA : PIXMAN_TYPE_ARGB;
+            type = PIXMAN_TYPE_BGRA;
         }
     }
     return type;
 }
 
 #ifdef CONFIG_PIXMAN
-pixman_format_code_t qemu_pixman_get_format(PixelFormat *pf, int endian)
+pixman_format_code_t qemu_pixman_get_format(PixelFormat *pf)
 {
     pixman_format_code_t format;
     int type;
 
-    type = qemu_pixman_get_type(pf->rshift, pf->gshift, pf->bshift, endian);
+    type = qemu_pixman_get_type(pf->rshift, pf->gshift, pf->bshift);
     format = PIXMAN_FORMAT(pf->bits_per_pixel, type,
                            pf->abits, pf->rbits, pf->gbits, pf->bbits);
     if (!pixman_format_supported_source(format)) {
@@ -163,25 +157,16 @@ pixman_format_code_t qemu_pixman_get_format(PixelFormat *pf, int endian)
 }
 #endif
 
-/*
- * Return true for known-good pixman conversions.
- *
- * UIs using pixman for format conversion can hook this into
- * DisplayChangeListenerOps->dpy_gfx_check_format
- */
 bool qemu_pixman_check_format(DisplayChangeListener *dcl,
                               pixman_format_code_t format)
 {
     switch (format) {
-    /* 32 bpp */
     case PIXMAN_x8r8g8b8:
     case PIXMAN_a8r8g8b8:
     case PIXMAN_b8g8r8x8:
     case PIXMAN_b8g8r8a8:
-    /* 24 bpp */
     case PIXMAN_r8g8b8:
     case PIXMAN_b8g8r8:
-    /* 16 bpp */
     case PIXMAN_x1r5g5b5:
     case PIXMAN_r5g6b5:
         return true;
@@ -199,7 +184,6 @@ pixman_image_t *qemu_pixman_linebuf_create(pixman_format_code_t format,
     return image;
 }
 
-/* fill linebuf from framebuffer */
 void qemu_pixman_linebuf_fill(pixman_image_t *linebuf, pixman_image_t *fb,
                               int width, int x, int y)
 {
@@ -288,12 +272,7 @@ qemu_pixman_shareable_free(qemu_pixman_shareable handle,
                            void *ptr, size_t size)
 {
 #ifdef WIN32
-    Error *err = NULL;
-
-    qemu_win32_map_free(ptr, handle, &err);
-    if (err) {
-        error_report_err(err);
-    }
+    qemu_win32_map_free(ptr, handle, &error_warn);
 #else
     qemu_memfd_free(ptr, size, handle);
 #endif

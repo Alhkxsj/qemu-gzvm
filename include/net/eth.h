@@ -1,27 +1,3 @@
-/*
- * QEMU network structures definitions and helper functions
- *
- * Copyright (c) 2012 Ravello Systems LTD (http://ravellosystems.com)
- *
- * Developed by Daynix Computing LTD (http://www.daynix.com)
- *
- * Portions developed by Free Software Foundation, Inc
- * Copyright (C) 1991-1997, 2001, 2003, 2006 Free Software Foundation, Inc.
- * See netinet/ip6.h and netinet/in.h (GNU C Library)
- *
- * Portions developed by Igor Kovalenko
- * Copyright (c) 2006 Igor Kovalenko
- * See hw/rtl8139.c (QEMU)
- *
- * Authors:
- * Dmitry Fleytman <dmitry@daynix.com>
- * Tamir Shomer <tamirs@daynix.com>
- * Yan Vugenfirer <yan@daynix.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- *
- */
 
 #ifndef QEMU_ETH_H
 #define QEMU_ETH_H
@@ -39,7 +15,7 @@ struct eth_header {
     uint8_t  h_dest[ETH_ALEN];   /* destination eth addr */
     uint8_t  h_source[ETH_ALEN]; /* source ether addr    */
     uint16_t h_proto;            /* packet type ID field */
-} QEMU_PACKED;
+};
 
 struct vlan_header {
     uint16_t  h_tci;     /* priority and VLAN ID  */
@@ -64,11 +40,10 @@ typedef struct tcp_header {
     uint32_t th_seq;            /* sequence number */
     uint32_t th_ack;            /* acknowledgment number */
     uint16_t th_offset_flags;   /* data offset, reserved 6 bits, */
-                                /* TCP protocol flags */
     uint16_t th_win;            /* window */
     uint16_t th_sum;            /* checksum */
     uint16_t th_urp;            /* urgent pointer */
-} QEMU_PACKED tcp_header;
+} tcp_header;
 
 #define TCP_FLAGS_ONLY(flags) ((flags) & 0x3f)
 
@@ -85,7 +60,7 @@ typedef struct udp_header {
     uint16_t uh_dport; /* destination port */
     uint16_t uh_ulen;  /* udp length */
     uint16_t uh_sum;   /* udp checksum */
-} QEMU_PACKED udp_header;
+} udp_header;
 
 typedef struct ip_pseudo_header {
     uint32_t ip_src;
@@ -95,7 +70,6 @@ typedef struct ip_pseudo_header {
     uint16_t ip_payload;
 } ip_pseudo_header;
 
-/* IPv6 address */
 struct in6_address {
     union {
         uint8_t __u6_addr8[16];
@@ -119,7 +93,7 @@ struct ip6_header {
     } ip6_ctlun;
     struct in6_address ip6_src;    /* source address */
     struct in6_address ip6_dst;    /* destination address */
-} QEMU_PACKED;
+};
 
 typedef struct ip6_pseudo_header {
     struct in6_address ip6_src;
@@ -212,12 +186,24 @@ struct tcp_hdr {
 #define IP4_IS_FRAGMENT(ip) \
     ((be16_to_cpu((ip)->ip_off) & (IP_OFFMASK | IP_MF)) != 0)
 
+#ifndef ETH_P_IP
 #define ETH_P_IP                  (0x0800)      /* Internet Protocol packet  */
+#endif
+#ifndef ETH_P_ARP
 #define ETH_P_ARP                 (0x0806)      /* Address Resolution packet */
+#endif
+#ifndef ETH_P_IPV6
 #define ETH_P_IPV6                (0x86dd)
+#endif
+#ifndef ETH_P_VLAN
 #define ETH_P_VLAN                (0x8100)
+#endif
+#ifndef ETH_P_DVLAN
 #define ETH_P_DVLAN               (0x88a8)
+#endif
+#ifndef ETH_P_NCSI
 #define ETH_P_NCSI                (0x88f8)
+#endif
 #define ETH_P_UNKNOWN             (0xffff)
 #define VLAN_VID_MASK             0x0fff
 #define IP_HEADER_VERSION_4       (4)
@@ -252,7 +238,6 @@ struct tcp_hdr {
 #define IP6_EXT_GRANULARITY   (8)  /* Size granularity for
                                       IPv6 extension headers */
 
-/* IP6 extension header types */
 #define IP6_HOP_BY_HOP        (0)
 #define IP6_ROUTING           (43)
 #define IP6_FRAGMENT          (44)
@@ -421,19 +406,6 @@ bool
 eth_parse_ipv6_hdr(const struct iovec *pkt, int pkt_frags,
                    size_t ip6hdr_off, eth_ip6_hdr_info *info);
 
-/**
- * eth_pad_short_frame - pad a short frame to the minimum Ethernet frame length
- *
- * If the Ethernet frame size is shorter than 60 bytes, it will be padded to
- * 60 bytes at the address @padded_pkt.
- *
- * @padded_pkt: buffer address to hold the padded frame
- * @padded_buflen: pointer holding length of @padded_pkt. If the frame is
- *                 padded, the length will be updated to the padded one.
- * @pkt: address to hold the original Ethernet frame
- * @pkt_size: size of the original Ethernet frame
- * @return true if the frame is padded, otherwise false
- */
 bool eth_pad_short_frame(uint8_t *padded_pkt, size_t *padded_buflen,
                          const void *pkt, size_t pkt_size);
 

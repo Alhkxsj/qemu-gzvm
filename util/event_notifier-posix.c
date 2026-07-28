@@ -1,17 +1,5 @@
-/*
- * event notifier support
- *
- * Copyright Red Hat, Inc. 2010
- *
- * Authors:
- *  Michael S. Tsirkin <mst@redhat.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
-#include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/event_notifier.h"
 #include "qemu/main-loop.h"
@@ -21,10 +9,6 @@
 #endif
 
 #ifdef CONFIG_EVENTFD
-/*
- * Initialize @e with existing file descriptor @fd.
- * @fd must be a genuine eventfd object, emulation with pipe won't do.
- */
 void event_notifier_init_fd(EventNotifier *e, int fd)
 {
     e->rfd = fd;
@@ -37,7 +21,6 @@ int event_notifier_init(EventNotifier *e, int active)
 {
     int fds[2];
     int ret;
-    Error *local_err = NULL;
 
 #ifdef CONFIG_EVENTFD
     ret = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -54,11 +37,11 @@ int event_notifier_init(EventNotifier *e, int active)
         if (!g_unix_open_pipe(fds, FD_CLOEXEC, NULL)) {
             return -errno;
         }
-        if (!qemu_set_blocking(fds[0], false, &local_err)) {
+        if (!g_unix_set_fd_nonblocking(fds[0], true, NULL)) {
             ret = -errno;
             goto fail;
         }
-        if (!qemu_set_blocking(fds[1], false, &local_err)) {
+        if (!g_unix_set_fd_nonblocking(fds[1], true, NULL)) {
             ret = -errno;
             goto fail;
         }
@@ -72,7 +55,6 @@ int event_notifier_init(EventNotifier *e, int active)
     return 0;
 
 fail:
-    error_report_err(local_err);
     close(fds[0]);
     close(fds[1]);
     return ret;
@@ -117,7 +99,6 @@ int event_notifier_set(EventNotifier *e)
         ret = write(e->wfd, &value, sizeof(value));
     } while (ret < 0 && errno == EINTR);
 
-    /* EAGAIN is fine, a read must be pending.  */
     if (ret < 0 && errno != EAGAIN) {
         return -errno;
     }
@@ -134,7 +115,6 @@ int event_notifier_test_and_clear(EventNotifier *e)
         return 0;
     }
 
-    /* Drain the notify pipe.  For eventfd, only 8 bytes will be read.  */
     value = 0;
     do {
         len = read(e->rfd, buffer, sizeof(buffer));

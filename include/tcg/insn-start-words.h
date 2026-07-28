@@ -1,12 +1,12 @@
-/* SPDX-License-Identifier: MIT */
-/*
- * Define INSN_START_WORDS
- * Copyright (c) 2008 Fabrice Bellard
- */
 
-#ifndef TCG_INSN_START_WORDS
-#define TCG_INSN_START_WORDS
+#ifndef TARGET_INSN_START_WORDS
 
-#define INSN_START_WORDS 3
+#include "cpu.h"
 
-#endif /* TCG_INSN_START_WORDS */
+#ifndef TARGET_INSN_START_EXTRA_WORDS
+# define TARGET_INSN_START_WORDS 1
+#else
+# define TARGET_INSN_START_WORDS (1 + TARGET_INSN_START_EXTRA_WORDS)
+#endif
+
+#endif /* TARGET_INSN_START_WORDS */

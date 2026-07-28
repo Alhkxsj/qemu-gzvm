@@ -1,7 +1,3 @@
-/*
- * SPDX-License-Identifier: GPL-2.0-or-later
- * QEMU VC stubs
- */
 #include "qemu/osdep.h"
 
 #include "qapi/error.h"
@@ -9,13 +5,18 @@
 #include "qemu/option.h"
 #include "chardev/char.h"
 #include "ui/console-priv.h"
-#include "vt100.h"
 
 void qemu_text_console_update_size(QemuTextConsole *c)
 {
 }
 
-void vt100_update_cursor(void)
+const char *
+qemu_text_console_get_label(QemuTextConsole *c)
+{
+    return NULL;
+}
+
+void qemu_text_console_update_cursor(void)
 {
 }
 

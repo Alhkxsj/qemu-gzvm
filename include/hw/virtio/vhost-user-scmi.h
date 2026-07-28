@@ -1,10 +1,3 @@
-/*
- * Vhost-user SCMI virtio device
- *
- * Copyright (c) 2023 Red Hat, Inc.
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
- */
 
 #ifndef _QEMU_VHOST_USER_SCMI_H
 #define _QEMU_VHOST_USER_SCMI_H
@@ -18,7 +11,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(VHostUserSCMI, VHOST_USER_SCMI);
 
 struct VHostUserSCMI {
     VirtIODevice parent;
-    CharFrontend chardev;
+    CharBackend chardev;
     struct vhost_virtqueue *vhost_vqs;
     struct vhost_dev vhost_dev;
     VhostUserState vhost_user;

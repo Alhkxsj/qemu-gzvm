@@ -1,25 +1,9 @@
-/*
- * QEMU network structures definitions and helper functions
- *
- * Copyright (c) 2012 Ravello Systems LTD (http://ravellosystems.com)
- *
- * Developed by Daynix Computing LTD (http://www.daynix.com)
- *
- * Authors:
- * Dmitry Fleytman <dmitry@daynix.com>
- * Tamir Shomer <tamirs@daynix.com>
- * Yan Vugenfirer <yan@daynix.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- *
- */
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "standard-headers/linux/virtio_net.h"
 #include "net/eth.h"
 #include "net/checksum.h"
-#include "net/tap.h"
 
 void eth_setup_vlan_headers(struct eth_header *ehdr, size_t *ehdr_size,
                             uint16_t vlan_tag, uint16_t vlan_ethtype)
@@ -274,7 +258,7 @@ eth_strip_vlan_ex(const struct iovec *iov, int iovcnt, size_t iovoff, int index,
                   uint16_t *payload_offset, uint16_t *tci)
 {
     struct vlan_header vlan_hdr;
-    void *new_ehdr_proto;
+    uint16_t *new_ehdr_proto;
     size_t new_ehdr_size;
     size_t copied;
 
@@ -298,7 +282,7 @@ eth_strip_vlan_ex(const struct iovec *iov, int iovcnt, size_t iovoff, int index,
         return 0;
     }
 
-    if (copied < new_ehdr_size || lduw_be_p(new_ehdr_proto) != vet) {
+    if (copied < new_ehdr_size || be16_to_cpu(*new_ehdr_proto) != vet) {
         return 0;
     }
 
@@ -308,7 +292,7 @@ eth_strip_vlan_ex(const struct iovec *iov, int iovcnt, size_t iovoff, int index,
         return 0;
     }
 
-    stw_he_p(new_ehdr_proto, vlan_hdr.h_proto);
+    *new_ehdr_proto = vlan_hdr.h_proto;
     *payload_offset = iovoff + new_ehdr_size + sizeof(vlan_hdr);
     *tci = be16_to_cpu(vlan_hdr.h_tci);
 
@@ -529,7 +513,6 @@ bool eth_pad_short_frame(uint8_t *padded_pkt, size_t *padded_buflen,
         return false;
     }
 
-    /* pad to minimum Ethernet frame length */
     memcpy(padded_pkt, pkt, pkt_size);
     memset(&padded_pkt[pkt_size], 0, ETH_ZLEN - pkt_size);
     *padded_buflen = ETH_ZLEN;

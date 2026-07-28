@@ -1,17 +1,7 @@
-/*
- * QDev Hotplug handlers
- *
- * Copyright (c) Red Hat
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
-#include "hw/core/qdev.h"
-#include "hw/core/boards.h"
+#include "hw/qdev-core.h"
+#include "hw/boards.h"
 #include "qapi/error.h"
 
 HotplugHandler *qdev_get_machine_hotplug_handler(DeviceState *dev)
@@ -50,9 +40,6 @@ static bool qdev_hotplug_unplug_allowed_common(DeviceState *dev, BusState *bus,
         }
     } else {
         if (!qdev_get_machine_hotplug_handler(dev)) {
-            /*
-             * No bus, no machine hotplug handler --> device is not hotpluggable
-             */
             error_setg(errp,
                        "Device '%s' can not be hotplugged on this machine",
                        object_get_typename(OBJECT(dev)));
@@ -108,7 +95,6 @@ HotplugHandler *qdev_get_hotplug_handler(DeviceState *dev)
     return hotplug_ctrl;
 }
 
-/* can be used as ->unplug() callback for the simple cases */
 void qdev_simple_device_unplug_cb(HotplugHandler *hotplug_dev,
                                   DeviceState *dev, Error **errp)
 {

@@ -1,19 +1,6 @@
-/*
- * vhost-net support
- *
- * Copyright Red Hat, Inc. 2010
- *
- * Authors:
- *  Michael S. Tsirkin <mst@redhat.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "net/net.h"
-#include "net/tap.h"
-
 #include "hw/virtio/virtio-net.h"
 #include "net/vhost_net.h"
 #include "qemu/error-report.h"
@@ -46,8 +33,9 @@ void vhost_net_cleanup(struct vhost_net *net)
 {
 }
 
-void vhost_net_get_features_ex(struct vhost_net *net, uint64_t *features)
+uint64_t vhost_net_get_features(struct vhost_net *net, uint64_t features)
 {
+    return features;
 }
 
 int vhost_net_get_config(struct vhost_net *net,  uint8_t *config,
@@ -61,12 +49,13 @@ int vhost_net_set_config(struct vhost_net *net, const uint8_t *data,
     return 0;
 }
 
-void vhost_net_ack_features_ex(struct vhost_net *net, const uint64_t *features)
+void vhost_net_ack_features(struct vhost_net *net, uint64_t features)
 {
 }
 
-void vhost_net_get_acked_features_ex(VHostNetState *net, uint64_t *features)
+uint64_t vhost_net_get_acked_features(VHostNetState *net)
 {
+    return 0;
 }
 
 bool vhost_net_virtqueue_pending(VHostNetState *net, int idx)
@@ -98,7 +87,7 @@ VHostNetState *get_vhost_net(NetClientState *nc)
     return 0;
 }
 
-int vhost_net_set_vring_enable(NetClientState *nc, int enable)
+int vhost_set_vring_enable(NetClientState *nc, int enable)
 {
     return 0;
 }

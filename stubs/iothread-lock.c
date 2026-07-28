@@ -29,17 +29,7 @@ void bql_block_unlock(bool increase)
 
     assert(bql_locked());
 
-    /* check for overflow! */
     new_value = bql_unlock_blocked + increase - !increase;
     assert((new_value > bql_unlock_blocked) == increase);
     bql_unlock_blocked = new_value;
-}
-
-bool mutex_is_bql(QemuMutex *mutex)
-{
-    return false;
-}
-
-void bql_update_status(bool locked)
-{
 }

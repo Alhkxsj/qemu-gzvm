@@ -1,22 +1,3 @@
-/*
- * QEMU I/O channels external command driver
- *
- * Copyright (c) 2015 Red Hat, Inc.
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
- *
- */
 
 #include "qemu/osdep.h"
 #include "io/channel-command.h"
@@ -27,26 +8,6 @@
 #include "qemu/sockets.h"
 #include "trace.h"
 
-/**
- * qio_channel_command_new_pid:
- * @writefd: the FD connected to the command's stdin
- * @readfd: the FD connected to the command's stdout
- * @pid: the PID/HANDLE of the running child command
- * @errp: pointer to a NULL-initialized error object
- *
- * Create a channel for performing I/O with the
- * previously spawned command identified by @pid.
- * The two file descriptors provide the connection
- * to command's stdio streams, either one or which
- * may be -1 to indicate that stream is not open.
- *
- * The channel will take ownership of the process
- * @pid and will kill it when closing the channel.
- * Similarly it will take responsibility for
- * closing the file descriptors @writefd and @readfd.
- *
- * Returns: the command channel object, or NULL on error
- */
 static QIOChannelCommand *
 qio_channel_command_new_pid(int writefd,
                             int readfd,
@@ -103,9 +64,6 @@ static int qio_channel_command_abort(QIOChannelCommand *ioc,
     int status;
     int step = 0;
 
-    /* See if intermediate process has exited; if not, try a nice
-     * SIGTERM followed by a more severe SIGKILL.
-     */
  rewait:
     trace_qio_channel_command_abort(ioc, ioc->pid);
     ret = waitpid(ioc->pid, &status, WNOHANG);
@@ -277,12 +235,9 @@ static int qio_channel_command_set_blocking(QIOChannel *ioc,
     cioc->blocking = enabled;
 #else
 
-    if (cioc->writefd >= 0 &&
-        !qemu_set_blocking(cioc->writefd, enabled, errp)) {
-        return -1;
-    }
-    if (cioc->readfd >= 0 &&
-        !qemu_set_blocking(cioc->readfd, enabled, errp)) {
+    if ((cioc->writefd >= 0 && !g_unix_set_fd_nonblocking(cioc->writefd, !enabled, NULL)) ||
+        (cioc->readfd >= 0 && !g_unix_set_fd_nonblocking(cioc->readfd, !enabled, NULL))) {
+        error_setg_errno(errp, errno, "Failed to set FD nonblocking");
         return -1;
     }
 #endif
@@ -299,9 +254,6 @@ static int qio_channel_command_close(QIOChannel *ioc,
     pid_t wp;
 #endif
 
-    /* We close FDs before killing, because that
-     * gives a better chance of clean shutdown
-     */
     if (cioc->readfd != -1 &&
         close(cioc->readfd) < 0) {
         rv = -1;
@@ -361,7 +313,7 @@ static GSource *qio_channel_command_create_watch(QIOChannel *ioc,
 
 
 static void qio_channel_command_class_init(ObjectClass *klass,
-                                           const void *class_data G_GNUC_UNUSED)
+                                           void *class_data G_GNUC_UNUSED)
 {
     QIOChannelClass *ioc_klass = QIO_CHANNEL_CLASS(klass);
 

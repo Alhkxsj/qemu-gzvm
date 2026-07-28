@@ -4,7 +4,7 @@
 #include "qemu/accel.h"
 #include "qemu/typedefs.h"
 #include "qemu/thread.h"
-#include "accel/accel-ops.h"
+#include "system/accel-ops.h"
 #include "linux-headers/linux/gzvm.h"
 
 typedef struct gzvm_slot {

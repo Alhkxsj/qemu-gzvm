@@ -1,18 +1,7 @@
-/*
- * QEMU Object Model
- *
- * Copyright IBM, Corp. 2011
- *
- * Authors:
- *  Anthony Liguori   <aliguori@us.ibm.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
+#include "hw/qdev-core.h"
 #include "qapi/error.h"
-#include "qom/compat-properties.h"
 #include "qom/object.h"
 #include "qom/object_interfaces.h"
 #include "qemu/cutils.h"
@@ -23,14 +12,9 @@
 #include "qapi/qobject-input-visitor.h"
 #include "qapi/forward-visitor.h"
 #include "qapi/qapi-builtin-visit.h"
-#include "qobject/qdict.h"
 #include "qobject/qjson.h"
-#include "qemu/id.h"
-#include "qapi/qmp/qerror.h"
 #include "trace.h"
 
-/* TODO: replace QObject with a simpler visitor to avoid a dependency
- * of the QOM core on QObject?  */
 #include "qom/qom-qobject.h"
 #include "qobject/qbool.h"
 #include "qobject/qlist.h"
@@ -57,10 +41,10 @@ struct TypeImpl
     size_t instance_size;
     size_t instance_align;
 
-    void (*class_init)(ObjectClass *klass, const void *data);
-    void (*class_base_init)(ObjectClass *klass, const void *data);
+    void (*class_init)(ObjectClass *klass, void *data);
+    void (*class_base_init)(ObjectClass *klass, void *data);
 
-    const void *class_data;
+    void *class_data;
 
     void (*instance_init)(Object *obj);
     void (*instance_post_init)(Object *obj);
@@ -79,19 +63,28 @@ struct TypeImpl
 
 static Type type_interface;
 
-static GHashTable *type_table;
+static GHashTable *type_table_get(void)
+{
+    static GHashTable *type_table;
+
+    if (type_table == NULL) {
+        type_table = g_hash_table_new(g_str_hash, g_str_equal);
+    }
+
+    return type_table;
+}
 
 static bool enumerating_types;
 
 static void type_table_add(TypeImpl *ti)
 {
     assert(!enumerating_types);
-    g_hash_table_insert(type_table, (void *)ti->name, ti);
+    g_hash_table_insert(type_table_get(), (void *)ti->name, ti);
 }
 
 static TypeImpl *type_table_lookup(const char *name)
 {
-    return g_hash_table_lookup(type_table, name);
+    return g_hash_table_lookup(type_table_get(), name);
 }
 
 static TypeImpl *type_new(const TypeInfo *info)
@@ -138,11 +131,6 @@ static bool type_name_is_valid(const char *name)
 
     g_assert(slen > 1);
 
-    /*
-     * Ideally, the name should start with a letter - however, we've got
-     * too many names starting with a digit already, so allow digits here,
-     * too (except '0' which is not used yet)
-     */
     if (!g_ascii_isalnum(name[0]) || name[0] == '0') {
         return false;
     }
@@ -277,7 +265,6 @@ static bool type_is_ancestor(TypeImpl *type, TypeImpl *target_type)
 {
     assert(target_type);
 
-    /* Check if target_type is a direct ancestor of type */
     while (type) {
         if (type == target_type) {
             return true;
@@ -338,9 +325,6 @@ static void type_initialize(TypeImpl *ti)
     ti->class_size = type_class_get_size(ti);
     ti->instance_size = type_object_get_size(ti);
     ti->instance_align = type_object_get_align(ti);
-    /* Any type with zero instance_size is implicitly abstract.
-     * This means interface types are all abstract.
-     */
     if (ti->instance_size == 0) {
         ti->abstract = true;
     }
@@ -425,12 +409,12 @@ static void object_init_with_type(Object *obj, TypeImpl *ti)
 
 static void object_post_init_with_type(Object *obj, TypeImpl *ti)
 {
-    if (type_has_parent(ti)) {
-        object_post_init_with_type(obj, type_get_parent(ti));
-    }
-
     if (ti->instance_post_init) {
         ti->instance_post_init(obj);
+    }
+
+    if (type_has_parent(ti)) {
+        object_post_init_with_type(obj, type_get_parent(ti));
     }
 }
 
@@ -457,11 +441,6 @@ bool object_apply_global_props(Object *obj, const GPtrArray *props,
         if (!object_property_parse(obj, p->property, p->value, &err)) {
             error_prepend(&err, "can't apply global %s.%s=%s: ",
                           p->driver, p->property, p->value);
-            /*
-             * If errp != NULL, propagate error and return.
-             * If errp == NULL, report a warning, but keep going
-             * with the remaining globals.
-             */
             if (errp) {
                 error_propagate(errp, err);
                 return false;
@@ -472,6 +451,45 @@ bool object_apply_global_props(Object *obj, const GPtrArray *props,
     }
 
     return true;
+}
+
+static GPtrArray *object_compat_props[3];
+
+void object_register_sugar_prop(const char *driver, const char *prop,
+                                const char *value, bool optional)
+{
+    GlobalProperty *g;
+    if (!object_compat_props[2]) {
+        object_compat_props[2] = g_ptr_array_new();
+    }
+    g = g_new0(GlobalProperty, 1);
+    g->driver = g_strdup(driver);
+    g->property = g_strdup(prop);
+    g->value = g_strdup(value);
+    g->optional = optional;
+    g_ptr_array_add(object_compat_props[2], g);
+}
+
+void object_set_machine_compat_props(GPtrArray *compat_props)
+{
+    assert(!object_compat_props[1]);
+    object_compat_props[1] = compat_props;
+}
+
+void object_set_accelerator_compat_props(GPtrArray *compat_props)
+{
+    assert(!object_compat_props[0]);
+    object_compat_props[0] = compat_props;
+}
+
+void object_apply_compat_props(Object *obj)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(object_compat_props); i++) {
+        object_apply_global_props(obj, object_compat_props[i],
+                                  i == 2 ? &error_fatal : &error_abort);
+    }
 }
 
 static void object_class_property_init_all(Object *obj)
@@ -542,7 +560,7 @@ bool object_initialize_child_with_propsv(Object *parentobj,
     object_initialize(childobj, size, type);
     obj = OBJECT(childobj);
 
-    if (!object_set_propv(obj, vargs, errp)) {
+    if (!object_set_propv(obj, errp, vargs)) {
         goto out;
     }
 
@@ -559,14 +577,6 @@ bool object_initialize_child_with_propsv(Object *parentobj,
     ok = true;
 
 out:
-    /*
-     * We want @obj's reference to be 1 on success, 0 on failure.
-     * On success, it's 2: one taken by object_initialize(), and one
-     * by object_property_add_child().
-     * On failure in object_initialize() or earlier, it's 1.
-     * On failure afterwards, it's also 1: object_unparent() releases
-     * the reference taken by object_property_add_child().
-     */
     object_unref(obj);
     return ok;
 }
@@ -597,8 +607,6 @@ static void object_property_del_all(Object *obj)
         object_property_iter_init(&iter, obj);
         while ((prop = object_property_iter_next(&iter)) != NULL) {
             if (g_hash_table_add(done, prop)) {
-                trace_object_property_del(obj, obj->class->type->name,
-                                          prop->name, prop->opaque);
                 if (prop->release) {
                     prop->release(obj, prop->name, prop->opaque);
                     released = true;
@@ -617,14 +625,10 @@ static void object_property_del_child(Object *obj, Object *child)
     GHashTableIter iter;
     gpointer key, value;
 
-    trace_object_property_del_child(obj, obj->class->type->name,
-                                    child, child->class->type->name);
     g_hash_table_iter_init(&iter, obj->properties);
     while (g_hash_table_iter_next(&iter, &key, &value)) {
         prop = value;
         if (object_property_is_child(prop) && prop->opaque == child) {
-            trace_object_property_del(obj, obj->class->type->name,
-                                      prop->name, prop->opaque);
             if (prop->release) {
                 prop->release(obj, prop->name, prop->opaque);
                 prop->release = NULL;
@@ -664,7 +668,7 @@ static void object_finalize(void *data)
 {
     Object *obj = data;
     TypeImpl *ti = obj->class->type;
-    trace_object_finalize(obj, obj->class->type->name);
+
     object_property_del_all(obj);
     object_deinit(obj, ti);
 
@@ -675,7 +679,6 @@ static void object_finalize(void *data)
     }
 }
 
-/* Find the minimum alignment guaranteed by the system malloc. */
 #if __STDC_VERSION__ >= 201112L
 typedef max_align_t qemu_max_align_t;
 #else
@@ -699,10 +702,6 @@ static Object *object_new_with_type(Type type)
     size = type->instance_size;
     align = type->instance_align;
 
-    /*
-     * Do not use qemu_memalign unless required.  Depending on the
-     * implementation, extra alignment implies extra overhead.
-     */
     if (likely(align <= __alignof__(qemu_max_align_t))) {
         obj = g_malloc(size);
         obj_free = g_free;
@@ -714,7 +713,6 @@ static Object *object_new_with_type(Type type)
     object_initialize_with_type(obj, size, type);
     obj->free = obj_free;
 
-    trace_object_new(obj, obj->class->type->name);
     return obj;
 }
 
@@ -740,41 +738,25 @@ Object *object_new_with_props(const char *typename,
     va_list vargs;
     Object *obj;
 
-    assert(parent != NULL);
-    assert(id != NULL);
     va_start(vargs, errp);
-    obj = object_new_with_propv(typename, parent, id, vargs, errp);
+    obj = object_new_with_propv(typename, parent, id, errp, vargs);
     va_end(vargs);
 
     return obj;
 }
 
 
-static Object *
-object_new_with_props_helper(const char *typename,
-                             Object *parent,
-                             const char *id,
-                             void *props,
-                             bool (set_props)(Object *obj, void *props,
-                                              Error **errp),
-                             Error **errp)
+Object *object_new_with_propv(const char *typename,
+                              Object *parent,
+                              const char *id,
+                              Error **errp,
+                              va_list vargs)
 {
-    ERRP_GUARD();
     Object *obj;
     ObjectClass *klass;
     UserCreatable *uc;
 
-    assert((id != NULL && parent != NULL) ||
-           (id == NULL && parent == NULL));
-
-    if (id != NULL && !id_wellformed(id)) {
-        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "id", "an identifier");
-        error_append_hint(errp, "Identifiers consist of letters, digits, "
-                          "'-', '.', '_', starting with a letter.\n");
-        return NULL;
-    }
-
-    klass = module_object_class_by_name(typename);
+    klass = object_class_by_name(typename);
     if (!klass) {
         error_setg(errp, "invalid object type: %s", typename);
         return NULL;
@@ -786,15 +768,12 @@ object_new_with_props_helper(const char *typename,
     }
     obj = object_new_with_type(klass->type);
 
-    if (!set_props(obj, props, errp)) {
+    if (!object_set_propv(obj, errp, vargs)) {
         goto error;
     }
 
     if (id != NULL) {
-        object_property_try_add_child(parent, id, obj, errp);
-        if (*errp) {
-            goto error;
-        }
+        object_property_add_child(parent, id, obj);
     }
 
     uc = (UserCreatable *)object_dynamic_cast(obj, TYPE_USER_CREATABLE);
@@ -807,6 +786,7 @@ object_new_with_props_helper(const char *typename,
         }
     }
 
+    object_unref(obj);
     return obj;
 
  error:
@@ -814,124 +794,16 @@ object_new_with_props_helper(const char *typename,
     return NULL;
 }
 
-struct ObjectNewVargsData {
-    va_list vargs;
-};
-
-static bool object_new_with_propv_setter(Object *obj,
-                                         void *props,
-                                         Error **errp)
-{
-    struct ObjectNewVargsData *data = props;
-    return object_set_propv(obj, data->vargs, errp);
-}
-
-Object *object_new_with_propv(const char *typename,
-                              Object *parent,
-                              const char *id,
-                              va_list vargs,
-                              Error **errp)
-{
-    Object *obj;
-    struct ObjectNewVargsData data;
-    assert(parent != NULL);
-    assert(id != NULL);
-    va_copy(data.vargs, vargs);
-    obj = object_new_with_props_helper(typename,
-                                       parent,
-                                       id,
-                                       &data,
-                                       object_new_with_propv_setter,
-                                       errp);
-    va_end(data.vargs);
-    if (obj) {
-        object_unref(obj);
-    }
-    return obj;
-}
-
-struct ObjectNewQDictData {
-    const QDict *props;
-    Visitor *v;
-};
-
-static bool object_new_with_qdict_setter(Object *obj,
-                                         void *props,
-                                         Error **errp)
-{
-    struct ObjectNewQDictData *data = props;
-    return object_set_props_from_qdict(obj, data->props, data->v, errp);
-}
-
-Object *object_new_with_props_from_qdict(const char *typename,
-                                         Object *parent,
-                                         const char *id,
-                                         const QDict *props,
-                                         Visitor *v,
-                                         Error **errp)
-{
-    struct ObjectNewQDictData data = { props, v };
-    Object *obj;
-    assert(parent != NULL);
-    assert(id != NULL);
-    obj = object_new_with_props_helper(typename,
-                                       parent,
-                                       id,
-                                       &data,
-                                       object_new_with_qdict_setter,
-                                       errp);
-    if (obj) {
-        object_unref(obj);
-    }
-    return obj;
-}
-
-Object *object_new_with_props_parentless(const char *typename,
-                                         Error **errp,
-                                         ...)
-{
-    va_list vargs;
-    Object *obj;
-
-    va_start(vargs, errp);
-    obj = object_new_with_propv_parentless(typename, vargs, errp);
-    va_end(vargs);
-
-    return obj;
-}
-
-Object *object_new_with_propv_parentless(const char *typename,
-                                         va_list vargs,
-                                         Error **errp)
-{
-    Object *ret;
-    struct ObjectNewVargsData data;
-    va_copy(data.vargs, vargs);
-    ret = object_new_with_props_helper(typename, NULL, NULL, &data,
-                                       object_new_with_propv_setter, errp);
-    va_end(data.vargs);
-    return ret;
-}
-
-Object *object_new_with_props_from_qdict_parentless(const char *typename,
-                                                    const QDict *props,
-                                                    Visitor *v,
-                                                    Error **errp)
-{
-    struct ObjectNewQDictData data = { props, v };
-    return object_new_with_props_helper(typename, NULL, NULL, &data,
-                                        object_new_with_qdict_setter, errp);
-}
 
 bool object_set_props(Object *obj,
-                      Error **errp,
-                      ...)
+                     Error **errp,
+                     ...)
 {
     va_list vargs;
     bool ret;
 
     va_start(vargs, errp);
-    ret = object_set_propv(obj, vargs, errp);
+    ret = object_set_propv(obj, errp, vargs);
     va_end(vargs);
 
     return ret;
@@ -939,8 +811,8 @@ bool object_set_props(Object *obj,
 
 
 bool object_set_propv(Object *obj,
-                      va_list vargs,
-                      Error **errp)
+                     Error **errp,
+                     va_list vargs)
 {
     const char *propname;
 
@@ -958,41 +830,6 @@ bool object_set_propv(Object *obj,
     return true;
 }
 
-bool object_set_props_from_qdict(Object *obj, const QDict *qdict,
-                                 Visitor *v, Error **errp)
-{
-    ERRP_GUARD();
-    const QDictEntry *e;
-
-    if (!visit_start_struct(v, NULL, NULL, 0, errp)) {
-        return false;
-    }
-    for (e = qdict_first(qdict); e; e = qdict_next(qdict, e)) {
-        if (!object_property_set(obj, e->key, v, errp)) {
-            goto out;
-        }
-    }
-    visit_check_struct(v, errp);
-out:
-    visit_end_struct(v, NULL);
-
-    return *errp == NULL;
-}
-
-bool object_set_props_from_keyval(Object *obj, const QDict *qdict,
-                                  bool from_json, Error **errp)
-{
-    bool ret;
-    Visitor *v;
-    if (from_json) {
-        v = qobject_input_visitor_new(QOBJECT(qdict));
-    } else {
-        v = qobject_input_visitor_new_keyval(QOBJECT(qdict));
-    }
-    ret = object_set_props_from_qdict(obj, qdict, v, errp);
-    visit_free(v);
-    return ret;
-}
 
 Object *object_dynamic_cast(Object *obj, const char *typename)
 {
@@ -1006,9 +843,8 @@ Object *object_dynamic_cast(Object *obj, const char *typename)
 Object *object_dynamic_cast_assert(Object *obj, const char *typename,
                                    const char *file, int line, const char *func)
 {
-    trace_object_dynamic_cast_assert(
-        obj, obj ? obj->class->type->name : "(null)",
-        typename, file, line, func);
+    trace_object_dynamic_cast_assert(obj ? obj->class->type->name : "(null)",
+                                     typename, file, line, func);
 
 #ifdef CONFIG_QOM_CAST_DEBUG
     int i;
@@ -1054,7 +890,6 @@ ObjectClass *object_class_dynamic_cast(ObjectClass *class,
         return NULL;
     }
 
-    /* A simple fast path that can trigger a lot for leaf classes.  */
     type = class->type;
     if (type->name == typename) {
         return class;
@@ -1062,7 +897,6 @@ ObjectClass *object_class_dynamic_cast(ObjectClass *class,
 
     target_type = type_get_by_name_noload(typename);
     if (!target_type) {
-        /* target class type unknown, so fail the cast */
         return NULL;
     }
 
@@ -1080,7 +914,6 @@ ObjectClass *object_class_dynamic_cast(ObjectClass *class,
             }
          }
 
-        /* The match was ambiguous, don't allow a cast */
         if (found > 1) {
             ret = NULL;
         }
@@ -1098,9 +931,8 @@ ObjectClass *object_class_dynamic_cast_assert(ObjectClass *class,
 {
     ObjectClass *ret;
 
-    trace_object_class_dynamic_cast_assert(
-        class ? class->type->name : "(null)",
-        typename, file, line, func);
+    trace_object_class_dynamic_cast_assert(class ? class->type->name : "(null)",
+                                           typename, file, line, func);
 
 #ifdef CONFIG_QOM_CAST_DEBUG
     int i;
@@ -1233,7 +1065,7 @@ void object_class_foreach(void (*fn)(ObjectClass *klass, void *opaque),
     OCFData data = { fn, implements_type, include_abstract, opaque };
 
     enumerating_types = true;
-    g_hash_table_foreach(type_table, object_class_foreach_tramp, &data);
+    g_hash_table_foreach(type_table_get(), object_class_foreach_tramp, &data);
     enumerating_types = false;
 }
 
@@ -1295,18 +1127,17 @@ GSList *object_class_get_list(const char *implements_type,
     return list;
 }
 
-static gint object_class_cmp(gconstpointer a, gconstpointer b, gpointer d)
+static gint object_class_cmp(gconstpointer a, gconstpointer b)
 {
-    return g_ascii_strcasecmp(object_class_get_name((ObjectClass *)a),
-                              object_class_get_name((ObjectClass *)b));
+    return strcasecmp(object_class_get_name((ObjectClass *)a),
+                      object_class_get_name((ObjectClass *)b));
 }
 
 GSList *object_class_get_list_sorted(const char *implements_type,
                                      bool include_abstract)
 {
-    return g_slist_sort_with_data(
-        object_class_get_list(implements_type, include_abstract),
-        object_class_cmp, NULL);
+    return g_slist_sort(object_class_get_list(implements_type, include_abstract),
+                        object_class_cmp);
 }
 
 Object *object_ref(void *objptr)
@@ -1318,7 +1149,6 @@ Object *object_ref(void *objptr)
         return NULL;
     }
     ref = qatomic_fetch_inc(&obj->ref);
-    /* Assert waaay before the integer overflows */
     g_assert(ref < INT_MAX);
     return obj;
 }
@@ -1331,7 +1161,6 @@ void object_unref(void *objptr)
     }
     g_assert(obj->ref > 0);
 
-    /* parent always holds a reference to its children */
     if (qatomic_fetch_dec(&obj->ref) == 1) {
         object_finalize(obj);
     }
@@ -1384,8 +1213,6 @@ object_property_try_add(Object *obj, const char *name, const char *type,
     prop->release = release;
     prop->opaque = opaque;
 
-    trace_object_property_add(obj, obj->class->type->name,
-                              prop->name, prop->opaque);
     g_hash_table_insert(obj->properties, prop->name, prop);
     return prop;
 }
@@ -1424,8 +1251,6 @@ object_class_property_add(ObjectClass *klass,
     prop->release = release;
     prop->opaque = opaque;
 
-    trace_object_class_property_add(klass->type->name, prop->name,
-                                    prop->opaque);
     g_hash_table_insert(klass->properties, prop->name, prop);
 
     return prop;
@@ -1514,8 +1339,6 @@ void object_property_del(Object *obj, const char *name)
 {
     ObjectProperty *prop = g_hash_table_lookup(obj->properties, name);
 
-    trace_object_property_del(obj, obj->class->type->name, prop->name,
-                              prop->opaque);
     if (prop->release) {
         prop->release(obj, name, prop->opaque);
     }
@@ -1804,11 +1627,8 @@ int object_property_get_enum(Object *obj, const char *name,
 bool object_property_parse(Object *obj, const char *name,
                            const char *string, Error **errp)
 {
-    Visitor *v;
-    bool ok;
-    trace_object_property_parse(obj, obj->class->type->name, name, string);
-    v = string_input_visitor_new(string);
-    ok = object_property_set(obj, name, v, errp);
+    Visitor *v = string_input_visitor_new(string);
+    bool ok = object_property_set(obj, name, v, errp);
 
     visit_free(v);
     return ok;
@@ -1843,7 +1663,6 @@ const char *object_property_get_type(Object *obj, const char *name, Error **errp
 }
 
 static const char *const root_containers[] = {
-    "audiodevs",
     "chardevs",
     "objects",
     "backend"
@@ -1854,10 +1673,6 @@ static Object *object_root_initialize(void)
     Object *root = object_new(TYPE_CONTAINER);
     int i;
 
-    /*
-     * Create all QEMU system containers.  "machine" and its sub-containers
-     * are only created when machine initializes (qemu_create_machine()).
-     */
     for (i = 0; i < ARRAY_SIZE(root_containers); i++) {
         object_property_add_new_container(root, root_containers[i]);
     }
@@ -1939,8 +1754,6 @@ object_property_try_add_child(Object *obj, const char *name,
     g_autofree char *type = NULL;
     ObjectProperty *op;
 
-    trace_object_property_add_child(obj, obj->class->type->name, name,
-                                    child, child->class->type->name);
     assert(!child->parent);
 
     type = g_strdup_printf("child<%s>", object_get_typename(child));
@@ -1967,7 +1780,6 @@ object_property_add_child(Object *obj, const char *name,
 void object_property_allow_set_link(const Object *obj, const char *name,
                                     Object *val, Error **errp)
 {
-    /* Allow the link to be set, always */
 }
 
 typedef struct {
@@ -2010,12 +1822,16 @@ static void object_get_link_property(Object *obj, Visitor *v,
     }
 }
 
-Object *object_resolve_and_typecheck(const char *path, const char *name,
-                                     const char *target_type, Error **errp)
+static Object *object_resolve_link(Object *obj, const char *name,
+                                   const char *path, Error **errp)
 {
+    const char *type;
+    char *target_type;
     bool ambiguous = false;
     Object *target;
 
+    type = object_property_get_type(obj, name, NULL);
+    target_type = g_strndup(&type[5], strlen(type) - 6);
     target = object_resolve_path_type(path, target_type, &ambiguous);
 
     if (ambiguous) {
@@ -2032,28 +1848,9 @@ Object *object_resolve_and_typecheck(const char *path, const char *name,
         }
         target = NULL;
     }
+    g_free(target_type);
+
     return target;
-}
-
-/*
- * object_resolve_link:
- *
- * Lookup an object and ensure its type matches the link property type.  This
- * is similar to object_resolve_path() except type verification against the
- * link property is performed.
- *
- * Returns: The matched object or NULL on path lookup failures.
- */
-static Object *object_resolve_link(Object *obj, const char *name,
-                                   const char *path, Error **errp)
-{
-    const char *type;
-    g_autofree char *target_type = NULL;
-
-    /* Go from link<FOO> to FOO.  */
-    type = object_property_get_type(obj, name, NULL);
-    target_type = g_strndup(&type[5], strlen(type) - 6);
-    return object_resolve_and_typecheck(path, name, target_type, errp);
 }
 
 static void object_set_link_property(Object *obj, Visitor *v,
@@ -2217,7 +2014,6 @@ const char *object_get_canonical_path_component(const Object *obj)
         }
     }
 
-    /* obj had a parent but was not a child, should never happen */
     g_assert_not_reached();
 }
 
@@ -2234,9 +2030,6 @@ char *object_get_canonical_path(const Object *obj)
         const char *component = object_get_canonical_path_component(obj);
 
         if (!component) {
-            /* A canonical path must be complete, so discard what was
-             * collected so far.
-             */
             g_free(path);
             return NULL;
         }
@@ -3013,13 +2806,13 @@ void object_class_property_set_description(ObjectClass *klass,
     op->description = g_strdup(description);
 }
 
-static void object_class_init(ObjectClass *klass, const void *data)
+static void object_class_init(ObjectClass *klass, void *data)
 {
     object_class_property_add_str(klass, "type", object_get_type,
                                   NULL);
 }
 
-static void __attribute__((constructor)) register_types(void)
+static void register_types(void)
 {
     static const TypeInfo interface_info = {
         .name = TYPE_INTERFACE,
@@ -3034,7 +2827,8 @@ static void __attribute__((constructor)) register_types(void)
         .abstract = true,
     };
 
-    type_table = g_hash_table_new(g_str_hash, g_str_equal);
     type_interface = type_register_internal(&interface_info);
     type_register_internal(&object_info);
 }
+
+type_init(register_types)

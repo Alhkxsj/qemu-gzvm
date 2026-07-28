@@ -1,15 +1,3 @@
-/*
- * Virtio GPU Device
- *
- * Copyright Red Hat, Inc. 2013-2014
- *
- * Authors:
- *     Dave Airlie <airlied@redhat.com>
- *     Gerd Hoffmann <kraxel@redhat.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
@@ -19,13 +7,12 @@
 #include "hw/virtio/virtio-gpu.h"
 #include "hw/virtio/virtio-gpu-pixman.h"
 #include "trace.h"
-#include "system/ramblock.h"
-#include "system/hostmem.h"
+#include "exec/ramblock.h"
+#include "exec/ramlist.h"
 #include <sys/ioctl.h>
 #include <linux/memfd.h>
 #include "qemu/memfd.h"
 #include "standard-headers/linux/udmabuf.h"
-#include "standard-headers/drm/drm_fourcc.h"
 
 static void virtio_gpu_create_udmabuf(struct virtio_gpu_simple_resource *res)
 {
@@ -91,41 +78,24 @@ static void virtio_gpu_destroy_udmabuf(struct virtio_gpu_simple_resource *res)
     }
 }
 
-static int find_memory_backend_type(Object *obj, void *opaque)
-{
-    bool *memfd_backend = opaque;
-    int ret;
-
-    if (object_dynamic_cast(obj, TYPE_MEMORY_BACKEND)) {
-        HostMemoryBackend *backend = MEMORY_BACKEND(obj);
-        RAMBlock *rb = backend->mr.ram_block;
-
-        if (rb && rb->fd > 0) {
-            ret = fcntl(rb->fd, F_GET_SEALS);
-            if (ret > 0) {
-                *memfd_backend = true;
-            }
-        }
-    }
-
-    return 0;
-}
-
 bool virtio_gpu_have_udmabuf(void)
 {
-    Object *memdev_root;
+    RAMBlock *rb;
     int udmabuf;
-    bool memfd_backend = false;
 
     udmabuf = udmabuf_fd();
     if (udmabuf < 0) {
         return false;
     }
 
-    memdev_root = object_resolve_path("/objects", NULL);
-    object_child_foreach(memdev_root, find_memory_backend_type, &memfd_backend);
+    RCU_READ_LOCK_GUARD();
+    RAMBLOCK_FOREACH(rb) {
+        if (rb->fd > 0 && fcntl(rb->fd, F_GET_SEALS) > 0) {
+            return true;
+        }
+    }
 
-    return memfd_backend;
+    return false;
 }
 
 void virtio_gpu_init_udmabuf(struct virtio_gpu_simple_resource *res)
@@ -151,35 +121,22 @@ void virtio_gpu_init_udmabuf(struct virtio_gpu_simple_resource *res)
     res->blob = pdata;
 }
 
+void virtio_gpu_fini_udmabuf(struct virtio_gpu_simple_resource *res)
+{
+    if (res->remapped) {
+        virtio_gpu_destroy_udmabuf(res);
+    }
+}
+
 static void virtio_gpu_free_dmabuf(VirtIOGPU *g, VGPUDMABuf *dmabuf)
 {
     struct virtio_gpu_scanout *scanout;
 
     scanout = &g->parent_obj.scanout[dmabuf->scanout_id];
-    qemu_console_gl_release_dmabuf(scanout->con, dmabuf->buf);
+    dpy_gl_release_dmabuf(scanout->con, dmabuf->buf);
     g_clear_pointer(&dmabuf->buf, qemu_dmabuf_free);
     QTAILQ_REMOVE(&g->dmabuf.bufs, dmabuf, next);
     g_free(dmabuf);
-}
-
-void virtio_gpu_fini_udmabuf(VirtIOGPU *g, struct virtio_gpu_simple_resource *res)
-{
-    int max_outputs = g->parent_obj.conf.max_outputs;
-    int i;
-
-    for (i = 0; i < max_outputs; i++) {
-        VGPUDMABuf *dmabuf = g->dmabuf.primary[i];
-
-        if (dmabuf &&
-            qemu_dmabuf_get_num_planes(dmabuf->buf) > 0 &&
-            qemu_dmabuf_get_fds(dmabuf->buf, NULL)[0] == res->dmabuf_fd &&
-            res->dmabuf_fd != -1) {
-            qemu_dmabuf_close(dmabuf->buf);
-            res->dmabuf_fd = -1;
-        }
-    }
-
-    virtio_gpu_destroy_udmabuf(res);
 }
 
 static VGPUDMABuf
@@ -190,19 +147,16 @@ static VGPUDMABuf
                           struct virtio_gpu_rect *r)
 {
     VGPUDMABuf *dmabuf;
-    uint32_t offset = 0;
 
     if (res->dmabuf_fd < 0) {
         return NULL;
     }
 
     dmabuf = g_new0(VGPUDMABuf, 1);
-    dmabuf->buf = qemu_dmabuf_new(r->width, r->height,
-                                  &offset, &fb->stride,
+    dmabuf->buf = qemu_dmabuf_new(r->width, r->height, fb->stride,
                                   r->x, r->y, fb->width, fb->height,
                                   qemu_pixman_to_drm_format(fb->format),
-                                  DRM_FORMAT_MOD_INVALID, &res->dmabuf_fd,
-                                  1, true, false);
+                                  0, res->dmabuf_fd, true, false);
     dmabuf->scanout_id = scanout_id;
     QTAILQ_INSERT_HEAD(&g->dmabuf.bufs, dmabuf, next);
 
@@ -232,7 +186,7 @@ int virtio_gpu_update_dmabuf(VirtIOGPU *g,
     height = qemu_dmabuf_get_height(new_primary->buf);
     g->dmabuf.primary[scanout_id] = new_primary;
     qemu_console_resize(scanout->con, width, height);
-    qemu_console_gl_scanout_dmabuf(scanout->con, new_primary->buf);
+    dpy_gl_scanout_dmabuf(scanout->con, new_primary->buf);
 
     if (old_primary) {
         virtio_gpu_free_dmabuf(g, old_primary);

@@ -1,5 +1,3 @@
-/* Poison identifiers that should not be used when building
-   target independent device code.  */
 
 #ifndef HW_POISON_H
 #define HW_POISON_H
@@ -21,7 +19,7 @@
 #pragma GCC poison TARGET_ABI_MIPSO32
 #pragma GCC poison TARGET_MIPS64
 #pragma GCC poison TARGET_ABI_MIPSN64
-#pragma GCC poison TARGET_OR1K
+#pragma GCC poison TARGET_OPENRISC
 #pragma GCC poison TARGET_PPC
 #pragma GCC poison TARGET_PPC64
 #pragma GCC poison TARGET_ABI32
@@ -35,8 +33,8 @@
 
 #pragma GCC poison TARGET_HAS_BFLT
 #pragma GCC poison TARGET_NAME
+#pragma GCC poison TARGET_SUPPORTS_MTTCG
 #pragma GCC poison TARGET_BIG_ENDIAN
-#pragma GCC poison TCG_GUEST_DEFAULT_MO
 
 #pragma GCC poison TARGET_LONG_BITS
 #pragma GCC poison TARGET_FMT_lx
@@ -65,12 +63,5 @@
 #pragma GCC poison CONFIG_KVM
 #pragma GCC poison CONFIG_WHPX
 #pragma GCC poison CONFIG_XEN
-
-#ifndef COMPILING_SYSTEM_VS_USER
-#pragma GCC poison CONFIG_USER_ONLY
-#pragma GCC poison CONFIG_SOFTMMU
-#endif
-
-#pragma GCC poison KVM_HAVE_MCE_INJECTION
 
 #endif

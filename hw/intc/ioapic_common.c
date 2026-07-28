@@ -1,23 +1,3 @@
-/*
- *  IOAPIC emulation logic - common bits of emulated and KVM kernel model
- *
- *  Copyright (c) 2004-2005 Fabrice Bellard
- *  Copyright (c) 2009      Xiantao Zhang, Intel
- *  Copyright (c) 2011      Jan Kiszka, Siemens AG
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
- */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -26,14 +6,8 @@
 #include "hw/intc/intc.h"
 #include "hw/intc/ioapic.h"
 #include "hw/intc/ioapic_internal.h"
-#include "hw/core/sysbus.h"
+#include "hw/sysbus.h"
 
-/* ioapic_no count start from 0 to MAX_IOAPICS,
- * remove as static variable from ioapic_common_init.
- * now as a global variable, let child to increase the counter
- * then we can drop the 'instance_no' argument
- * and convert to our QOM's realize function
- */
 int ioapic_no;
 
 void ioapic_stat_update_irq(IOAPICCommonState *s, int irq, int level)
@@ -197,7 +171,7 @@ static const VMStateDescription vmstate_ioapic_common = {
     }
 };
 
-static void ioapic_common_class_init(ObjectClass *klass, const void *data)
+static void ioapic_common_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
@@ -215,7 +189,7 @@ static const TypeInfo ioapic_common_type = {
     .class_size = sizeof(IOAPICCommonClass),
     .class_init = ioapic_common_class_init,
     .abstract = true,
-    .interfaces = (const InterfaceInfo[]) {
+    .interfaces = (InterfaceInfo[]) {
         { TYPE_INTERRUPT_STATS_PROVIDER },
         { }
     },

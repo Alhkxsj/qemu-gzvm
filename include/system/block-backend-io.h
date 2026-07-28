@@ -1,14 +1,3 @@
-/*
- * QEMU Block backends
- *
- * Copyright (C) 2014-2016 Red Hat, Inc.
- *
- * Authors:
- *  Markus Armbruster <armbru@redhat.com>,
- *
- * This work is licensed under the terms of the GNU LGPL, version 2.1
- * or later.  See the COPYING.LIB file in the top-level directory.
- */
 
 #ifndef BLOCK_BACKEND_IO_H
 #define BLOCK_BACKEND_IO_H
@@ -16,12 +5,6 @@
 #include "block-backend-common.h"
 #include "block/accounting.h"
 
-/*
- * I/O API functions. These functions are thread-safe.
- *
- * See include/block/block-io.h for more information about
- * the I/O API.
- */
 
 const char *blk_name(const BlockBackend *blk);
 
@@ -32,13 +15,6 @@ void blk_set_allow_aio_context_change(BlockBackend *blk, bool allow);
 void blk_set_disable_request_queuing(BlockBackend *blk, bool disable);
 bool blk_iostatus_is_enabled(const BlockBackend *blk);
 
-/*
- * Return the qdev ID, or if no ID is assigned the QOM path,
- * of the block device attached to the BlockBackend.
- *
- * The caller is responsible for releasing the value returned
- * with g_free() after use.
- */
 char *blk_get_attached_dev_id(BlockBackend *blk);
 
 BlockAIOCB *blk_aio_pwrite_zeroes(BlockBackend *blk, int64_t offset,
@@ -71,8 +47,6 @@ BlockAIOCB *blk_aio_ioctl(BlockBackend *blk, unsigned long int req, void *buf,
 
 void blk_inc_in_flight(BlockBackend *blk);
 void blk_dec_in_flight(BlockBackend *blk);
-void coroutine_fn blk_co_start_request(BlockBackend *blk);
-void blk_end_request(BlockBackend *blk);
 
 bool coroutine_fn GRAPH_RDLOCK blk_co_is_inserted(BlockBackend *blk);
 bool co_wrapper_mixed_bdrv_rdlock blk_is_inserted(BlockBackend *blk);
@@ -118,7 +92,6 @@ BlockAIOCB *blk_abort_aio_request(BlockBackend *blk,
                                   void *opaque, int ret);
 
 uint32_t blk_get_request_alignment(BlockBackend *blk);
-uint32_t blk_get_pwrite_zeroes_alignment(BlockBackend *blk);
 uint32_t blk_get_max_transfer(BlockBackend *blk);
 uint64_t blk_get_max_hw_transfer(BlockBackend *blk);
 
@@ -137,13 +110,6 @@ int coroutine_fn blk_co_is_allocated_above(BlockBackend *blk,
                                            bool include_base, int64_t offset,
                                            int64_t bytes, int64_t *pnum);
 
-/*
- * "I/O or GS" API functions. These functions can run without
- * the BQL, but only in one specific iothread/main loop.
- *
- * See include/block/block-io.h for more information about
- * the "I/O or GS" API.
- */
 
 int co_wrapper_mixed blk_pread(BlockBackend *blk, int64_t offset,
                                int64_t bytes, void *buf,
@@ -218,9 +184,9 @@ int co_wrapper_mixed blk_zone_append(BlockBackend *blk, int64_t *offset,
                                          BdrvRequestFlags flags);
 
 int co_wrapper_mixed blk_pdiscard(BlockBackend *blk, int64_t offset,
-                                  int64_t bytes, BdrvRequestFlags flags);
+                                  int64_t bytes);
 int coroutine_fn blk_co_pdiscard(BlockBackend *blk, int64_t offset,
-                                 int64_t bytes, BdrvRequestFlags flags);
+                                 int64_t bytes);
 
 int co_wrapper_mixed blk_flush(BlockBackend *blk);
 int coroutine_fn blk_co_flush(BlockBackend *blk);

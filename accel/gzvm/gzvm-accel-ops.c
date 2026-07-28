@@ -1,51 +1,24 @@
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
 #include "qemu/thread.h"
-#include "hw/core/boards.h"
+#include "hw/boards.h"
 #include "hw/core/cpu.h"
-#include "accel/accel-cpu-ops.h"
-#include "accel/accel-ops.h"
+#include "system/accel-ops.h"
 #include "system/cpus.h"
 #include "system/gzvm.h"
 #include "system/gzvm_int.h"
 #include "gzvm-internal.h"
 #include "qapi/error.h"
-#include "migration/blocker.h"
 
 bool gzvm_allowed;
 
-static Error *gzvm_migration_blocker;
-
-static int gzvm_init(AccelState *as, MachineState *ms)
+static int gzvm_init(MachineState *ms)
 {
-    int ret;
-    Error *local_err = NULL;
-    GZVMState *s = GZVM_STATE(as);
+    GZVMState *s = GZVM_STATE(current_accel());
 
     gzvm_ioctl_set_state(s);
 
-    ret = gzvm_create_vm();
-    if (ret) {
-        return ret;
-    }
-
-    error_setg(&gzvm_migration_blocker,
-               "gzvm: migration not supported (no dirty page tracking or GET_ONE_REG in kernel API)");
-    ret = migrate_add_blocker(&gzvm_migration_blocker, &local_err);
-    if (ret < 0) {
-        error_report_err(local_err);
-        error_free(gzvm_migration_blocker);
-        gzvm_migration_blocker = NULL;
-        if (s->fd >= 0) {
-            close(s->fd);
-        }
-        if (s->vmfd >= 0) {
-            close(s->vmfd);
-        }
-        return ret;
-    }
-
-    return 0;
+    return gzvm_create_vm();
 }
 
 static bool gzvm_get_protected(Object *obj, Error **errp)
@@ -63,9 +36,6 @@ static void gzvm_set_protected(Object *obj, bool value, Error **errp)
 static void gzvm_accel_instance_finalize(Object *obj)
 {
     GZVMState *s = GZVM_STATE(obj);
-    if (gzvm_migration_blocker) {
-        migrate_del_blocker(&gzvm_migration_blocker);
-    }
     if (s->fd >= 0) {
         close(s->fd);
     }
@@ -89,7 +59,7 @@ static void gzvm_accel_instance_init(Object *obj)
                              gzvm_set_protected);
 }
 
-static void gzvm_setup_post(AccelState *accel)
+static void gzvm_setup_post(MachineState *ms, AccelState *accel)
 {
     int r = gzvm_start_vm();
     if (r < 0) {
@@ -97,7 +67,7 @@ static void gzvm_setup_post(AccelState *accel)
     }
 }
 
-static void gzvm_accel_class_init(ObjectClass *oc, const void *data)
+static void gzvm_accel_class_init(ObjectClass *oc, void *data)
 {
     AccelClass *ac = ACCEL_CLASS(oc);
     ac->name = "GZVM";
@@ -141,7 +111,7 @@ static bool gzvm_vcpu_thread_is_idle(CPUState *cpu)
     return false;
 }
 
-static void gzvm_accel_ops_class_init(ObjectClass *oc, const void *data)
+static void gzvm_accel_ops_class_init(ObjectClass *oc, void *data)
 {
     AccelOpsClass *ops = ACCEL_OPS_CLASS(oc);
     ops->create_vcpu_thread = gzvm_start_vcpu_thread;
@@ -149,7 +119,6 @@ static void gzvm_accel_ops_class_init(ObjectClass *oc, const void *data)
     ops->cpu_thread_is_idle = gzvm_vcpu_thread_is_idle;
     ops->synchronize_post_reset = gzvm_cpu_synchronize_post_reset;
     ops->synchronize_post_init = gzvm_cpu_synchronize_post_reset;
-    ops->handle_interrupt = generic_handle_interrupt;
 }
 
 static const TypeInfo gzvm_accel_ops_type = {

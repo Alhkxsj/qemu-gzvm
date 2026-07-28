@@ -1,20 +1,9 @@
-common_ss.add(files('accel-common.c'))
 specific_ss.add(files('accel-target.c'))
-system_ss.add(files('accel-system.c', 'accel-blocker.c', 'accel-qmp.c', 'accel-irq.c'))
-user_ss.add(files('accel-user.c'))
-
+system_ss.add(files('accel-system.c', 'accel-blocker.c'))
+if get_option('tcg').allowed()
 subdir('tcg')
-if have_system
-  subdir('hvf')
-  subdir('whpx')
-  subdir('qtest')
-  subdir('kvm')
-  subdir('gzvm')
-  subdir('xen')
-  subdir('stubs')
-  subdir('mshv')
-  subdir('nitro')
 endif
-
-# qtest
-system_ss.add(files('dummy-cpus.c'))
+if have_system
+subdir('gzvm')
+subdir('stubs')
+endif

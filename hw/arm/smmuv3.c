@@ -1,40 +1,19 @@
-/*
- * Copyright (C) 2014-2016 Broadcom Corporation
- * Copyright (c) 2017 Red Hat, Inc.
- * Written by Prem Mallappa, Eric Auger
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/bitops.h"
-#include "hw/core/irq.h"
-#include "hw/core/sysbus.h"
-#include "hw/core/qdev-properties-system.h"
-#include "migration/blocker.h"
+#include "hw/irq.h"
+#include "hw/sysbus.h"
 #include "migration/vmstate.h"
-#include "hw/core/qdev-properties.h"
-#include "hw/core/qdev.h"
+#include "hw/qdev-properties.h"
+#include "hw/qdev-core.h"
 #include "hw/pci/pci.h"
-#include "target/arm/cpu.h"
-#include "exec/target_page.h"
-#include "trace.h"
+#include "cpu.h"
+#include "trace/trace-hw_arm.h"
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 
 #include "hw/arm/smmuv3.h"
-#include "smmuv3-accel.h"
 #include "smmuv3-internal.h"
 #include "smmu-internal.h"
 
@@ -43,13 +22,6 @@
                                         ((ptw_info).stage == SMMU_STAGE_2 && \
                                         (cfg)->s2cfg.record_faults))
 
-/**
- * smmuv3_trigger_irq - pulse @irq if enabled and update
- * GERROR register in case of GERROR interrupt
- *
- * @irq: irq type
- * @gerror_mask: mask of gerrors to toggle (relevant if @irq is GERROR)
- */
 static void smmuv3_trigger_irq(SMMUv3State *s, SMMUIrq irq,
                                uint32_t gerror_mask)
 {
@@ -72,7 +44,6 @@ static void smmuv3_trigger_irq(SMMUv3State *s, SMMUIrq irq,
         uint32_t new_gerrors = ~pending & gerror_mask;
 
         if (!new_gerrors) {
-            /* only toggle non pending errors */
             return;
         }
         s->gerror ^= new_gerrors;
@@ -99,10 +70,6 @@ static void smmuv3_write_gerrorn(SMMUv3State *s, uint32_t new_gerrorn)
                       toggled & ~pending);
     }
 
-    /*
-     * We do not raise any error in case guest toggles bits corresponding
-     * to not active IRQs (CONSTRAINED UNPREDICTABLE)
-     */
     s->gerrorn = new_gerrorn;
 
     trace_smmuv3_write_gerrorn(toggled & pending, s->gerrorn);
@@ -169,22 +136,10 @@ static MemTxResult smmuv3_write_eventq(SMMUv3State *s, Evt *evt)
     return MEMTX_OK;
 }
 
-void smmuv3_propagate_event(SMMUv3State *s, Evt *evt)
-{
-    MemTxResult r;
-
-    trace_smmuv3_propagate_event(smmu_event_string(EVT_GET_TYPE(evt)),
-                                 EVT_GET_SID(evt));
-    QEMU_LOCK_GUARD(&s->mutex);
-    r = smmuv3_write_eventq(s, evt);
-    if (r != MEMTX_OK) {
-        smmuv3_trigger_irq(s, SMMU_IRQ_GERROR, R_GERROR_EVENTQ_ABT_ERR_MASK);
-    }
-}
-
 void smmuv3_record_event(SMMUv3State *s, SMMUEventInfo *info)
 {
     Evt evt = {};
+    MemTxResult r;
 
     if (!smmuv3_eventq_enabled(s)) {
         return;
@@ -256,7 +211,6 @@ void smmuv3_record_event(SMMUv3State *s, SMMUEventInfo *info)
         EVT_SET_SSID(&evt, info->u.f_cfg_conflict.ssid);
         EVT_SET_SSV(&evt,  info->u.f_cfg_conflict.ssv);
         break;
-    /* rest is not implemented */
     case SMMU_EVT_F_BAD_ATS_TREQ:
     case SMMU_EVT_F_TLB_CONFLICT:
     case SMMU_EVT_E_PAGE_REQ:
@@ -264,18 +218,16 @@ void smmuv3_record_event(SMMUv3State *s, SMMUEventInfo *info)
         g_assert_not_reached();
     }
 
-    smmuv3_propagate_event(s, &evt);
+    trace_smmuv3_record_event(smmu_event_string(info->type), info->sid);
+    r = smmuv3_write_eventq(s, &evt);
+    if (r != MEMTX_OK) {
+        smmuv3_trigger_irq(s, SMMU_IRQ_GERROR, R_GERROR_EVENTQ_ABT_ERR_MASK);
+    }
     info->recorded = true;
 }
 
-/*
- * Called during realize(), as the ID registers will be accessed early in the
- * SMMUv3 accel path for feature compatibility checks. The remaining registers
- * are initialized later in smmuv3_reset().
- */
-static void smmuv3_init_id_regs(SMMUv3State *s)
+static void smmuv3_init_regs(SMMUv3State *s)
 {
-    /* Based on sys property, the stages supported in smmu will be advertised.*/
     if (s->stage && !strcmp("2", s->stage)) {
         s->idr[0] = FIELD_DP32(s->idr[0], IDR0, S2P, 1);
     } else if (s->stage && !strcmp("nested", s->stage)) {
@@ -291,9 +243,7 @@ static void smmuv3_init_id_regs(SMMUv3State *s)
     s->idr[0] = FIELD_DP32(s->idr[0], IDR0, VMID16, 1); /* 16-bit VMID */
     s->idr[0] = FIELD_DP32(s->idr[0], IDR0, TTENDIAN, 2); /* little endian */
     s->idr[0] = FIELD_DP32(s->idr[0], IDR0, STALL_MODEL, 1); /* No stall */
-    /* terminated transaction will always be aborted/error returned */
     s->idr[0] = FIELD_DP32(s->idr[0], IDR0, TERM_MODEL, 1);
-    /* 2-level stream table supported */
     s->idr[0] = FIELD_DP32(s->idr[0], IDR0, STLEVEL, 1);
 
     s->idr[1] = FIELD_DP32(s->idr[1], IDR1, SIDSIZE, SMMU_IDR1_SIDSIZE);
@@ -302,29 +252,16 @@ static void smmuv3_init_id_regs(SMMUv3State *s)
 
     s->idr[3] = FIELD_DP32(s->idr[3], IDR3, HAD, 1);
     if (FIELD_EX32(s->idr[0], IDR0, S2P)) {
-        /* XNX is a stage-2-specific feature */
         s->idr[3] = FIELD_DP32(s->idr[3], IDR3, XNX, 1);
     }
     s->idr[3] = FIELD_DP32(s->idr[3], IDR3, RIL, 1);
     s->idr[3] = FIELD_DP32(s->idr[3], IDR3, BBML, 2);
 
-    /* OAS: 44 bits */
-    s->idr[5] = FIELD_DP32(s->idr[5], IDR5, OAS, SMMU_IDR5_OAS_44);
-    /* 4K, 16K and 64K granule support */
+    s->idr[5] = FIELD_DP32(s->idr[5], IDR5, OAS, SMMU_IDR5_OAS); /* 44 bits */
     s->idr[5] = FIELD_DP32(s->idr[5], IDR5, GRAN4K, 1);
     s->idr[5] = FIELD_DP32(s->idr[5], IDR5, GRAN16K, 1);
     s->idr[5] = FIELD_DP32(s->idr[5], IDR5, GRAN64K, 1);
-    s->aidr = 0x1;
-    smmuv3_accel_idr_override(s);
-}
 
-bool smmuv3_ats_enabled(SMMUv3State *s)
-{
-    return FIELD_EX32(s->idr[0], IDR0, ATS);
-}
-
-static void smmuv3_reset(SMMUv3State *s)
-{
     s->cmdq.base = deposit64(s->cmdq.base, 0, 5, SMMU_CMDQS);
     s->cmdq.prod = 0;
     s->cmdq.cons = 0;
@@ -336,6 +273,7 @@ static void smmuv3_reset(SMMUv3State *s)
 
     s->features = 0;
     s->sid_split = 0;
+    s->aidr = 0x1;
     s->cr[0] = 0;
     s->cr0ack = 0;
     s->irq_ctrl = 0;
@@ -351,7 +289,6 @@ static int smmu_get_ste(SMMUv3State *s, dma_addr_t addr, STE *buf,
     int ret, i;
 
     trace_smmuv3_get_ste(addr);
-    /* TODO: guarantee 64-bit single-copy atomicity */
     ret = dma_memory_read(&address_space_memory, addr, buf, sizeof(*buf),
                           MEMTXATTRS_UNSPECIFIED);
     if (ret != MEMTX_OK) {
@@ -374,7 +311,6 @@ static SMMUTranslationStatus smmuv3_do_translate(SMMUv3State *s, hwaddr addr,
                                                  IOMMUAccessFlags flag,
                                                  SMMUTLBEntry **out_entry,
                                                  SMMUTranslationClass class);
-/* @ssid > 0 not supported yet */
 static int smmu_get_cd(SMMUv3State *s, STE *ste, SMMUTransCfg *cfg,
                        uint32_t ssid, CD *buf, SMMUEventInfo *event)
 {
@@ -389,7 +325,6 @@ static int smmu_get_cd(SMMUv3State *s, STE *ste, SMMUTransCfg *cfg,
         status = smmuv3_do_translate(s, addr, cfg, event,
                                      IOMMU_RO, &entry, SMMU_CLASS_CD);
 
-        /* Same PTW faults are reported but with CLASS = CD. */
         if (status != SMMU_TRANS_SUCCESS) {
             return -EINVAL;
         }
@@ -397,7 +332,6 @@ static int smmu_get_cd(SMMUv3State *s, STE *ste, SMMUTransCfg *cfg,
         addr = CACHED_ENTRY_TO_ADDR(entry, addr);
     }
 
-    /* TODO: guarantee 64-bit single-copy atomicity */
     ret = dma_memory_read(&address_space_memory, addr, buf, sizeof(*buf),
                           MEMTXATTRS_UNSPECIFIED);
     if (ret != MEMTX_OK) {
@@ -413,15 +347,6 @@ static int smmu_get_cd(SMMUv3State *s, STE *ste, SMMUTransCfg *cfg,
     return 0;
 }
 
-/*
- * Max valid value is 39 when SMMU_IDR3.STT == 0.
- * In architectures after SMMUv3.0:
- * - If STE.S2TG selects a 4KB or 16KB granule, the minimum valid value for this
- *   field is MAX(16, 64-IAS)
- * - If STE.S2TG selects a 64KB granule, the minimum valid value for this field
- *   is (64-IAS).
- * As we only support AA64, IAS = OAS.
- */
 static bool s2t0sz_valid(SMMUTransCfg *cfg)
 {
     if (cfg->s2cfg.tsz > 39) {
@@ -435,14 +360,6 @@ static bool s2t0sz_valid(SMMUTransCfg *cfg)
     return (cfg->s2cfg.tsz >= MAX(64 - cfg->s2cfg.eff_ps, 16));
 }
 
-/*
- * Return true if s2 page table config is valid.
- * This checks with the configured start level, ias_bits and granularity we can
- * have a valid page table as described in ARM ARM D8.2 Translation process.
- * The idea here is to see for the highest possible number of IPA bits, how
- * many concatenated tables we would need, if it is more than 16, then this is
- * not possible.
- */
 static bool s2_pgtable_config_valid(uint8_t sl0, uint8_t t0sz, uint8_t gran)
 {
     int level = get_start_level(sl0, gran);
@@ -483,26 +400,15 @@ static int decode_ste_s2_cfg(SMMUv3State *s, SMMUTransCfg *cfg,
     cfg->s2cfg.vttb = STE_S2TTB(ste);
 
     cfg->s2cfg.sl0 = STE_S2SL0(ste);
-    /* FEAT_TTST not supported. */
     if (cfg->s2cfg.sl0 == 0x3) {
         qemu_log_mask(LOG_UNIMP, "SMMUv3 S2SL0 = 0x3 has no meaning!\n");
         goto bad_ste;
     }
 
-    /* For AA64, The effective S2PS size is capped to the OAS. */
     cfg->s2cfg.eff_ps = oas2bits(MIN(STE_S2PS(ste), oas));
-    /*
-     * For SMMUv3.1 and later, when OAS == IAS == 52, the stage 2 input
-     * range is further limited to 48 bits unless STE.S2TG indicates a
-     * 64KB granule.
-     */
     if (cfg->s2cfg.granule_sz != 16) {
         cfg->s2cfg.eff_ps = MIN(cfg->s2cfg.eff_ps, 48);
     }
-    /*
-     * It is ILLEGAL for the address in S2TTB to be outside the range
-     * described by the effective S2PS value.
-     */
     if (cfg->s2cfg.vttb & ~(MAKE_64BIT_MASK(0, cfg->s2cfg.eff_ps))) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "SMMUv3 S2TTB too large 0x%" PRIx64
@@ -526,7 +432,6 @@ static int decode_ste_s2_cfg(SMMUv3State *s, SMMUTransCfg *cfg,
         goto bad_ste;
     }
 
-    /* Only LE supported(IDR0.TTENDIAN). */
     if (STE_S2ENDI(ste)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "SMMUv3 STE_S2ENDI only supports LE!\n");
@@ -536,7 +441,6 @@ static int decode_ste_s2_cfg(SMMUv3State *s, SMMUTransCfg *cfg,
     cfg->s2cfg.affd = STE_S2AFFD(ste);
 
     cfg->s2cfg.record_faults = STE_S2R(ste);
-    /* As stall is not supported. */
     if (STE_S2S(ste)) {
         qemu_log_mask(LOG_UNIMP, "SMMUv3 Stall not implemented!\n");
         goto bad_ste;
@@ -569,7 +473,6 @@ static void decode_ste_config(SMMUTransCfg *cfg, uint32_t config)
     }
 }
 
-/* Returns < 0 in case of invalid STE, 0 otherwise */
 static int decode_ste(SMMUv3State *s, SMMUTransCfg *cfg,
                       STE *ste, SMMUEventInfo *event)
 {
@@ -592,10 +495,6 @@ static int decode_ste(SMMUv3State *s, SMMUTransCfg *cfg,
         return 0;
     }
 
-    /*
-     * If a stage is enabled in SW while not advertised, throw bad ste
-     * according to user manual(IHI0070E) "5.2 Stream Table Entry".
-     */
     if (!STAGE1_SUPPORTED(s) && STE_CFG_S1_ENABLED(config)) {
         qemu_log_mask(LOG_GUEST_ERROR, "SMMUv3 S1 used but not supported.\n");
         goto bad_ste;
@@ -606,18 +505,12 @@ static int decode_ste(SMMUv3State *s, SMMUTransCfg *cfg,
     }
 
     if (STAGE2_SUPPORTED(s)) {
-        /* VMID is considered even if s2 is disabled. */
         cfg->s2cfg.vmid = STE_S2VMID(ste);
     } else {
-        /* Default to -1 */
         cfg->s2cfg.vmid = -1;
     }
 
     if (STE_CFG_S2_ENABLED(config)) {
-        /*
-         * Stage-1 OAS defaults to OAS even if not enabled as it would be used
-         * in input address check for stage-2.
-         */
         cfg->oas = oas2bits(oas);
         ret = decode_ste_s2_cfg(s, cfg, ste);
         if (ret) {
@@ -625,11 +518,9 @@ static int decode_ste(SMMUv3State *s, SMMUTransCfg *cfg,
         }
     }
 
-    /* Multiple context descriptors require SubstreamID support */
-    if (s->ssidsize == SSID_SIZE_MODE_0 && STE_S1CDMAX(ste) != 0) {
+    if (STE_S1CDMAX(ste) != 0) {
         qemu_log_mask(LOG_UNIMP,
-                "SMMUv3: multiple S1 context descriptors require SubstreamID support. "
-                "Configure ssidsize > 0 (requires accel=on)\n");
+                      "SMMUv3 does not support multiple context descriptors yet\n");
         goto bad_ste;
     }
 
@@ -645,19 +536,8 @@ bad_ste:
     return -EINVAL;
 }
 
-/**
- * smmu_find_ste - Return the stream table entry associated
- * to the sid
- *
- * @s: smmuv3 handle
- * @sid: stream ID
- * @ste: returned stream table entry
- * @event: handle to an event info
- *
- * Supports linear and 2-level stream table
- * Return 0 on success, -EINVAL otherwise
- */
-int smmu_find_ste(SMMUv3State *s, uint32_t sid, STE *ste, SMMUEventInfo *event)
+static int smmu_find_ste(SMMUv3State *s, uint32_t sid, STE *ste,
+                         SMMUEventInfo *event)
 {
     dma_addr_t addr, strtab_base;
     uint32_t log2size;
@@ -666,9 +546,6 @@ int smmu_find_ste(SMMUv3State *s, uint32_t sid, STE *ste, SMMUEventInfo *event)
 
     trace_smmuv3_find_ste(sid, s->features, s->sid_split);
     log2size = FIELD_EX32(s->strtab_base_cfg, STRTAB_BASE_CFG, LOG2SIZE);
-    /*
-     * Check SID range against both guest-configured and implementation limits
-     */
     if (sid >= (1 << MIN(log2size, SMMU_IDR1_SIDSIZE))) {
         event->type = SMMU_EVT_C_BAD_STREAMID;
         return -EINVAL;
@@ -678,17 +555,12 @@ int smmu_find_ste(SMMUv3State *s, uint32_t sid, STE *ste, SMMUEventInfo *event)
         dma_addr_t l1ptr, l2ptr;
         STEDesc l1std;
 
-        /*
-         * Align strtab base address to table size. For this purpose, assume it
-         * is not bounded by SMMU_IDR1_SIDSIZE.
-         */
         strtab_size_shift = MAX(5, (int)log2size - s->sid_split - 1 + 3);
         strtab_base = s->strtab_base & SMMU_BASE_ADDR_MASK &
                       ~MAKE_64BIT_MASK(0, strtab_size_shift);
         l1_ste_offset = sid >> s->sid_split;
         l2_ste_offset = sid & ((1 << s->sid_split) - 1);
         l1ptr = (dma_addr_t)(strtab_base + l1_ste_offset * sizeof(l1std));
-        /* TODO: guarantee 64-bit single-copy atomicity */
         ret = dma_memory_read(&address_space_memory, l1ptr, &l1std,
                               sizeof(l1std), MEMTXATTRS_UNSPECIFIED);
         if (ret != MEMTX_OK) {
@@ -705,7 +577,6 @@ int smmu_find_ste(SMMUv3State *s, uint32_t sid, STE *ste, SMMUEventInfo *event)
         span = L1STD_SPAN(&l1std);
 
         if (!span) {
-            /* l2ptr is not valid */
             if (!event->inval_ste_allowed) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "invalid sid=%d (L1STD span=0)\n", sid);
@@ -761,7 +632,6 @@ static int decode_cd(SMMUv3State *s, SMMUTransCfg *cfg,
         goto bad_cd; /* HTTU = 0 */
     }
 
-    /* we support only those at the moment */
     cfg->aa64 = true;
 
     cfg->oas = oas2bits(CD_IPS(cd));
@@ -772,7 +642,6 @@ static int decode_cd(SMMUv3State *s, SMMUTransCfg *cfg,
 
     trace_smmuv3_decode_cd(cfg->oas);
 
-    /* decode data dependent on TT */
     for (i = 0; i <= 1; i++) {
         int tg, tsz;
         SMMUTransTableInfo *tt = &cfg->tt[i];
@@ -794,11 +663,6 @@ static int decode_cd(SMMUv3State *s, SMMUTransCfg *cfg,
             goto bad_cd;
         }
 
-        /*
-         * An address greater than 48 bits in size can only be output from a
-         * TTD when, in SMMUv3.1 and later, the effective IPS is 52 and a 64KB
-         * granule is in use for that translation table
-         */
         if (tt->granule_sz != 16) {
             cfg->oas = MIN(cfg->oas, 48);
         }
@@ -809,15 +673,9 @@ static int decode_cd(SMMUv3State *s, SMMUTransCfg *cfg,
             goto bad_cd;
         }
 
-        /* Translate the TTBx, from IPA to PA if nesting is enabled. */
         if (cfg->stage == SMMU_NESTED) {
             status = smmuv3_do_translate(s, tt->ttb, cfg, event, IOMMU_RO,
                                          &entry, SMMU_CLASS_TT);
-            /*
-             * Same PTW faults are reported but with CLASS = TT.
-             * If TTBx is larger than the effective stage 1 output addres
-             * size, it reports C_BAD_CD, which is handled by the above case.
-             */
             if (status != SMMU_TRANS_SUCCESS) {
                 return -EINVAL;
             }
@@ -837,17 +695,6 @@ bad_cd:
     return ret;
 }
 
-/**
- * smmuv3_decode_config - Prepare the translation configuration
- * for the @mr iommu region
- * @mr: iommu memory region the translation config must be prepared for
- * @cfg: output translation configuration which is populated through
- *       the different configuration decoding steps
- * @event: must be zero'ed by the caller
- *
- * return < 0 in case of config decoding error (@event is filled
- * accordingly). Return 0 otherwise.
- */
 static int smmuv3_decode_config(IOMMUMemoryRegion *mr, SMMUTransCfg *cfg,
                                 SMMUEventInfo *event)
 {
@@ -858,7 +705,6 @@ static int smmuv3_decode_config(IOMMUMemoryRegion *mr, SMMUTransCfg *cfg,
     STE ste;
     CD cd;
 
-    /* ASID defaults to -1 (if s1 is not supported). */
     cfg->asid = -1;
 
     ret = smmu_find_ste(s, sid, &ste, event);
@@ -883,18 +729,6 @@ static int smmuv3_decode_config(IOMMUMemoryRegion *mr, SMMUTransCfg *cfg,
     return decode_cd(s, cfg, &cd, event);
 }
 
-/**
- * smmuv3_get_config - Look up for a cached copy of configuration data for
- * @sdev and on cache miss performs a configuration structure decoding from
- * guest RAM.
- *
- * @sdev: SMMUDevice handle
- * @event: output event info
- *
- * The configuration cache contains data resulting from both STE and CD
- * decoding under the form of an SMMUTransCfg struct. The hash table is indexed
- * by the SMMUDevice handle.
- */
 static SMMUTransCfg *smmuv3_get_config(SMMUDevice *sdev, SMMUEventInfo *event)
 {
     SMMUv3State *s = sdev->smmu;
@@ -935,7 +769,6 @@ static void smmuv3_flush_config(SMMUDevice *sdev)
     g_hash_table_remove(bc->configs, sdev);
 }
 
-/* Do translation with TLB lookup. */
 static SMMUTranslationStatus smmuv3_do_translate(SMMUv3State *s, hwaddr addr,
                                                  SMMUTransCfg *cfg,
                                                  SMMUEventInfo *event,
@@ -949,17 +782,6 @@ static SMMUTranslationStatus smmuv3_do_translate(SMMUv3State *s, hwaddr addr,
     int asid, stage;
     bool desc_s2_translation = class != SMMU_CLASS_IN;
 
-    /*
-     * The function uses the argument class to identify which stage is used:
-     * - CLASS = IN: Means an input translation, determine the stage from STE.
-     * - CLASS = CD: Means the addr is an IPA of the CD, and it would be
-     *   translated using the stage-2.
-     * - CLASS = TT: Means the addr is an IPA of the stage-1 translation table
-     *   and it would be translated using the stage-2.
-     * For the last 2 cases instead of having intrusive changes in the common
-     * logic, we modify the cfg to be a stage-2 translation only in case of
-     * nested, and then restore it after.
-     */
     if (desc_s2_translation) {
         asid = cfg->asid;
         stage = cfg->stage;
@@ -975,21 +797,7 @@ static SMMUTranslationStatus smmuv3_do_translate(SMMUv3State *s, hwaddr addr,
     }
 
     if (!cached_entry) {
-        /* All faults from PTW has S2 field. */
         event->u.f_walk_eabt.s2 = (ptw_info.stage == SMMU_STAGE_2);
-        /*
-         * Fault class is set as follows based on "class" input to
-         * the function and to "ptw_info" from "smmu_translate()"
-         * For stage-1:
-         *   - EABT => CLASS_TT (hardcoded)
-         *   - other events => CLASS_IN (input to function)
-         * For stage-2 => CLASS_IN (input to function)
-         * For nested, for all events:
-         *  - CD fetch => CLASS_CD (input to function)
-         *  - walking stage 1 translation table  => CLASS_TT (from
-         *    is_ipa_descriptor or input in case of TTBx)
-         *  - s2 translation => CLASS_IN (input to function)
-         */
         class = ptw_info.is_ipa_descriptor ? SMMU_CLASS_TT : class;
         switch (ptw_info.type) {
         case SMMU_PTW_ERR_WALK_EABT:
@@ -1040,12 +848,6 @@ static SMMUTranslationStatus smmuv3_do_translate(SMMUv3State *s, hwaddr addr,
     return SMMU_TRANS_SUCCESS;
 }
 
-/*
- * Sets the InputAddr for an SMMU_TRANS_ERROR, as it can't be
- * set from all contexts, as smmuv3_get_config() can return
- * translation faults in case of nested translation (for CD
- * and TTBx). But in that case the iova is not known.
- */
 static void smmuv3_fixup_event(SMMUEventInfo *event, hwaddr iova)
 {
     switch (event->type) {
@@ -1061,7 +863,6 @@ static void smmuv3_fixup_event(SMMUEventInfo *event, hwaddr iova)
     }
 }
 
-/* Entry point to SMMU, does everything. */
 static IOMMUTLBEntry smmuv3_translate(IOMMUMemoryRegion *mr, hwaddr addr,
                                       IOMMUAccessFlags flag, int iommu_idx)
 {
@@ -1136,7 +937,6 @@ epilogue:
                                       entry.perm);
         break;
     case SMMU_TRANS_ABORT:
-        /* no event is recorded on abort */
         trace_smmuv3_translate_abort(mr->parent_obj.name, sid, addr,
                                      entry.perm);
         break;
@@ -1152,19 +952,6 @@ epilogue:
     return entry;
 }
 
-/**
- * smmuv3_notify_iova - call the notifier @n for a given
- * @asid and @iova tuple.
- *
- * @mr: IOMMU mr region handle
- * @n: notifier to be called
- * @asid: address space ID or negative value if we don't care
- * @vmid: virtual machine ID or negative value if we don't care
- * @iova: iova
- * @tg: translation granule (if communicated through range invalidation)
- * @num_pages: number of @granule sized pages (if tg != 0), otherwise 1
- * @stage: Which stage(1 or 2) is used
- */
 static void smmuv3_notify_iova(IOMMUMemoryRegion *mr,
                                IOMMUNotifier *n,
                                int asid, int vmid,
@@ -1181,14 +968,6 @@ static void smmuv3_notify_iova(IOMMUMemoryRegion *mr,
         return;
     }
 
-    /*
-     * stage is passed from TLB invalidation commands which can be either
-     * stage-1 or stage-2.
-     * However, IOMMUTLBEvent only understands IOVA, for stage-1 or stage-2
-     * SMMU instances we consider the input address as the IOVA, but when
-     * nesting is used, we can't mix stage-1 and stage-2 addresses, so for
-     * nesting only stage-1 is considered the IOVA and would be notified.
-     */
     if ((stage == SMMU_STAGE_2) && (cfg->stage == SMMU_NESTED))
         return;
 
@@ -1226,7 +1005,6 @@ static void smmuv3_notify_iova(IOMMUMemoryRegion *mr,
     memory_region_notify_iommu_one(n, &event);
 }
 
-/* invalidate an asid/vmid/iova range tuple in all mr's */
 static void smmuv3_inv_notifiers_iova(SMMUState *s, int asid, int vmid,
                                       dma_addr_t iova, uint8_t tg,
                                       uint64_t num_pages, int stage)
@@ -1261,7 +1039,6 @@ static void smmuv3_range_inval(SMMUState *s, Cmd *cmd, SMMUStage stage)
     int asid = -1;
     SMMUv3State *smmuv3 = ARM_SMMUV3(s);
 
-    /* Only consider VMID if stage-2 is supported. */
     if (STAGE2_SUPPORTED(smmuv3)) {
         vmid = CMD_VMID(cmd);
     }
@@ -1281,12 +1058,10 @@ static void smmuv3_range_inval(SMMUState *s, Cmd *cmd, SMMUStage stage)
         return;
     }
 
-    /* RIL in use */
 
     num_pages = (num + 1) * BIT_ULL(scale);
     granule = tg * 2 + 10;
 
-    /* Split invalidations into ^2 range invalidations */
     end = addr + (num_pages << granule) - 1;
 
     while (addr != end + 1) {
@@ -1305,7 +1080,7 @@ static void smmuv3_range_inval(SMMUState *s, Cmd *cmd, SMMUStage stage)
     }
 }
 
-static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
+static int smmuv3_cmdq_consume(SMMUv3State *s)
 {
     SMMUState *bs = ARM_SMMU(s);
     SMMUCmdError cmd_error = SMMU_CERROR_NONE;
@@ -1315,12 +1090,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
     if (!smmuv3_cmdq_enabled(s)) {
         return 0;
     }
-    /*
-     * some commands depend on register values, typically CR0. In case those
-     * register values change while handling the command, spec says it
-     * is UNPREDICTABLE whether the command is interpreted under the new
-     * or old value.
-     */
 
     while (!smmuv3_q_empty(q)) {
         uint32_t pending = s->gerror ^ s->gerrorn;
@@ -1367,10 +1136,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
             }
 
             trace_smmuv3_cmdq_cfgi_ste(sid);
-            if (!smmuv3_accel_install_ste(s, sdev, sid, errp)) {
-                cmd_error = SMMU_CERROR_ILL;
-                break;
-            }
             smmuv3_flush_config(sdev);
 
             break;
@@ -1391,10 +1156,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
             sid_range.end = sid_range.start + mask;
 
             trace_smmuv3_cmdq_cfgi_ste_range(sid_range.start, sid_range.end);
-            if (!smmuv3_accel_install_ste_range(s, &sid_range, errp)) {
-                cmd_error = SMMU_CERROR_ILL;
-                break;
-            }
             smmu_configs_inv_sid_range(bs, sid_range);
             break;
         }
@@ -1413,21 +1174,8 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
                 break;
             }
 
-            /*
-             * This command raises CERROR_ILL when stage 1 is not implemented
-             * according to (IHI 0070G.b) Page 176.
-             */
-            if (!STAGE1_SUPPORTED(s)) {
-                cmd_error = SMMU_CERROR_ILL;
-                break;
-            }
-
             trace_smmuv3_cmdq_cfgi_cd(sid);
             smmuv3_flush_config(sdev);
-            if (!smmuv3_accel_issue_inv_cmd(s, &cmd, sdev, errp)) {
-                cmd_error = SMMU_CERROR_ILL;
-                break;
-            }
             break;
         }
         case SMMU_CMD_TLBI_NH_ASID:
@@ -1440,10 +1188,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
                 break;
             }
 
-            /*
-             * VMID is only matched when stage 2 is supported, otherwise set it
-             * to -1 as the value used for stage-1 only VMIDs.
-             */
             if (STAGE2_SUPPORTED(s)) {
                 vmid = CMD_VMID(&cmd);
             }
@@ -1451,10 +1195,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
             trace_smmuv3_cmdq_tlbi_nh_asid(asid);
             smmu_inv_notifiers_all(&s->smmu_state);
             smmu_iotlb_inv_asid_vmid(bs, asid, vmid);
-            if (!smmuv3_accel_issue_inv_cmd(s, &cmd, NULL, errp)) {
-                cmd_error = SMMU_CERROR_ILL;
-                break;
-            }
             break;
         }
         case SMMU_CMD_TLBI_NH_ALL:
@@ -1466,10 +1206,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
                 break;
             }
 
-            /*
-             * If stage-2 is supported, invalidate for this VMID only, otherwise
-             * invalidate the whole thing.
-             */
             if (STAGE2_SUPPORTED(s)) {
                 vmid = CMD_VMID(&cmd);
                 trace_smmuv3_cmdq_tlbi_nh(vmid);
@@ -1482,10 +1218,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
             trace_smmuv3_cmdq_tlbi_nsnh();
             smmu_inv_notifiers_all(&s->smmu_state);
             smmu_iotlb_inv_all(bs);
-            if (!smmuv3_accel_issue_inv_cmd(s, &cmd, NULL, errp)) {
-                cmd_error = SMMU_CERROR_ILL;
-                break;
-            }
             break;
         case SMMU_CMD_TLBI_NH_VAA:
         case SMMU_CMD_TLBI_NH_VA:
@@ -1494,10 +1226,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
                 break;
             }
             smmuv3_range_inval(bs, &cmd, SMMU_STAGE_1);
-            if (!smmuv3_accel_issue_inv_cmd(s, &cmd, NULL, errp)) {
-                cmd_error = SMMU_CERROR_ILL;
-                break;
-            }
             break;
         case SMMU_CMD_TLBI_S12_VMALL:
         {
@@ -1518,33 +1246,15 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
                 cmd_error = SMMU_CERROR_ILL;
                 break;
             }
-            /*
-             * As currently only either s1 or s2 are supported
-             * we can reuse same function for s2.
-             */
             smmuv3_range_inval(bs, &cmd, SMMU_STAGE_2);
             break;
-        case SMMU_CMD_ATC_INV:
-        {
-            SMMUDevice *sdev = smmu_find_sdev(bs, CMD_SID(&cmd));
-
-            if (!sdev || !s->ats) {
-                trace_smmuv3_unhandled_cmd(type);
-                break;
-            }
-
-            if (!smmuv3_accel_issue_inv_cmd(s, &cmd, sdev, errp)) {
-                cmd_error = SMMU_CERROR_ILL;
-                break;
-            }
-            break;
-        }
         case SMMU_CMD_TLBI_EL3_ALL:
         case SMMU_CMD_TLBI_EL3_VA:
         case SMMU_CMD_TLBI_EL2_ALL:
         case SMMU_CMD_TLBI_EL2_ASID:
         case SMMU_CMD_TLBI_EL2_VA:
         case SMMU_CMD_TLBI_EL2_VAA:
+        case SMMU_CMD_ATC_INV:
         case SMMU_CMD_PRI_RESP:
         case SMMU_CMD_RESUME:
         case SMMU_CMD_STALL_TERM:
@@ -1562,11 +1272,6 @@ static int smmuv3_cmdq_consume(SMMUv3State *s, Error **errp)
             }
             break;
         }
-        /*
-         * We only increment the cons index after the completion of
-         * the command. We do that because the SYNC returns immediately
-         * and does not check the completion of previous commands
-         */
         queue_cons_incr(q);
     }
 
@@ -1620,130 +1325,106 @@ static MemTxResult smmu_writell(SMMUv3State *s, hwaddr offset,
 static MemTxResult smmu_writel(SMMUv3State *s, hwaddr offset,
                                uint64_t data, MemTxAttrs attrs)
 {
-    Error *local_err = NULL;
-
     switch (offset) {
     case A_CR0:
         s->cr[0] = data;
         s->cr0ack = data & ~SMMU_CR0_RESERVED;
-        /* in case the command queue has been enabled */
-        smmuv3_cmdq_consume(s, &local_err);
-        if (local_err) {
-            error_report_err(local_err);
-            local_err = NULL;
-        }
-        /* Allocate vEVENTQ if EVENTQ is enabled and a vIOMMU is available */
-        smmuv3_accel_alloc_veventq(s, &local_err);
-        break;
+        smmuv3_cmdq_consume(s);
+        return MEMTX_OK;
     case A_CR1:
         s->cr[1] = data;
-        break;
+        return MEMTX_OK;
     case A_CR2:
         s->cr[2] = data;
-        break;
+        return MEMTX_OK;
     case A_IRQ_CTRL:
         s->irq_ctrl = data;
-        break;
+        return MEMTX_OK;
     case A_GERRORN:
         smmuv3_write_gerrorn(s, data);
-        /*
-         * By acknowledging the CMDQ_ERR, SW may notify cmds can
-         * be processed again
-         */
-        smmuv3_cmdq_consume(s, &local_err);
-        break;
+        smmuv3_cmdq_consume(s);
+        return MEMTX_OK;
     case A_GERROR_IRQ_CFG0: /* 64b */
         s->gerror_irq_cfg0 = deposit64(s->gerror_irq_cfg0, 0, 32, data);
-        break;
+        return MEMTX_OK;
     case A_GERROR_IRQ_CFG0 + 4:
         s->gerror_irq_cfg0 = deposit64(s->gerror_irq_cfg0, 32, 32, data);
-        break;
+        return MEMTX_OK;
     case A_GERROR_IRQ_CFG1:
         s->gerror_irq_cfg1 = data;
-        break;
+        return MEMTX_OK;
     case A_GERROR_IRQ_CFG2:
         s->gerror_irq_cfg2 = data;
-        break;
+        return MEMTX_OK;
     case A_GBPA:
-        /*
-         * If UPDATE is not set, the write is ignored. This is the only
-         * permitted behavior in SMMUv3.2 and later.
-         */
         if (data & R_GBPA_UPDATE_MASK) {
-            /* Ignore update bit as write is synchronous. */
             s->gbpa = data & ~R_GBPA_UPDATE_MASK;
-            smmuv3_accel_attach_gbpa_hwpt(s, &local_err);
         }
-        break;
+        return MEMTX_OK;
     case A_STRTAB_BASE: /* 64b */
         s->strtab_base = deposit64(s->strtab_base, 0, 32, data);
-        break;
+        return MEMTX_OK;
     case A_STRTAB_BASE + 4:
         s->strtab_base = deposit64(s->strtab_base, 32, 32, data);
-        break;
+        return MEMTX_OK;
     case A_STRTAB_BASE_CFG:
         s->strtab_base_cfg = data;
         if (FIELD_EX32(data, STRTAB_BASE_CFG, FMT) == 1) {
             s->sid_split = FIELD_EX32(data, STRTAB_BASE_CFG, SPLIT);
             s->features |= SMMU_FEATURE_2LVL_STE;
         }
-        break;
+        return MEMTX_OK;
     case A_CMDQ_BASE: /* 64b */
         s->cmdq.base = deposit64(s->cmdq.base, 0, 32, data);
         s->cmdq.log2size = extract64(s->cmdq.base, 0, 5);
         if (s->cmdq.log2size > SMMU_CMDQS) {
             s->cmdq.log2size = SMMU_CMDQS;
         }
-        break;
+        return MEMTX_OK;
     case A_CMDQ_BASE + 4: /* 64b */
         s->cmdq.base = deposit64(s->cmdq.base, 32, 32, data);
-        break;
+        return MEMTX_OK;
     case A_CMDQ_PROD:
         s->cmdq.prod = data;
-        smmuv3_cmdq_consume(s, &local_err);
-        break;
+        smmuv3_cmdq_consume(s);
+        return MEMTX_OK;
     case A_CMDQ_CONS:
         s->cmdq.cons = data;
-        break;
+        return MEMTX_OK;
     case A_EVENTQ_BASE: /* 64b */
         s->eventq.base = deposit64(s->eventq.base, 0, 32, data);
         s->eventq.log2size = extract64(s->eventq.base, 0, 5);
         if (s->eventq.log2size > SMMU_EVENTQS) {
             s->eventq.log2size = SMMU_EVENTQS;
         }
-        break;
+        return MEMTX_OK;
     case A_EVENTQ_BASE + 4:
         s->eventq.base = deposit64(s->eventq.base, 32, 32, data);
-        break;
+        return MEMTX_OK;
     case A_EVENTQ_PROD:
         s->eventq.prod = data;
-        break;
+        return MEMTX_OK;
     case A_EVENTQ_CONS:
         s->eventq.cons = data;
-        break;
+        return MEMTX_OK;
     case A_EVENTQ_IRQ_CFG0: /* 64b */
         s->eventq_irq_cfg0 = deposit64(s->eventq_irq_cfg0, 0, 32, data);
-        break;
+        return MEMTX_OK;
     case A_EVENTQ_IRQ_CFG0 + 4:
         s->eventq_irq_cfg0 = deposit64(s->eventq_irq_cfg0, 32, 32, data);
-        break;
+        return MEMTX_OK;
     case A_EVENTQ_IRQ_CFG1:
         s->eventq_irq_cfg1 = data;
-        break;
+        return MEMTX_OK;
     case A_EVENTQ_IRQ_CFG2:
         s->eventq_irq_cfg2 = data;
-        break;
+        return MEMTX_OK;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "%s Unexpected 32-bit access to 0x%"PRIx64" (WI)\n",
                       __func__, offset);
-        break;
+        return MEMTX_OK;
     }
-
-    if (local_err) {
-        error_report_err(local_err);
-    }
-    return MEMTX_OK;
 }
 
 static MemTxResult smmu_write_mmio(void *opaque, hwaddr offset, uint64_t data,
@@ -1753,7 +1434,6 @@ static MemTxResult smmu_write_mmio(void *opaque, hwaddr offset, uint64_t data,
     SMMUv3State *s = ARM_SMMUV3(sys);
     MemTxResult r;
 
-    /* CONSTRAINED UNPREDICTABLE choice to have page0/1 be exact aliases */
     offset &= ~0x10000;
 
     switch (size) {
@@ -1902,7 +1582,6 @@ static MemTxResult smmu_read_mmio(void *opaque, hwaddr offset, uint64_t *data,
     SMMUv3State *s = ARM_SMMUV3(sys);
     MemTxResult r;
 
-    /* CONSTRAINED UNPREDICTABLE choice to have page0/1 be exact aliases */
     offset &= ~0x10000;
 
     switch (size) {
@@ -1944,11 +1623,6 @@ static void smmu_init_irq(SMMUv3State *s, SysBusDevice *dev)
     }
 }
 
-/*
- * Make sure the IOMMU is reset in 'exit' phase after
- * all outstanding DMA requests have been quiesced during
- * the 'enter' or 'hold' reset phases
- */
 static void smmu_reset_exit(Object *obj, ResetType type)
 {
     SMMUv3State *s = ARM_SMMUV3(obj);
@@ -1959,58 +1633,7 @@ static void smmu_reset_exit(Object *obj, ResetType type)
         c->parent_phases.exit(obj, type);
     }
 
-    smmuv3_reset(s);
-    smmuv3_accel_reset(s);
-}
-
-static bool smmu_validate_property(SMMUv3State *s, Error **errp)
-{
-    if (s->ats == ON_OFF_AUTO_AUTO) {
-        error_setg(errp, "ats auto mode is not supported");
-        return false;
-    }
-    if (s->ril == ON_OFF_AUTO_AUTO) {
-        error_setg(errp, "ril auto mode is not supported");
-        return false;
-    }
-    if (s->ssidsize == SSID_SIZE_MODE_AUTO) {
-        error_setg(errp, "ssidsize auto mode is not supported");
-        return false;
-    }
-    if (s->oas != OAS_MODE_44 && s->oas != OAS_MODE_48) {
-        error_setg(errp, "QEMU SMMUv3 model only implements 44 and 48 bit"
-                   "OAS; other OasMode values are not supported");
-        return false;
-    }
-
-    if (!s->accel) {
-        if (s->ril == ON_OFF_AUTO_OFF) {
-            error_setg(errp, "ril can only be disabled if accel=on");
-            return false;
-        }
-        if (s->ats == ON_OFF_AUTO_ON) {
-            error_setg(errp, "ats can only be enabled if accel=on");
-            return false;
-        }
-        if (s->oas > OAS_MODE_44) {
-            error_setg(errp, "OAS must be 44 bits when accel=off");
-            return false;
-        }
-        if (s->ssidsize > SSID_SIZE_MODE_0) {
-            error_setg(errp, "ssidsize can only be set if accel=on");
-            return false;
-        }
-        return true;
-    }
-
-    /* If no stage specified, SMMUv3 defaults to stage 1 */
-    if (s->stage && strcmp(s->stage, "1")) {
-        error_setg(errp,
-                   "Only stage1 is supported for SMMUv3 with accel=on");
-        return false;
-    }
-
-    return true;
+    smmuv3_init_regs(s);
 }
 
 static void smmu_realize(DeviceState *d, Error **errp)
@@ -2020,21 +1643,6 @@ static void smmu_realize(DeviceState *d, Error **errp)
     SMMUv3Class *c = ARM_SMMUV3_GET_CLASS(s);
     SysBusDevice *dev = SYS_BUS_DEVICE(d);
     Error *local_err = NULL;
-
-    if (!smmu_validate_property(s, errp)) {
-        return;
-    }
-
-    if (s->accel) {
-        if (!smmuv3_accel_init(s, errp)) {
-            return;
-        }
-        error_setg(&s->migration_blocker, "Migration not supported with SMMUv3 "
-                   "accelerator mode enabled");
-        if (migrate_add_blocker(&s->migration_blocker, errp) < 0) {
-            return;
-        }
-    }
 
     c->parent_realize(d, &local_err);
     if (local_err) {
@@ -2052,7 +1660,6 @@ static void smmu_realize(DeviceState *d, Error **errp)
     sysbus_init_mmio(dev, &sys->iomem);
 
     smmu_init_irq(s, dev);
-    smmuv3_init_id_regs(s);
 }
 
 static const VMStateDescription vmstate_smmuv3_queue = {
@@ -2072,7 +1679,6 @@ static bool smmuv3_gbpa_needed(void *opaque)
 {
     SMMUv3State *s = opaque;
 
-    /* Only migrate GBPA if it has different reset value. */
     return s->gbpa != SMMU_GBPA_RESET_VAL;
 }
 
@@ -2124,31 +1730,14 @@ static const VMStateDescription vmstate_smmuv3 = {
 };
 
 static const Property smmuv3_properties[] = {
-    /*
-     * Stages of translation advertised.
-     * "1": Stage 1
-     * "2": Stage 2
-     * "nested": Both stage 1 and stage 2
-     * Defaults to stage 1
-     */
     DEFINE_PROP_STRING("stage", SMMUv3State, stage),
-    DEFINE_PROP_BOOL("accel", SMMUv3State, accel, false),
-    /* GPA of MSI doorbell, for SMMUv3 accel use. */
-    DEFINE_PROP_UINT64("msi-gpa", SMMUv3State, msi_gpa, 0),
-    /* RIL can be turned off for accel cases */
-    DEFINE_PROP_ON_OFF_AUTO("ril", SMMUv3State, ril, ON_OFF_AUTO_ON),
-    DEFINE_PROP_ON_OFF_AUTO("ats", SMMUv3State, ats, ON_OFF_AUTO_OFF),
-    DEFINE_PROP_OAS_MODE("oas", SMMUv3State, oas, OAS_MODE_44),
-    DEFINE_PROP_SSIDSIZE_MODE("ssidsize", SMMUv3State, ssidsize,
-                              SSID_SIZE_MODE_0),
 };
 
 static void smmuv3_instance_init(Object *obj)
 {
-    /* Nothing much to do here as of now */
 }
 
-static void smmuv3_class_init(ObjectClass *klass, const void *data)
+static void smmuv3_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
@@ -2160,29 +1749,6 @@ static void smmuv3_class_init(ObjectClass *klass, const void *data)
     device_class_set_parent_realize(dc, smmu_realize,
                                     &c->parent_realize);
     device_class_set_props(dc, smmuv3_properties);
-    dc->hotpluggable = false;
-    dc->user_creatable = true;
-
-    object_class_property_set_description(klass, "accel",
-        "Enable SMMUv3 accelerator support. Allows host SMMUv3 to be "
-        "configured in nested mode for vfio-pci dev assignment");
-    object_class_property_set_description(klass, "ril",
-        "Disable range invalidation support (for accel=on). ril=auto "
-        "is not supported.");
-    object_class_property_set_description(klass, "ats",
-        "Enable/disable ATS support (for accel=on). Please ensure host "
-        "platform has ATS support before enabling this. ats=auto is not "
-        "supported.");
-    object_class_property_set_description(klass, "oas",
-        "Specify Output Address Size (for accel=on). Supported values "
-        "are 44 or 48 bits. Defaults to 44 bits. oas=auto is not "
-        "supported.");
-    object_class_property_set_description(klass, "ssidsize",
-        "Number of bits used to represent SubstreamIDs (SSIDs). "
-        "A value of N allows SSIDs in the range [0 .. 2^N - 1]. "
-        "Valid range is 0-20, where 0 disables SubstreamID support. "
-        "Defaults to 0. A value greater than 0 is required to enable "
-        "PASID support. ssidsize=auto is not supported.");
 }
 
 static int smmuv3_notify_flag_changed(IOMMUMemoryRegion *iommu,
@@ -2218,7 +1784,7 @@ static int smmuv3_notify_flag_changed(IOMMUMemoryRegion *iommu,
 }
 
 static void smmuv3_iommu_memory_region_class_init(ObjectClass *klass,
-                                                  const void *data)
+                                                  void *data)
 {
     IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_CLASS(klass);
 
@@ -2248,4 +1814,3 @@ static void smmuv3_register_types(void)
 }
 
 type_init(smmuv3_register_types)
-

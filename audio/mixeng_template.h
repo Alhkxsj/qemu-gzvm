@@ -1,34 +1,7 @@
-/*
- * QEMU Mixing engine
- *
- * Copyright (c) 2004-2005 Vassili Karpov (malc)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
-/*
- * Tusen tack till Mike Nordell
- * dec++'ified by Dscho
- */
 
 #ifndef SIGNED
-#define BIAS ((IN_T)1 << (SHIFT - 1))
+#define HALF (IN_MAX >> 1)
 #endif
 
 #define ET glue (ENDIAN_CONVERSION, glue (glue (glue (_, ITYPE), BSIZE), _t))
@@ -43,13 +16,13 @@ static inline mixeng_real glue (conv_, ET) (IN_T v)
 #ifdef SIGNED
     return nv * (2.f / ((mixeng_real)IN_MAX - IN_MIN));
 #else
-    return ((mixeng_real)nv - BIAS) * (1.f / BIAS);
+    return (nv - HALF) * (2.f / (mixeng_real)IN_MAX);
 #endif
 #else  /* !RECIPROCAL */
 #ifdef SIGNED
     return nv / (((mixeng_real)IN_MAX - IN_MIN) / 2.f);
 #else
-    return ((mixeng_real)nv - BIAS) / BIAS;
+    return (nv - HALF) / ((mixeng_real)IN_MAX / 2.f);
 #endif
 #endif
 }
@@ -65,7 +38,7 @@ static inline IN_T glue (clip_, ET) (mixeng_real v)
 #ifdef SIGNED
     return ENDIAN_CONVERT((IN_T)(v * (((mixeng_real)IN_MAX - IN_MIN) / 2.f)));
 #else
-    return ENDIAN_CONVERT(MIN((int64_t)(v * BIAS) + BIAS, IN_MAX));
+    return ENDIAN_CONVERT((IN_T)((v * ((mixeng_real)IN_MAX / 2.f)) + HALF));
 #endif
 }
 
@@ -77,7 +50,7 @@ static inline int64_t glue (conv_, ET) (IN_T v)
 #ifdef SIGNED
     return ((int64_t) nv) << (32 - SHIFT);
 #else
-    return ((int64_t) nv - BIAS) << (32 - SHIFT);
+    return ((int64_t) nv - HALF) << (32 - SHIFT);
 #endif
 }
 
@@ -92,7 +65,7 @@ static inline IN_T glue (clip_, ET) (int64_t v)
 #ifdef SIGNED
     return ENDIAN_CONVERT ((IN_T) (v >> (32 - SHIFT)));
 #else
-    return ENDIAN_CONVERT((IN_T)((v >> (32 - SHIFT)) + BIAS));
+    return ENDIAN_CONVERT ((IN_T) ((v >> (32 - SHIFT)) + HALF));
 #endif
 }
 #endif
@@ -148,5 +121,5 @@ static void glue (glue (clip_, ET), _from_mono)
 }
 
 #undef ET
-#undef BIAS
+#undef HALF
 #undef IN_T

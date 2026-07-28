@@ -10,7 +10,6 @@
 #include "system/gzvm_int.h"
 #include "system/runstate.h"
 #include "gicv3_internal.h"
-#include "migration/blocker.h"
 #include "trace.h"
 #include "qom/object.h"
 #include "target/arm/cpregs.h"
@@ -143,7 +142,7 @@ static void gzvm_arm_gicv3_realize(DeviceState *dev, Error **errp)
     gicv3_init_irqs_and_mmio(s, gzvm_arm_gicv3_set_irq, gzvm_gicv3_ops);
 }
 
-static void gzvm_arm_gicv3_class_init(ObjectClass *klass, const void *data)
+static void gzvm_arm_gicv3_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);

@@ -1,7 +1,3 @@
-/*
- * Helper file for declaring TCG helper functions.
- * Used by other helper files.
- */
 
 #ifndef EXEC_HELPER_HEAD_H
 #define EXEC_HELPER_HEAD_H
@@ -10,7 +6,6 @@
 
 #define HELPER(name) glue(helper_, name)
 
-/* Some types that make sense in C, but not for TCG.  */
 #define dh_alias_i32 i32
 #define dh_alias_s32 i32
 #define dh_alias_int i32
@@ -46,30 +41,18 @@
 #define dh_ctype(t) dh_ctype_##t
 
 #ifdef COMPILING_PER_TARGET
-# include "exec/target_long.h"
-# if TARGET_LONG_BITS == 32
-#  define dh_alias_tl i32
-#  define dh_typecode_tl dh_typecode_i32
-# else
-#  define dh_alias_tl i64
-#  define dh_typecode_tl dh_typecode_i64
+# ifdef TARGET_LONG_BITS
+#  if TARGET_LONG_BITS == 32
+#   define dh_alias_tl i32
+#   define dh_typecode_tl dh_typecode_i32
+#  else
+#   define dh_alias_tl i64
+#   define dh_typecode_tl dh_typecode_i64
+#  endif
 # endif
 # define dh_ctype_tl target_ulong
 #endif /* COMPILING_PER_TARGET */
 
-#if __SIZEOF_POINTER__ == 4
-# define dh_alias_vaddr i32
-# define dh_typecode_vaddr dh_typecode_i32
-#elif __SIZEOF_POINTER__ == 8
-# define dh_alias_vaddr i64
-# define dh_typecode_vaddr dh_typecode_i64
-#else
-# error "sizeof pointer is different from {4,8}"
-#endif /* __SIZEOF_POINTER__ */
-# define dh_ctype_vaddr uintptr_t
-
-/* We can't use glue() here because it falls foul of C preprocessor
-   recursive expansion rules.  */
 #define dh_retvar_decl0_void void
 #define dh_retvar_decl0_noreturn void
 #define dh_retvar_decl0_i32 TCGv_i32 retval
@@ -143,6 +126,5 @@
 #define DEF_HELPER_7(name, ret, t1, t2, t3, t4, t5, t6, t7) \
     DEF_HELPER_FLAGS_7(name, 0, ret, t1, t2, t3, t4, t5, t6, t7)
 
-/* MAX_CALL_IARGS must be set to n if last entry is DEF_HELPER_FLAGS_n. */
 
 #endif /* EXEC_HELPER_HEAD_H */

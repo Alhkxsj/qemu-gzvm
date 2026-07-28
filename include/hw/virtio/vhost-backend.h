@@ -1,17 +1,8 @@
-/*
- * vhost-backend
- *
- * Copyright (c) 2013 Virtual Open Systems Sarl.
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- *
- */
 
 #ifndef VHOST_BACKEND_H
 #define VHOST_BACKEND_H
 
-#include "system/memory.h"
+#include "exec/memory.h"
 
 typedef enum VhostBackendType {
     VHOST_BACKEND_TYPE_NONE = 0,
@@ -27,14 +18,11 @@ typedef enum VhostSetConfigType {
 } VhostSetConfigType;
 
 typedef enum VhostDeviceStateDirection {
-    /* Transfer state from back-end (device) to front-end */
     VHOST_TRANSFER_STATE_DIRECTION_SAVE = 0,
-    /* Transfer state from front-end to back-end (device) */
     VHOST_TRANSFER_STATE_DIRECTION_LOAD = 1,
 } VhostDeviceStateDirection;
 
 typedef enum VhostDeviceStatePhase {
-    /* The device (and all its vrings) is stopped */
     VHOST_TRANSFER_STATE_PHASE_STOPPED = 0,
 } VhostDeviceStatePhase;
 
@@ -95,10 +83,6 @@ typedef int (*vhost_new_worker_op)(struct vhost_dev *dev,
                                    struct vhost_worker_state *worker);
 typedef int (*vhost_free_worker_op)(struct vhost_dev *dev,
                                     struct vhost_worker_state *worker);
-typedef int (*vhost_set_features_ex_op)(struct vhost_dev *dev,
-                                        const uint64_t *features);
-typedef int (*vhost_get_features_ex_op)(struct vhost_dev *dev,
-                                        uint64_t *features);
 typedef int (*vhost_set_features_op)(struct vhost_dev *dev,
                                      uint64_t features);
 typedef int (*vhost_get_features_op)(struct vhost_dev *dev,
@@ -190,8 +174,6 @@ typedef struct VhostOps {
     vhost_free_worker_op vhost_free_worker;
     vhost_get_vring_worker_op vhost_get_vring_worker;
     vhost_attach_vring_worker_op vhost_attach_vring_worker;
-    vhost_set_features_ex_op vhost_set_features_ex;
-    vhost_get_features_ex_op vhost_get_features_ex;
     vhost_set_features_op vhost_set_features;
     vhost_get_features_op vhost_get_features;
     vhost_set_backend_cap_op vhost_set_backend_cap;

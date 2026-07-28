@@ -1,12 +1,3 @@
-/*
- * Parent class for vhost-vsock devices
- *
- * Copyright 2015-2020 Red Hat, Inc.
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or
- * (at your option) any later version.  See the COPYING file in the
- * top-level directory.
- */
 
 #ifndef QEMU_VHOST_VSOCK_COMMON_H
 #define QEMU_VHOST_VSOCK_COMMON_H
@@ -37,12 +28,11 @@ struct VHostVSockCommon {
 
     QEMUTimer *post_load_timer;
 
-    /* features */
     OnOffAuto seqpacket;
 };
 
 int vhost_vsock_common_start(VirtIODevice *vdev);
-int vhost_vsock_common_stop(VirtIODevice *vdev);
+void vhost_vsock_common_stop(VirtIODevice *vdev);
 int vhost_vsock_common_pre_save(void *opaque);
 int vhost_vsock_common_post_load(void *opaque, int version_id);
 void vhost_vsock_common_realize(VirtIODevice *vdev);

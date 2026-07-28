@@ -1,26 +1,7 @@
 #ifndef QEMU_TYPEDEFS_H
 #define QEMU_TYPEDEFS_H
 
-/*
- * This header is for selectively avoiding #include just to get a
- * typedef name.
- *
- * Declaring a typedef name in its "obvious" place can result in
- * inclusion cycles, in particular for complete struct and union
- * types that need more types for their members.  It can also result
- * in headers pulling in many more headers, slowing down builds.
- *
- * You can break such cycles and unwanted dependencies by declaring
- * the typedef name here.
- *
- * For struct types used in only a few headers, judicious use of the
- * struct tag instead of the typedef name is commonly preferable.
- */
 
-/*
- * Incomplete struct types
- * Please keep this list in case-insensitive alphabetical order.
- */
 typedef struct AccelCPUState AccelCPUState;
 typedef struct AccelOpsClass AccelOpsClass;
 typedef struct AccelState AccelState;
@@ -55,7 +36,6 @@ typedef struct FWCfgState FWCfgState;
 typedef struct HostMemoryBackend HostMemoryBackend;
 typedef struct I2CBus I2CBus;
 typedef struct I2SCodec I2SCodec;
-typedef struct IgvmCfg IgvmCfg;
 typedef struct IOMMUMemoryRegion IOMMUMemoryRegion;
 typedef struct ISABus ISABus;
 typedef struct ISADevice ISADevice;
@@ -65,14 +45,12 @@ typedef struct MACAddr MACAddr;
 typedef struct MachineClass MachineClass;
 typedef struct MachineState MachineState;
 typedef struct MemoryListener MemoryListener;
-typedef struct MemoryMappingList MemoryMappingList;
 typedef struct MemoryRegion MemoryRegion;
 typedef struct MemoryRegionCache MemoryRegionCache;
 typedef struct MemoryRegionSection MemoryRegionSection;
 typedef struct MigrationIncomingState MigrationIncomingState;
 typedef struct MigrationState MigrationState;
 typedef struct Monitor Monitor;
-typedef struct MonitorDef MonitorDef;
 typedef struct MSIMessage MSIMessage;
 typedef struct NetClientState NetClientState;
 typedef struct NetFilterState NetFilterState;
@@ -94,7 +72,6 @@ typedef struct QBool QBool;
 typedef struct QDict QDict;
 typedef struct QEMUBH QEMUBH;
 typedef struct QemuConsole QemuConsole;
-typedef struct QemuInputEvent QemuInputEvent;
 typedef struct QEMUCursor QEMUCursor;
 typedef struct QEMUFile QEMUFile;
 typedef struct QemuMutex QemuMutex;
@@ -112,7 +89,7 @@ typedef struct QString QString;
 typedef struct RAMBlock RAMBlock;
 typedef struct Range Range;
 typedef struct ReservedRegion ReservedRegion;
-typedef struct SaveCompletePrecopyThreadData SaveCompletePrecopyThreadData;
+typedef struct SaveLiveCompletePrecopyThreadData SaveLiveCompletePrecopyThreadData;
 typedef struct SHPCDevice SHPCDevice;
 typedef struct SSIBus SSIBus;
 typedef struct TCGCPUOps TCGCPUOps;
@@ -124,21 +101,12 @@ typedef struct Visitor Visitor;
 typedef struct VMChangeStateEntry VMChangeStateEntry;
 typedef struct VMStateDescription VMStateDescription;
 
-/*
- * Pointer types
- * Such typedefs should be limited to cases where the typedef's users
- * are oblivious of its "pointer-ness".
- * Please keep this list in case-insensitive alphabetical order.
- */
 typedef struct IRQState *qemu_irq;
 
-/*
- * Function types
- */
 typedef void (*qemu_irq_handler)(void *opaque, int n, int level);
 typedef bool (*MigrationLoadThread)(void *opaque, bool *should_quit,
                                     Error **errp);
-typedef bool (*SaveCompletePrecopyThreadHandler)(SaveCompletePrecopyThreadData *d,
-                                                 Error **errp);
+typedef bool (*SaveLiveCompletePrecopyThreadHandler)(SaveLiveCompletePrecopyThreadData *d,
+                                                     Error **errp);
 
 #endif /* QEMU_TYPEDEFS_H */

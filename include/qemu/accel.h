@@ -1,33 +1,29 @@
-/* QEMU accelerator interfaces
- *
- * Copyright (c) 2014 Red Hat Inc
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 #ifndef QEMU_ACCEL_H
 #define QEMU_ACCEL_H
 
 #include "qom/object.h"
 #include "exec/hwaddr.h"
 
-typedef struct AccelState AccelState;
-typedef struct AccelClass AccelClass;
+struct AccelState {
+    Object parent_obj;
+};
+
+typedef struct AccelClass {
+    ObjectClass parent_class;
+
+    const char *name;
+    int (*init_machine)(MachineState *ms);
+#ifndef CONFIG_USER_ONLY
+    void (*setup_post)(MachineState *ms, AccelState *accel);
+    bool (*has_memory)(MachineState *ms, AddressSpace *as,
+                       hwaddr start_addr, hwaddr size);
+#endif
+    bool (*cpu_common_realize)(CPUState *cpu, Error **errp);
+    void (*cpu_common_unrealize)(CPUState *cpu);
+
+    bool *allowed;
+    GPtrArray *compat_props;
+} AccelClass;
 
 #define TYPE_ACCEL "accel"
 
@@ -47,38 +43,16 @@ const char *current_accel_name(void);
 
 void accel_init_interfaces(AccelClass *ac);
 
+#ifndef CONFIG_USER_ONLY
 int accel_init_machine(AccelState *accel, MachineState *ms);
 
-/* Called just before os_setup_post (ie just before drop OS privs) */
 void accel_setup_post(MachineState *ms);
+#endif /* !CONFIG_USER_ONLY */
 
-void accel_pre_resume(MachineState *ms, bool step_pending);
-
-/**
- * accel_cpu_instance_init:
- * @cpu: The CPU that needs to do accel-specific object initializations.
- */
 void accel_cpu_instance_init(CPUState *cpu);
 
-/**
- * accel_cpu_common_realize:
- * @cpu: The CPU that needs to call accel-specific cpu realization.
- * @errp: currently unused.
- */
 bool accel_cpu_common_realize(CPUState *cpu, Error **errp);
 
-/**
- * accel_cpu_common_unrealize:
- * @cpu: The CPU that needs to call accel-specific cpu unrealization.
- */
 void accel_cpu_common_unrealize(CPUState *cpu);
-
-/**
- * accel_supported_gdbstub_sstep_flags:
- *
- * Returns the supported single step modes for the configured
- * accelerator.
- */
-int accel_supported_gdbstub_sstep_flags(void);
 
 #endif /* QEMU_ACCEL_H */

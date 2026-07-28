@@ -1,21 +1,8 @@
-/*
- * Hardware Clocks
- *
- * Copyright GreenSocs 2016-2020
- *
- * Authors:
- *  Frederic Konrad
- *  Damien Hedde
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/cutils.h"
 #include "qapi/visitor.h"
-#include "system/qtest.h"
-#include "hw/core/clock.h"
+#include "hw/clock.h"
 #include "trace.h"
 
 #define CLOCK_PATH(_clk) (_clk->canonical_path)
@@ -64,19 +51,11 @@ bool clock_set(Clock *clk, uint64_t period)
 
 static uint64_t clock_get_child_period(Clock *clk)
 {
-    /*
-     * Return the period to be used for child clocks, which is the parent
-     * clock period adjusted for multiplier and divider effects.
-     */
     return muldiv64(clk->period, clk->multiplier, clk->divider);
 }
 
 static void clock_call_callback(Clock *clk, ClockEvent event)
 {
-    /*
-     * Call the Clock's callback for this event, if it has one and
-     * is interested in this event.
-     */
     if (clk->callback && (clk->callback_events & event)) {
         clk->callback(clk->callback_opaque, event);
     }
@@ -112,7 +91,6 @@ void clock_propagate(Clock *clk)
 
 void clock_set_source(Clock *clk, Clock *src)
 {
-    /* changing clock source is not supported */
     assert(!clk->source);
 
     trace_clock_set_source(CLOCK_PATH(clk), CLOCK_PATH(src));
@@ -156,22 +134,8 @@ bool clock_set_mul_div(Clock *clk, uint32_t multiplier, uint32_t divider)
     return true;
 }
 
-static void clock_period_prop_get(Object *obj, Visitor *v, const char *name,
-                                void *opaque, Error **errp)
-{
-    Clock *clk = CLOCK(obj);
-    uint64_t period = clock_get(clk);
-    visit_type_uint64(v, name, &period, errp);
-}
-
 static void clock_unparent(Object *obj)
 {
-    /*
-     * Callback are registered by the parent, which might die anytime after
-     * it's unparented the children.  Avoid having a callback to a deleted
-     * object in case the clock is still referenced somewhere else (eg: by
-     * a clock output).
-     */
     clock_set_callback(CLOCK(obj), NULL, NULL, 0);
 }
 
@@ -184,10 +148,6 @@ static void clock_initfn(Object *obj)
 
     QLIST_INIT(&clk->children);
 
-    if (qtest_enabled()) {
-        object_property_add(obj, "qtest-clock-period", "uint64",
-                            clock_period_prop_get, NULL, NULL, NULL);
-    }
 }
 
 static void clock_finalizefn(Object *obj)
@@ -195,18 +155,16 @@ static void clock_finalizefn(Object *obj)
     Clock *clk = CLOCK(obj);
     Clock *child, *next;
 
-    /* clear our list of children */
     QLIST_FOREACH_SAFE(child, &clk->children, sibling, next) {
         clock_disconnect(child);
     }
 
-    /* remove us from source's children list */
     clock_disconnect(clk);
 
     g_free(clk->canonical_path);
 }
 
-static void clock_class_init(ObjectClass *klass, const void *data)
+static void clock_class_init(ObjectClass *klass, void *data)
 {
     klass->unparent = clock_unparent;
 }

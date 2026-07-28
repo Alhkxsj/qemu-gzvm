@@ -1,21 +1,11 @@
-/*
- * Common code for block device models
- *
- * Copyright (C) 2012 Red Hat, Inc.
- * Copyright (c) 2003-2008 Fabrice Bellard
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or
- * later.  See the COPYING file in the top-level directory.
- */
 
 #ifndef HW_BLOCK_H
 #define HW_BLOCK_H
 
 #include "exec/hwaddr.h"
 #include "qapi/qapi-types-block-core.h"
-#include "hw/core/qdev-properties-system.h"
+#include "hw/qdev-properties-system.h"
 
-/* Configuration */
 
 typedef struct BlockConf {
     BlockBackend *blk;
@@ -26,7 +16,6 @@ typedef struct BlockConf {
     uint32_t opt_io_size;
     int32_t bootindex;
     uint32_t discard_granularity;
-    /* geometry, not all devices use this */
     uint32_t cyls, heads, secs;
     uint32_t lcyls, lheads, lsecs;
     OnOffAuto wce;
@@ -34,8 +23,6 @@ typedef struct BlockConf {
     OnOffAuto account_invalid, account_failed;
     BlockdevOnError rerror;
     BlockdevOnError werror;
-    uint32_t num_stats_intervals;
-    uint32_t *stats_intervals;
 } BlockConf;
 
 static inline unsigned int get_physical_block_exp(BlockConf *conf)
@@ -49,18 +36,6 @@ static inline unsigned int get_physical_block_exp(BlockConf *conf)
     }
 
     return exp;
-}
-
-#define DEFAULT_BLOCK_CONF (BlockConf) {                                \
-    .bootindex = -1,                                                    \
-    .backend_defaults = ON_OFF_AUTO_AUTO,                               \
-    .discard_granularity = -1,                                          \
-    .wce = ON_OFF_AUTO_AUTO,                                            \
-    .share_rw = false,                                                  \
-    .account_invalid = ON_OFF_AUTO_AUTO,                                \
-    .account_failed = ON_OFF_AUTO_AUTO,                                 \
-    .rerror = BLOCKDEV_ON_ERROR_AUTO,                                   \
-    .werror = BLOCKDEV_ON_ERROR_AUTO,                                   \
 }
 
 #define DEFINE_BLOCK_PROPERTIES_BASE(_state, _conf)                     \
@@ -80,10 +55,7 @@ static inline unsigned int get_physical_block_exp(BlockConf *conf)
     DEFINE_PROP_ON_OFF_AUTO("account-invalid", _state,                  \
                             _conf.account_invalid, ON_OFF_AUTO_AUTO),   \
     DEFINE_PROP_ON_OFF_AUTO("account-failed", _state,                   \
-                            _conf.account_failed, ON_OFF_AUTO_AUTO),    \
-    DEFINE_PROP_ARRAY("stats-intervals", _state,                        \
-                     _conf.num_stats_intervals, _conf.stats_intervals,  \
-                     qdev_prop_uint32, uint32_t)
+                            _conf.account_failed, ON_OFF_AUTO_AUTO)
 
 #define DEFINE_BLOCK_PROPERTIES(_state, _conf)                          \
     DEFINE_PROP_DRIVE("drive", _state, _conf.blk),                      \
@@ -103,12 +75,10 @@ static inline unsigned int get_physical_block_exp(BlockConf *conf)
     DEFINE_PROP_BLOCKDEV_ON_ERROR("werror", _state, _conf.werror,       \
                                   BLOCKDEV_ON_ERROR_AUTO)
 
-/* Backend access helpers */
 
 bool blk_check_size_and_read_all(BlockBackend *blk, DeviceState *dev,
                                  void *buf, hwaddr size, Error **errp);
 
-/* Configuration helpers */
 
 bool blkconf_geometry(BlockConf *conf, int *trans,
                       unsigned cyls_max, unsigned heads_max, unsigned secs_max,
@@ -117,7 +87,6 @@ bool blkconf_blocksizes(BlockConf *conf, Error **errp);
 bool blkconf_apply_backend_options(BlockConf *conf, bool readonly,
                                    bool resizable, Error **errp);
 
-/* Hard disk geometry */
 
 void hd_geometry_guess(BlockBackend *blk,
                        uint32_t *pcyls, uint32_t *pheads, uint32_t *psecs,

@@ -1,15 +1,3 @@
-/*
- * Virtio Network Device
- *
- * Copyright IBM, Corp. 2007
- *
- * Authors:
- *  Anthony Liguori   <aliguori@us.ibm.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2.  See
- * the COPYING file in the top-level directory.
- *
- */
 
 #ifndef QEMU_VIRTIO_NET_H
 #define QEMU_VIRTIO_NET_H
@@ -21,27 +9,15 @@
 #include "qemu/option_int.h"
 #include "qom/object.h"
 
-#include "ebpf/ebpf_rss.h"
-
 #define TYPE_VIRTIO_NET "virtio-net-device"
 OBJECT_DECLARE_SIMPLE_TYPE(VirtIONet, VIRTIO_NET)
 
 #define TX_TIMER_INTERVAL 150000 /* 150 us */
 
-/* Limit the number of packets that can be sent via a single flush
- * of the TX queue.  This gives us a guaranteed exit condition and
- * ensures fairness in the io path.  256 conveniently matches the
- * length of the TX queue and shows a good balance of performance
- * and latency. */
 #define TX_BURST 256
 
-/* Maximum VIRTIO_NET_CTRL_MAC_TABLE_SET unicast + multicast entries. */
 #define MAC_TABLE_ENTRIES    64
 
-/*
- * The maximum number of VLANs in the VLAN filter table
- * added by VIRTIO_NET_CTRL_VLAN_ADD
- */
 #define MAX_VLAN    (1 << 12)   /* Per 802.1Q definition */
 
 typedef struct virtio_net_conf
@@ -58,7 +34,6 @@ typedef struct virtio_net_conf
     char *primary_id_str;
 } virtio_net_conf;
 
-/* Coalesced packets type & status */
 typedef enum {
     RSC_COALESCE,           /* Data been coalesced */
     RSC_FINAL,              /* Will terminate current connection */
@@ -99,7 +74,6 @@ typedef struct VirtioNetRscStat {
     int64_t  timer;
 } VirtioNetRscStat;
 
-/* Rsc unit general info used to checking if can coalescing */
 typedef struct VirtioNetRscUnit {
     void *ip;   /* ip header */
     void *ip_plen; /* pointer to unaligned uint16_t data len in ip header */
@@ -108,7 +82,6 @@ typedef struct VirtioNetRscUnit {
     uint16_t payload;       /* pure payload without virtio/eth/ip/tcp */
 } VirtioNetRscUnit;
 
-/* Coalesced segment */
 typedef struct VirtioNetRscSeg {
     QTAILQ_ENTRY(VirtioNetRscSeg) next;
     void *buf;
@@ -121,7 +94,6 @@ typedef struct VirtioNetRscSeg {
 } VirtioNetRscSeg;
 
 
-/* Chain is divided by protocol(ipv4/v6) and NetClientInfo */
 typedef struct VirtioNetRscChain {
     QTAILQ_ENTRY(VirtioNetRscChain) next;
     VirtIONet *n;                            /* VirtIONet */
@@ -133,7 +105,6 @@ typedef struct VirtioNetRscChain {
     VirtioNetRscStat stat;
 } VirtioNetRscChain;
 
-/* Maximum packet size we can receive from tap device: header + 64k */
 #define VIRTIO_NET_MAX_BUFSIZE (sizeof(struct virtio_net_hdr) + (64 * KiB))
 
 #define VIRTIO_NET_RSS_MAX_KEY_SIZE     40
@@ -144,11 +115,7 @@ typedef struct VirtioNetRssData {
     bool    enabled_software_rss;
     bool    redirect;
     bool    populate_hash;
-    bool    peer_hash_available;
-    uint32_t runtime_hash_types;
-    uint32_t supported_hash_types;
-    uint32_t peer_hash_types;
-    OnOffAutoBit64 specified_hash_types;
+    uint32_t hash_types;
     uint8_t key[VIRTIO_NET_RSS_MAX_KEY_SIZE];
     uint16_t indirections_len;
     uint16_t *indirections_table;
@@ -174,15 +141,13 @@ struct VirtIONet {
     VirtIONetQueue *vqs;
     VirtQueue *ctrl_vq;
     NICState *nic;
-    /* RSC Chains - temporary storage of coalesced data,
-       all these data are lost in case of migration */
     QTAILQ_HEAD(, VirtioNetRscChain) rsc_chains;
     uint32_t tx_timeout;
     int32_t tx_burst;
     uint32_t has_vnet_hdr;
     size_t host_hdr_len;
     size_t guest_hdr_len;
-    VIRTIO_DECLARE_FEATURES(host_features);
+    uint64_t host_features;
     uint32_t rsc_timeout;
     uint8_t rsc4_enabled;
     uint8_t rsc6_enabled;
@@ -214,22 +179,17 @@ struct VirtIONet {
     char *netclient_name;
     char *netclient_type;
     uint64_t curr_guest_offloads;
-    /* used on saved state restore phase to preserve the curr_guest_offloads */
     uint64_t saved_guest_offloads;
     AnnounceTimer announce_timer;
     bool needs_vnet_hdr_swap;
-    /* primary failover device is hidden*/
+    bool mtu_bypass_backend;
     bool failover_primary_hidden;
     bool failover;
     DeviceListener primary_listener;
     QDict *primary_opts;
     bool primary_opts_from_json;
-    NotifierWithReturn migration_state;
     VirtioNetRssData rss_data;
     struct NetRxPkt *rx_pkt;
-    struct EBPFRSSContext ebpf_rss;
-    uint32_t nr_ebpf_rss_fds;
-    char **ebpf_rss_fds;
 };
 
 size_t virtio_net_handle_ctrl_iov(VirtIODevice *vdev,

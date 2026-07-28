@@ -1,13 +1,10 @@
-/*
- * SPDX-License-Identifier: GPL-2.0-or-later
- * QEMU UI Console
- */
 #ifndef SURFACE_H
 #define SURFACE_H
 
 #include "ui/qemu-pixman.h"
 
 #ifdef CONFIG_OPENGL
+# include <epoxy/gl.h>
 # include "ui/shader.h"
 #endif
 
@@ -18,11 +15,15 @@ typedef struct DisplaySurface {
     pixman_image_t *image;
     uint8_t flags;
 #ifdef CONFIG_OPENGL
-    uint32_t texture;
+    GLenum glformat;
+    GLenum gltype;
+    GLuint texture;
 #endif
     qemu_pixman_shareable share_handle;
     uint32_t share_handle_offset;
 } DisplaySurface;
+
+PixelFormat qemu_default_pixelformat(int bpp);
 
 DisplaySurface *qemu_create_displaysurface_from(int width, int height,
                                                 pixman_format_code_t format,

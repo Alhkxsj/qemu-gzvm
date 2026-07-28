@@ -2,11 +2,10 @@
 #define QEMU_HW_ESP_H
 
 #include "hw/scsi/scsi.h"
-#include "hw/core/sysbus.h"
+#include "hw/sysbus.h"
 #include "qemu/fifo8.h"
 #include "qom/object.h"
 
-/* esp.c */
 #define ESP_MAX_DEVS 7
 typedef void (*ESPDMAMemoryReadWriteFunc)(void *opaque, uint8_t *buf, int len);
 
@@ -14,11 +13,7 @@ typedef void (*ESPDMAMemoryReadWriteFunc)(void *opaque, uint8_t *buf, int len);
 #define ESP_FIFO_SZ 16
 #define ESP_CMDFIFO_SZ 32
 
-enum ESPASCMode {
-    ESP_ASC_MODE_DIS = 0,    /* Disconnected */
-    ESP_ASC_MODE_INI = 1,    /* Initiator */
-    ESP_ASC_MODE_TGT = 2     /* Target */
-};
+typedef struct ESPState ESPState;
 
 #define TYPE_ESP "esp"
 OBJECT_DECLARE_SIMPLE_TYPE(ESPState, ESP)
@@ -44,7 +39,6 @@ struct ESPState {
     uint8_t cmdfifo_cdb_offset;
     uint8_t lun;
     uint32_t do_cmd;
-    uint8_t asc_mode;
 
     bool data_ready;
     int dma_enabled;
@@ -59,7 +53,6 @@ struct ESPState {
 
     uint8_t mig_version_id;
 
-    /* Legacy fields for vmstate_esp version < 5 */
     uint32_t mig_dma_left;
     uint32_t mig_deferred_status;
     bool mig_deferred_complete;
@@ -75,9 +68,7 @@ struct ESPState {
 OBJECT_DECLARE_SIMPLE_TYPE(SysBusESPState, SYSBUS_ESP)
 
 struct SysBusESPState {
-    /*< private >*/
     SysBusDevice parent_obj;
-    /*< public >*/
 
     MemoryRegion iomem;
     MemoryRegion pdma;
@@ -110,13 +101,6 @@ struct SysBusESPState {
 
 #define CMD_DMA 0x80
 #define CMD_CMD 0x7f
-
-#define CMD_GRP_MASK 0x70
-
-#define CMD_GRP_MISC 0x00
-#define CMD_GRP_INIT 0x01
-#define CMD_GRP_TRGT 0x02
-#define CMD_GRP_DISC 0x04
 
 #define CMD_NOP      0x00
 #define CMD_FLUSH    0x01
@@ -152,7 +136,6 @@ struct SysBusESPState {
 #define INTR_FC 0x08
 #define INTR_BS 0x10
 #define INTR_DC 0x20
-#define INTR_IL 0x40
 #define INTR_RST 0x80
 
 #define SEQ_0 0x0

@@ -1,26 +1,3 @@
-/*
- * QEMU readline utility
- *
- * Copyright (c) 2003-2004 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/readline.h"
@@ -41,7 +18,6 @@ void readline_show_prompt(ReadLineState *rs)
     rs->esc_state = IS_NORM;
 }
 
-/* update the displayed command line */
 static void readline_update(ReadLineState *rs)
 {
     int i, delta, len;
@@ -84,9 +60,7 @@ static void readline_update(ReadLineState *rs)
 
 static void readline_insert_char(ReadLineState *rs, int ch)
 {
-    assert(rs->cmd_buf_index <= rs->cmd_buf_size);
-
-    if (rs->cmd_buf_size < READLINE_CMD_BUF_SIZE) {
+    if (rs->cmd_buf_index < READLINE_CMD_BUF_SIZE) {
         memmove(rs->cmd_buf + rs->cmd_buf_index + 1,
                 rs->cmd_buf + rs->cmd_buf_index,
                 rs->cmd_buf_size - rs->cmd_buf_index);
@@ -138,7 +112,6 @@ static void readline_backword(ReadLineState *rs)
 
     start = rs->cmd_buf_index - 1;
 
-    /* find first word (backwards) */
     while (start > 0) {
         if (!qemu_isspace(rs->cmd_buf[start])) {
             break;
@@ -147,7 +120,6 @@ static void readline_backword(ReadLineState *rs)
         --start;
     }
 
-    /* find first space (backwards) */
     while (start > 0) {
         if (qemu_isspace(rs->cmd_buf[start])) {
             ++start;
@@ -157,7 +129,6 @@ static void readline_backword(ReadLineState *rs)
         --start;
     }
 
-    /* remove word */
     if (start < rs->cmd_buf_index) {
         memmove(rs->cmd_buf + start,
                 rs->cmd_buf + rs->cmd_buf_index,
@@ -185,7 +156,6 @@ static void readline_up_char(ReadLineState *rs)
         return;
     }
     if (rs->hist_entry == -1) {
-        /* Find latest entry */
         for (idx = 0; idx < READLINE_MAX_CMDS; idx++) {
             if (rs->history[idx] == NULL) {
                 break;
@@ -227,14 +197,12 @@ static void readline_hist_add(ReadLineState *rs, const char *cmdline)
     }
     new_entry = NULL;
     if (rs->hist_entry != -1) {
-        /* We were editing an existing history entry: replace it */
         hist_entry = rs->history[rs->hist_entry];
         idx = rs->hist_entry;
         if (strcmp(hist_entry, cmdline) == 0) {
             goto same_entry;
         }
     }
-    /* Search cmdline in history buffers */
     for (idx = 0; idx < READLINE_MAX_CMDS; idx++) {
         hist_entry = rs->history[idx];
         if (hist_entry == NULL) {
@@ -246,7 +214,6 @@ static void readline_hist_add(ReadLineState *rs, const char *cmdline)
                 return;
             }
             new_entry = hist_entry;
-            /* Put this entry at the end of history */
             memmove(&rs->history[idx], &rs->history[idx + 1],
                     (READLINE_MAX_CMDS - (idx + 1)) * sizeof(char *));
             rs->history[READLINE_MAX_CMDS - 1] = NULL;
@@ -259,7 +226,6 @@ static void readline_hist_add(ReadLineState *rs, const char *cmdline)
         }
     }
     if (idx == READLINE_MAX_CMDS) {
-        /* Need to get one free slot */
         g_free(rs->history[0]);
         memmove(rs->history, &rs->history[1],
                 (READLINE_MAX_CMDS - 1) * sizeof(char *));
@@ -281,7 +247,6 @@ static void readline_kill_line(ReadLineState *rs)
     }
 }
 
-/* completion support */
 
 void readline_add_completion(ReadLineState *rs, const char *str)
 {
@@ -325,7 +290,6 @@ static void readline_completion(ReadLineState *rs)
     rs->completion_finder(rs->opaque, cmdline);
     g_free(cmdline);
 
-    /* no completion found */
     if (rs->nb_completions <= 0) {
         return;
     }
@@ -334,7 +298,6 @@ static void readline_completion(ReadLineState *rs)
         for (i = rs->completion_index; i < len; i++) {
             readline_insert_char(rs, rs->completions[0][i]);
         }
-        /* extra space for next argument. XXX: make it more generic */
         if (len > 0 && rs->completions[0][len - 1] != '/') {
             readline_insert_char(rs, ' ');
         }
@@ -394,7 +357,6 @@ static void readline_clear_screen(ReadLineState *rs)
     readline_show_prompt(rs);
 }
 
-/* return true if command handled */
 void readline_handle_byte(ReadLineState *rs, int ch)
 {
     switch (rs->esc_state) {
@@ -429,19 +391,15 @@ void readline_handle_byte(ReadLineState *rs, int ch)
             rs->readline_func(rs->opaque, rs->cmd_buf, rs->readline_opaque);
             break;
         case 14:
-            /* ^N Next line in history */
             readline_down_char(rs);
             break;
         case 16:
-            /* ^P Prev line in history */
             readline_up_char(rs);
             break;
         case 21:
-            /* ^U Kill backward from point to the beginning of the line. */
             readline_kill_line(rs);
             break;
         case 23:
-            /* ^W */
             readline_backword(rs);
             break;
         case 27:
@@ -510,7 +468,6 @@ void readline_handle_byte(ReadLineState *rs, int ch)
             break;
         }
         rs->esc_state = IS_NORM;
-        /* fallthrough */
     the_end:
         break;
     case IS_SS3:

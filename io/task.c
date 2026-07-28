@@ -1,22 +1,3 @@
-/*
- * QEMU I/O task
- *
- * Copyright (c) 2015 Red Hat, Inc.
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
- *
- */
 
 #include "qemu/osdep.h"
 #include "io/task.h"
@@ -70,12 +51,8 @@ QIOTask *qio_task_new(Object *source,
     return task;
 }
 
-void qio_task_free(QIOTask *task)
+static void qio_task_free(QIOTask *task)
 {
-    if (!task) {
-        return;
-    }
-
     qemu_mutex_lock(&task->thread_lock);
     if (task->thread) {
         if (task->thread->destroy) {
@@ -95,7 +72,9 @@ void qio_task_free(QIOTask *task)
     if (task->destroyResult) {
         task->destroyResult(task->result);
     }
-    error_free(task->err);
+    if (task->err) {
+        error_free(task->err);
+    }
     object_unref(task->source);
 
     qemu_mutex_unlock(&task->thread_lock);
@@ -112,7 +91,6 @@ static gboolean qio_task_thread_result(gpointer opaque)
 
     trace_qio_task_thread_result(task);
     qio_task_complete(task);
-    qio_task_free(task);
 
     return FALSE;
 }
@@ -126,11 +104,6 @@ static gpointer qio_task_thread_worker(gpointer opaque)
 
     task->thread->worker(task, task->thread->opaque);
 
-    /* We're running in the background thread, and must only
-     * ever report the task results in the main event loop
-     * thread. So we schedule an idle callback to report
-     * the worker results
-     */
     trace_qio_task_thread_exit(task);
 
     qemu_mutex_lock(&task->thread_lock);
@@ -199,6 +172,7 @@ void qio_task_complete(QIOTask *task)
 {
     task->func(task, task->opaque);
     trace_qio_task_complete(task);
+    qio_task_free(task);
 }
 
 

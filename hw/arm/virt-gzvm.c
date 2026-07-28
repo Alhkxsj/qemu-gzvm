@@ -2,7 +2,7 @@
 #include "qemu/units.h"
 #include "hw/arm/virt.h"
 #include "hw/arm/virt-gzvm.h"
-#include "hw/core/loader.h"
+#include "hw/loader.h"
 #include "hw/nvram/fw_cfg.h"
 #include "hw/pci/pci.h"
 #include "qemu/error-report.h"
@@ -63,8 +63,7 @@ void virt_gzvm_post_dtb(VirtMachineState *vms, hwaddr dtb_start, int dtb_size,
 
 void virt_gzvm_create_virtio_gpu(VirtMachineState *vms)
 {
-    if (!gzvm_enabled() || !vms->bus || !MACHINE(vms)->enable_graphics ||
-        vga_interface_created) {
+    if (!gzvm_enabled() || !vms->bus || !MACHINE(vms)->enable_graphics) {
         return;
     }
 

@@ -1,47 +1,51 @@
-/*
- * QEMU Hypervisor.framework (HVF) support
- *
- * Copyright Google Inc., 2017
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- *
- */
 
-/* header to be included in non-HVF-specific code */
 
 #ifndef HVF_H
 #define HVF_H
 
 #include "qemu/accel.h"
+#include "qom/object.h"
 
 #ifdef COMPILING_PER_TARGET
-# ifdef CONFIG_HVF
-#  define CONFIG_HVF_IS_POSSIBLE
-# endif /* !CONFIG_HVF */
-#else
-# define CONFIG_HVF_IS_POSSIBLE
-#endif /* COMPILING_PER_TARGET */
+#include "cpu.h"
 
-#ifdef CONFIG_HVF_IS_POSSIBLE
+#ifdef CONFIG_HVF
 extern bool hvf_allowed;
 #define hvf_enabled() (hvf_allowed)
-extern bool hvf_kernel_irqchip;
-#define hvf_irqchip_in_kernel()  (hvf_kernel_irqchip)
-extern bool hvf_nested_virt;
-#define hvf_nested_virt_enabled()  (hvf_nested_virt)
-#else /* !CONFIG_HVF_IS_POSSIBLE */
+#else /* !CONFIG_HVF */
 #define hvf_enabled() 0
-#define hvf_irqchip_in_kernel() 0
-#define hvf_nested_virt_enabled() 0
-#endif /* !CONFIG_HVF_IS_POSSIBLE */
+#endif /* !CONFIG_HVF */
 
-void hvf_nested_virt_enable(bool nested_virt);
+#endif /* COMPILING_PER_TARGET */
 
 #define TYPE_HVF_ACCEL ACCEL_CLASS_NAME("hvf")
 
 typedef struct HVFState HVFState;
 DECLARE_INSTANCE_CHECKER(HVFState, HVF_STATE,
                          TYPE_HVF_ACCEL)
+
+#ifdef COMPILING_PER_TARGET
+struct hvf_sw_breakpoint {
+    vaddr pc;
+    vaddr saved_insn;
+    int use_count;
+    QTAILQ_ENTRY(hvf_sw_breakpoint) entry;
+};
+
+struct hvf_sw_breakpoint *hvf_find_sw_breakpoint(CPUState *cpu,
+                                                 vaddr pc);
+int hvf_sw_breakpoints_active(CPUState *cpu);
+
+int hvf_arch_insert_sw_breakpoint(CPUState *cpu, struct hvf_sw_breakpoint *bp);
+int hvf_arch_remove_sw_breakpoint(CPUState *cpu, struct hvf_sw_breakpoint *bp);
+int hvf_arch_insert_hw_breakpoint(vaddr addr, vaddr len, int type);
+int hvf_arch_remove_hw_breakpoint(vaddr addr, vaddr len, int type);
+void hvf_arch_remove_all_hw_breakpoints(void);
+
+int hvf_update_guest_debug(CPUState *cpu);
+void hvf_arch_update_guest_debug(CPUState *cpu);
+
+bool hvf_arch_supports_guest_debug(void);
+#endif /* COMPILING_PER_TARGET */
 
 #endif

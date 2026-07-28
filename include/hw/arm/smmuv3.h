@@ -1,27 +1,9 @@
-/*
- * Copyright (C) 2014-2016 Broadcom Corporation
- * Copyright (c) 2017 Red Hat, Inc.
- * Written by Prem Mallappa, Eric Auger
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
- */
 
 #ifndef HW_ARM_SMMUV3_H
 #define HW_ARM_SMMUV3_H
 
 #include "hw/arm/smmu-common.h"
 #include "qom/object.h"
-#include "qapi/qapi-types-misc-arm.h"
 
 #define TYPE_SMMUV3_IOMMU_MEMORY_REGION "smmuv3-iommu-memory-region"
 
@@ -64,16 +46,6 @@ struct SMMUv3State {
     qemu_irq     irq[4];
     QemuMutex mutex;
     char *stage;
-
-    /* SMMU has HW accelerator support for nested S1 + s2 */
-    bool accel;
-    struct SMMUv3AccelState *s_accel;
-    uint64_t msi_gpa;
-    Error *migration_blocker;
-    OnOffAuto ril;
-    OnOffAuto ats;
-    OasMode oas;
-    SsidSizeMode ssidsize;
 };
 
 typedef enum {
@@ -84,15 +56,11 @@ typedef enum {
 } SMMUIrq;
 
 struct SMMUv3Class {
-    /*< private >*/
     SMMUBaseClass smmu_base_class;
-    /*< public >*/
 
     DeviceRealize parent_realize;
     ResettablePhases parent_phases;
 };
-
-bool smmuv3_ats_enabled(struct SMMUv3State *s);
 
 #define TYPE_ARM_SMMUV3   "arm-smmuv3"
 OBJECT_DECLARE_TYPE(SMMUv3State, SMMUv3Class, ARM_SMMUV3)

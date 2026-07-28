@@ -1,15 +1,3 @@
-/*
- * Wrappers around mutex/cond/thread functions
- *
- * Copyright Red Hat, Inc. 2009
- *
- * Author:
- *  Marcelo Tosatti <mtosatti@redhat.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- *
- */
 #include "qemu/osdep.h"
 #include "qemu/thread.h"
 #include "qemu/atomic.h"
@@ -18,39 +6,46 @@
 #include "qemu/tsan.h"
 #include "qemu/bitmap.h"
 
-#if defined(CONFIG_PTHREAD_SET_NAME_NP) || defined(CONFIG_PTHREAD_GET_NAME_NP)
+
+
+#ifdef CONFIG_PTHREAD_SET_NAME_NP
 #include <pthread_np.h>
 #endif
 
-/*
- * This is not defined on Linux, but the man page indicates
- * the buffer must be at least 16 bytes, including the NUL
- * terminator
- */
-#ifndef PTHREAD_MAX_NAMELEN_NP
-#define PTHREAD_MAX_NAMELEN_NP 16
+static bool name_threads;
+
+#ifdef __ANDROID__
+#include <pthread.h>
+static pthread_key_t thread_exit_key;
+static pthread_once_t thread_exit_once = PTHREAD_ONCE_INIT;
+static void thread_exit_key_init(void) {
+    pthread_key_create(&thread_exit_key, free);
+}
+static NotifierList *android_thread_exit_ptr(void) {
+    pthread_once(&thread_exit_once, thread_exit_key_init);
+    NotifierList *p = (NotifierList *)pthread_getspecific(thread_exit_key);
+    if (!p) {
+        p = (NotifierList *)calloc(1, sizeof(NotifierList));
+        pthread_setspecific(thread_exit_key, p);
+    }
+    return p;
+}
+#define thread_exit (*android_thread_exit_ptr())
+#else
+__thread NotifierList thread_exit;
 #endif
 
-static __thread char namebuf[PTHREAD_MAX_NAMELEN_NP];
-
-static void __attribute__((__constructor__(QEMU_CONSTRUCTOR_EARLY)))
-qemu_thread_init(void)
+void qemu_thread_naming(bool enable)
 {
-    /*
-     * Initialize the main thread name. We must not use
-     * qemu_thread_setname(), since on some platforms (at least Linux)
-     * this can change the process name that is reported by tools like
-     * 'ps'.
-     *
-     * This workaround suffices to ensure QEMU log/error messages
-     * get the main thread name, but at the cost of external tools
-     * like GDB not seeing it.
-     *
-     * NB using a constructor instead of static initializing namebuf,
-     * to ensure it only initializes the thread-local in the main
-     * thread
-     */
-    g_strlcpy(namebuf, "main", sizeof(namebuf));
+    name_threads = enable;
+
+#if !defined CONFIG_PTHREAD_SETNAME_NP_W_TID && \
+    !defined CONFIG_PTHREAD_SETNAME_NP_WO_TID && \
+    !defined CONFIG_PTHREAD_SET_NAME_NP
+    if (enable) {
+        fprintf(stderr, "qemu: thread naming not supported on this host\n");
+    }
+#endif
 }
 
 static void error_exit(int err, const char *msg)
@@ -77,6 +72,15 @@ static void compute_abs_deadline(struct timespec *ts, int ms)
         ts->tv_sec++;
         ts->tv_nsec -= 1000000000;
     }
+}
+
+void qemu_thread_init_tls(void)
+{
+#ifdef __ANDROID__
+    (void)android_thread_exit_ptr();
+#else
+    memset(&thread_exit, 0, sizeof(thread_exit));
+#endif
 }
 
 void qemu_mutex_init(QemuMutex *mutex)
@@ -332,17 +336,104 @@ void qemu_sem_wait(QemuSemaphore *sem)
     qemu_mutex_unlock(&sem->mutex);
 }
 
-static __thread NotifierList thread_exit;
+#ifdef __linux__
+#include "qemu/futex.h"
+#else
+static inline void qemu_futex_wake(QemuEvent *ev, int n)
+{
+    assert(ev->initialized);
+    pthread_mutex_lock(&ev->lock);
+    if (n == 1) {
+        pthread_cond_signal(&ev->cond);
+    } else {
+        pthread_cond_broadcast(&ev->cond);
+    }
+    pthread_mutex_unlock(&ev->lock);
+}
 
-/*
- * Note that in this implementation you can register a thread-exit
- * notifier for the main thread, but it will never be called.
- * This is OK because main thread exit can only happen when the
- * entire process is exiting, and the API allows notifiers to not
- * be called on process exit.
- */
+static inline void qemu_futex_wait(QemuEvent *ev, unsigned val)
+{
+    assert(ev->initialized);
+    pthread_mutex_lock(&ev->lock);
+    if (ev->value == val) {
+        pthread_cond_wait(&ev->cond, &ev->lock);
+    }
+    pthread_mutex_unlock(&ev->lock);
+}
+#endif
+
+
+#define EV_SET         0
+#define EV_FREE        1
+#define EV_BUSY       -1
+
+void qemu_event_init(QemuEvent *ev, bool init)
+{
+#ifndef __linux__
+    pthread_mutex_init(&ev->lock, NULL);
+    pthread_cond_init(&ev->cond, NULL);
+#endif
+
+    ev->value = (init ? EV_SET : EV_FREE);
+    ev->initialized = true;
+}
+
+void qemu_event_destroy(QemuEvent *ev)
+{
+    assert(ev->initialized);
+    ev->initialized = false;
+#ifndef __linux__
+    pthread_mutex_destroy(&ev->lock);
+    pthread_cond_destroy(&ev->cond);
+#endif
+}
+
+void qemu_event_set(QemuEvent *ev)
+{
+    assert(ev->initialized);
+
+    smp_mb();
+    if (qatomic_read(&ev->value) != EV_SET) {
+        int old = qatomic_xchg(&ev->value, EV_SET);
+
+        smp_mb__after_rmw();
+        if (old == EV_BUSY) {
+            qemu_futex_wake(ev, INT_MAX);
+        }
+    }
+}
+
+void qemu_event_reset(QemuEvent *ev)
+{
+    assert(ev->initialized);
+
+    qatomic_or(&ev->value, EV_FREE);
+
+    smp_mb__after_rmw();
+}
+
+void qemu_event_wait(QemuEvent *ev)
+{
+    unsigned value;
+
+    assert(ev->initialized);
+
+    value = qatomic_load_acquire(&ev->value);
+    if (value != EV_SET) {
+        if (value == EV_FREE) {
+            if (qatomic_cmpxchg(&ev->value, EV_FREE, EV_BUSY) == EV_SET) {
+                return;
+            }
+        }
+
+        qemu_futex_wait(ev, EV_BUSY);
+    }
+}
+
+
 void qemu_thread_atexit_add(Notifier *notifier)
 {
+
     notifier_list_add(&thread_exit, notifier);
 }
 
@@ -353,26 +444,7 @@ void qemu_thread_atexit_remove(Notifier *notifier)
 
 static void qemu_thread_atexit_notify(void *arg)
 {
-    /*
-     * Called when non-main thread exits (via qemu_thread_exit()
-     * or by returning from its start routine.)
-     */
     notifier_list_notify(&thread_exit, NULL);
-}
-
-void qemu_thread_set_name(const char *name)
-{
-    /*
-     * Attempt to set the thread name; note that this is for debug, so
-     * we're not going to fail if we can't set it.
-     */
-# if defined(CONFIG_PTHREAD_SETNAME_NP_W_TID)
-    pthread_setname_np(pthread_self(), name);
-# elif defined(CONFIG_PTHREAD_SETNAME_NP_WO_TID)
-    pthread_setname_np(name);
-# elif defined(CONFIG_PTHREAD_SET_NAME_NP)
-    pthread_set_name_np(pthread_self(), name);
-# endif
 }
 
 typedef struct {
@@ -388,23 +460,21 @@ static void *qemu_thread_start(void *args)
     void *arg = qemu_thread_args->arg;
     void *r;
 
-    if (qemu_thread_args->name) {
-        qemu_thread_set_name(qemu_thread_args->name);
+    qemu_thread_init_tls();
+
+    if (name_threads && qemu_thread_args->name) {
+# if defined(CONFIG_PTHREAD_SETNAME_NP_W_TID)
+        pthread_setname_np(pthread_self(), qemu_thread_args->name);
+# elif defined(CONFIG_PTHREAD_SETNAME_NP_WO_TID)
+        pthread_setname_np(qemu_thread_args->name);
+# elif defined(CONFIG_PTHREAD_SET_NAME_NP)
+        pthread_set_name_np(pthread_self(), qemu_thread_args->name);
+# endif
     }
     QEMU_TSAN_ANNOTATE_THREAD_NAME(qemu_thread_args->name);
     g_free(qemu_thread_args->name);
     g_free(qemu_thread_args);
 
-    /*
-     * GCC 11 with glibc 2.17 on PowerPC reports
-     *
-     * qemu-thread-posix.c:540:5: error: ‘__sigsetjmp’ accessing 656 bytes
-     *   in a region of size 528 [-Werror=stringop-overflow=]
-     * 540 |     pthread_cleanup_push(qemu_thread_atexit_notify, NULL);
-     *     |     ^~~~~~~~~~~~~~~~~~~~
-     *
-     * which is clearly nonsense.
-     */
 #pragma GCC diagnostic push
 #ifndef __clang__
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
@@ -437,13 +507,10 @@ void qemu_thread_create(QemuThread *thread, const char *name,
         pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
     }
 
-    /* Leave signal handling to the iothread.  */
     sigfillset(&set);
-    /* Blocking the signals can result in undefined behaviour. */
     sigdelset(&set, SIGSEGV);
     sigdelset(&set, SIGFPE);
     sigdelset(&set, SIGILL);
-    /* TODO avoid SIGBUS loss on macOS */
     pthread_sigmask(SIG_SETMASK, &set, &oldset);
 
     qemu_thread_args = g_new0(QemuThreadArgs, 1);
@@ -516,7 +583,6 @@ int qemu_thread_get_affinity(QemuThread *thread, unsigned long **host_cpus,
         }
     }
 
-    /* Convert the result into a proper bitmap. */
     *nbits = tmpbits;
     *host_cpus = bitmap_new(tmpbits);
     for (i = 0; i < tmpbits; i++) {
@@ -556,25 +622,4 @@ void *qemu_thread_join(QemuThread *thread)
         error_exit(err, __func__);
     }
     return ret;
-}
-
-const char *qemu_thread_get_name(void)
-{
-    int rv;
-    if (namebuf[0] != '\0') {
-        return namebuf;
-    }
-
-# if defined(CONFIG_PTHREAD_GETNAME_NP)
-    rv = pthread_getname_np(pthread_self(), namebuf, sizeof(namebuf));
-# elif defined(CONFIG_PTHREAD_GET_NAME_NP)
-    pthread_get_name_np(pthread_self(), namebuf, sizeof(namebuf));
-    rv = 0;
-# else
-    rv = -1;
-# endif
-    if (rv != 0) {
-        g_strlcpy(namebuf, "unnamed", G_N_ELEMENTS(namebuf));
-    }
-    return namebuf;
 }

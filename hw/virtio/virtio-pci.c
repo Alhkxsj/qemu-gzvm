@@ -1,70 +1,48 @@
-/*
- * Virtio PCI Bindings
- *
- * Copyright IBM, Corp. 2007
- * Copyright (c) 2009 CodeSourcery
- *
- * Authors:
- *  Anthony Liguori   <aliguori@us.ibm.com>
- *  Paul Brook        <paul@codesourcery.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2.  See
- * the COPYING file in the top-level directory.
- *
- * Contributions after 2012-01-13 are licensed under the terms of the
- * GNU GPL, version 2 or (at your option) any later version.
- */
+
 
 #include "qemu/osdep.h"
 
 #include "exec/memop.h"
-#include "standard-headers/linux/virtio_pci.h"
-#include "standard-headers/linux/virtio_ids.h"
-#include "hw/core/boards.h"
-#include "hw/virtio/virtio.h"
-#include "migration/qemu-file-types.h"
+#include "hw/boards.h"
+#include "hw/loader.h"
+#include "hw/pci/msi.h"
+#include "hw/pci/msix.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bus.h"
-#include "hw/core/qdev-properties.h"
+#include "hw/qdev-properties.h"
+#include "hw/virtio/virtio-bus.h"
+#include "hw/virtio/virtio-pci.h"
+#include "hw/virtio/virtio.h"
+#include "migration/qemu-file-types.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
-#include "qemu/bswap.h"
-#include "hw/pci/msi.h"
-#include "hw/pci/msix.h"
-#include "hw/core/loader.h"
-#include "system/accel-irq.h"
-#include "system/kvm.h"
-#include "hw/virtio/virtio-pci.h"
 #include "qemu/range.h"
-#include "hw/virtio/virtio-bus.h"
-#include "qapi/visitor.h"
-#include "system/replay.h"
+#include "standard-headers/linux/virtio_ids.h"
+#include "standard-headers/linux/virtio_pci.h"
 #include "trace.h"
 
 #define VIRTIO_PCI_REGION_SIZE(dev)     VIRTIO_PCI_CONFIG_OFF(msix_present(dev))
 
 #undef VIRTIO_PCI_CONFIG
 
-/* The remaining space is defined by each driver as the per-driver
- * configuration space */
+
 #define VIRTIO_PCI_CONFIG_SIZE(dev)     VIRTIO_PCI_CONFIG_OFF(msix_enabled(dev))
 
 static void virtio_pci_bus_new(VirtioBusState *bus, size_t bus_size,
                                VirtIOPCIProxy *dev);
 static void virtio_pci_reset(DeviceState *qdev);
 
-/* virtio device */
-/* DeviceState to VirtIOPCIProxy. For use off data-path. TODO: use QOM. */
+
+
 static inline VirtIOPCIProxy *to_virtio_pci_proxy(DeviceState *d)
 {
     return container_of(d, VirtIOPCIProxy, pci_dev.qdev);
 }
 
-/* DeviceState to VirtIOPCIProxy. Note: used on datapath,
- * be careful and test performance if you change this.
- */
+
 static inline VirtIOPCIProxy *to_virtio_pci_proxy_fast(DeviceState *d)
 {
     return container_of(d, VirtIOPCIProxy, pci_dev.qdev);
@@ -101,34 +79,11 @@ static const VMStateDescription vmstate_virtio_pci_modern_queue_state = {
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT16(num, VirtIOPCIQueue),
-        VMSTATE_UNUSED(1), /* enabled was stored as be16 */
+        VMSTATE_UNUSED(1), 
         VMSTATE_BOOL(enabled, VirtIOPCIQueue),
         VMSTATE_UINT32_ARRAY(desc, VirtIOPCIQueue, 2),
         VMSTATE_UINT32_ARRAY(avail, VirtIOPCIQueue, 2),
         VMSTATE_UINT32_ARRAY(used, VirtIOPCIQueue, 2),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-static bool virtio_pci_modern_state_features128_needed(void *opaque)
-{
-    VirtIOPCIProxy *proxy = opaque;
-    uint32_t features = 0;
-    int i;
-
-    for (i = 2; i < ARRAY_SIZE(proxy->guest_features); ++i) {
-        features |= proxy->guest_features[i];
-    }
-    return features;
-}
-
-static const VMStateDescription vmstate_virtio_pci_modern_state_features128 = {
-    .name = "virtio_pci/modern_state/features128",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = &virtio_pci_modern_state_features128_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(guest_features, VirtIOPCIProxy, 2, 2),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -140,12 +95,6 @@ static bool virtio_pci_modern_state_needed(void *opaque)
     return virtio_pci_modern(proxy);
 }
 
-/*
- * Avoid silently breaking migration should the feature space increase
- * even more in the (far away) future
- */
-QEMU_BUILD_BUG_ON(VIRTIO_FEATURES_NU32S != 4);
-
 static const VMStateDescription vmstate_virtio_pci_modern_state_sub = {
     .name = "virtio_pci/modern_state",
     .version_id = 1,
@@ -154,15 +103,11 @@ static const VMStateDescription vmstate_virtio_pci_modern_state_sub = {
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(dfselect, VirtIOPCIProxy),
         VMSTATE_UINT32(gfselect, VirtIOPCIProxy),
-        VMSTATE_UINT32_SUB_ARRAY(guest_features, VirtIOPCIProxy, 0, 2),
+        VMSTATE_UINT32_ARRAY(guest_features, VirtIOPCIProxy, 2),
         VMSTATE_STRUCT_ARRAY(vqs, VirtIOPCIProxy, VIRTIO_QUEUE_MAX, 0,
                              vmstate_virtio_pci_modern_queue_state,
                              VirtIOPCIQueue),
         VMSTATE_END_OF_LIST()
-    },
-    .subsections = (const VMStateDescription * const []) {
-        &vmstate_virtio_pci_modern_state_features128,
-        NULL
     }
 };
 
@@ -181,32 +126,23 @@ static const VMStateDescription vmstate_virtio_pci = {
 
 static bool virtio_pci_has_extra_state(DeviceState *d)
 {
-    return true;
+    VirtIOPCIProxy *proxy = to_virtio_pci_proxy(d);
+
+    return proxy->flags & VIRTIO_PCI_FLAG_MIGRATE_EXTRA;
 }
 
 static void virtio_pci_save_extra_state(DeviceState *d, QEMUFile *f)
 {
     VirtIOPCIProxy *proxy = to_virtio_pci_proxy(d);
-    Error *local_err = NULL;
-    int ret;
 
-    ret = vmstate_save_state(f, &vmstate_virtio_pci, proxy, NULL, &local_err);
-    if (ret < 0) {
-        error_report_err(local_err);
-    }
+    vmstate_save_state(f, &vmstate_virtio_pci, proxy, NULL);
 }
 
 static int virtio_pci_load_extra_state(DeviceState *d, QEMUFile *f)
 {
     VirtIOPCIProxy *proxy = to_virtio_pci_proxy(d);
-    Error *local_err = NULL;
-    int ret;
 
-    ret = vmstate_load_state(f, &vmstate_virtio_pci, proxy, 1, &local_err);
-    if (ret < 0) {
-        error_report_err(local_err);
-    }
-    return ret;
+    return vmstate_load_state(f, &vmstate_virtio_pci, proxy, 1);
 }
 
 static void virtio_pci_save_queue(DeviceState *d, int n, QEMUFile *f)
@@ -270,9 +206,9 @@ static int virtio_pci_load_queue(DeviceState *d, int n, QEMUFile *f)
 }
 
 typedef struct VirtIOPCIIDInfo {
-    /* virtio id */
+    
     uint16_t vdev_id;
-    /* pci device id for the transitional device */
+    
     uint16_t trans_devid;
     uint16_t class_id;
 } VirtIOPCIIDInfo;
@@ -328,7 +264,7 @@ static const VirtIOPCIIDInfo *virtio_pci_get_id_info(uint16_t vdev_id)
     }
 
     if (!info) {
-        /* The device id is invalid or not added to the id_info yet. */
+        
         error_report("Invalid virtio device(id %u)", vdev_id);
         abort();
     }
@@ -336,18 +272,13 @@ static const VirtIOPCIIDInfo *virtio_pci_get_id_info(uint16_t vdev_id)
     return info;
 }
 
-/*
- * Get the Transitional Device ID for the specific device, return
- * zero if the device is non-transitional.
- */
+
 uint16_t virtio_pci_get_trans_devid(uint16_t device_id)
 {
     return virtio_pci_get_id_info(device_id)->trans_devid;
 }
 
-/*
- * Get the Class ID for the specific device.
- */
+
 uint16_t virtio_pci_get_class_id(uint16_t device_id)
 {
     return virtio_pci_get_id_info(device_id)->class_id;
@@ -433,7 +364,7 @@ static void virtio_ioport_write(void *opaque, uint32_t addr, uint32_t val)
 
     switch (addr) {
     case VIRTIO_PCI_GUEST_FEATURES:
-        /* Guest does not negotiate properly?  We have to assume nothing. */
+        
         if (val & (1 << VIRTIO_F_BAD_FEATURE)) {
             val = virtio_bus_get_vdev_bad_features(&proxy->bus);
         }
@@ -477,10 +408,7 @@ static void virtio_ioport_write(void *opaque, uint32_t addr, uint32_t val)
             virtio_pci_reset(DEVICE(proxy));
         }
 
-        /* Linux before 2.6.34 drives the device without enabling
-           the PCI device bus master bit. Enable it automatically
-           for the guest. This is a PCI spec violation but so is
-           initiating DMA with bus master bit clear. */
+        
         if (val == (VIRTIO_CONFIG_S_ACKNOWLEDGE | VIRTIO_CONFIG_S_DRIVER)) {
             pci_default_write_config(&proxy->pci_dev, PCI_COMMAND,
                                      proxy->pci_dev.config[PCI_COMMAND] |
@@ -491,7 +419,7 @@ static void virtio_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         if (vdev->config_vector != VIRTIO_NO_VECTOR) {
             msix_vector_unuse(&proxy->pci_dev, vdev->config_vector);
         }
-        /* Make it possible for guest to discover an error took place. */
+        
         if (val < proxy->nvectors) {
             msix_vector_use(&proxy->pci_dev, val);
         } else {
@@ -504,7 +432,7 @@ static void virtio_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         if (vector != VIRTIO_NO_VECTOR) {
             msix_vector_unuse(&proxy->pci_dev, vector);
         }
-        /* Make it possible for guest to discover an error took place. */
+        
         if (val < proxy->nvectors) {
             msix_vector_use(&proxy->pci_dev, val);
         } else {
@@ -546,7 +474,7 @@ static uint32_t virtio_ioport_read(VirtIOPCIProxy *proxy, uint32_t addr)
         ret = vdev->status;
         break;
     case VIRTIO_PCI_ISR:
-        /* reading from the ISR also clears it. */
+        
         ret = qatomic_xchg(&vdev->isr, 0);
         pci_irq_deassert(&proxy->pci_dev);
         break;
@@ -586,13 +514,13 @@ static uint64_t virtio_pci_config_read(void *opaque, hwaddr addr,
         break;
     case 2:
         val = virtio_config_readw(vdev, addr);
-        if (virtio_vdev_is_big_endian(vdev)) {
+        if (virtio_is_big_endian(vdev)) {
             val = bswap16(val);
         }
         break;
     case 4:
         val = virtio_config_readl(vdev, addr);
-        if (virtio_vdev_is_big_endian(vdev)) {
+        if (virtio_is_big_endian(vdev)) {
             val = bswap32(val);
         }
         break;
@@ -616,22 +544,19 @@ static void virtio_pci_config_write(void *opaque, hwaddr addr,
         return;
     }
     addr -= config;
-    /*
-     * Virtio-PCI is odd. Ioports are LE but config space is target native
-     * endian.
-     */
+    
     switch (size) {
     case 1:
         virtio_config_writeb(vdev, addr, val);
         break;
     case 2:
-        if (virtio_vdev_is_big_endian(vdev)) {
+        if (virtio_is_big_endian(vdev)) {
             val = bswap16(val);
         }
         virtio_config_writew(vdev, addr, val);
         break;
     case 4:
-        if (virtio_vdev_is_big_endian(vdev)) {
+        if (virtio_is_big_endian(vdev)) {
             val = bswap32(val);
         }
         virtio_config_writel(vdev, addr, val);
@@ -671,18 +596,7 @@ static MemoryRegion *virtio_address_space_lookup(VirtIOPCIProxy *proxy,
     return NULL;
 }
 
-/* Below are generic functions to do memcpy from/to an address space,
- * without byteswaps, with input validation.
- *
- * As regular address_space_* APIs all do some kind of byteswap at least for
- * some host/target combinations, we are forced to explicitly convert to a
- * known-endianness integer value.
- * It doesn't really matter which endian format to go through, so the code
- * below selects the endian that causes the least amount of work on the given
- * host.
- *
- * Note: host pointer must be aligned.
- */
+
 static
 void virtio_address_space_write(VirtIOPCIProxy *proxy, hwaddr addr,
                                 const uint8_t *buf, int len)
@@ -690,9 +604,7 @@ void virtio_address_space_write(VirtIOPCIProxy *proxy, hwaddr addr,
     uint64_t val;
     MemoryRegion *mr;
 
-    /* address_space_* APIs assume an aligned address.
-     * As address is under guest control, handle illegal values.
-     */
+    
     addr &= ~(len - 1);
 
     mr = virtio_address_space_lookup(proxy, &addr, len);
@@ -700,7 +612,7 @@ void virtio_address_space_write(VirtIOPCIProxy *proxy, hwaddr addr,
         return;
     }
 
-    /* Make sure caller aligned buf properly */
+    
     assert(!(((uintptr_t)buf) & (len - 1)));
 
     switch (len) {
@@ -714,7 +626,7 @@ void virtio_address_space_write(VirtIOPCIProxy *proxy, hwaddr addr,
         val = pci_get_long(buf);
         break;
     default:
-        /* As length is under guest control, handle illegal values. */
+        
         return;
     }
     memory_region_dispatch_write(mr, addr, val, size_memop(len) | MO_LE,
@@ -728,9 +640,7 @@ virtio_address_space_read(VirtIOPCIProxy *proxy, hwaddr addr,
     uint64_t val;
     MemoryRegion *mr;
 
-    /* address_space_* APIs assume an aligned address.
-     * As address is under guest control, handle illegal values.
-     */
+    
     addr &= ~(len - 1);
 
     mr = virtio_address_space_lookup(proxy, &addr, len);
@@ -738,7 +648,7 @@ virtio_address_space_read(VirtIOPCIProxy *proxy, hwaddr addr,
         return;
     }
 
-    /* Make sure caller aligned buf properly */
+    
     assert(!(((uintptr_t)buf) & (len - 1)));
 
     memory_region_dispatch_read(mr, addr, &val, size_memop(len) | MO_LE,
@@ -754,7 +664,7 @@ virtio_address_space_read(VirtIOPCIProxy *proxy, hwaddr addr,
         pci_set_long(buf, val);
         break;
     default:
-        /* As length is under guest control, handle illegal values. */
+        
         break;
     }
 }
@@ -862,52 +772,6 @@ static uint32_t virtio_read_config(PCIDevice *pci_dev,
     return pci_default_read_config(pci_dev, address, len);
 }
 
-static int kvm_virtio_pci_vq_vector_use(VirtIOPCIProxy *proxy,
-                                        unsigned int vector)
-{
-    VirtIOIRQFD *irqfd = &proxy->vector_irqfd[vector];
-    int ret;
-
-    if (irqfd->users == 0) {
-        KVMRouteChange c = kvm_irqchip_begin_route_changes(kvm_state);
-        ret = accel_irqchip_add_msi_route(&c, vector, &proxy->pci_dev);
-        if (ret < 0) {
-            return ret;
-        }
-        accel_irqchip_commit_route_changes(&c);
-        irqfd->virq = ret;
-    }
-    irqfd->users++;
-    return 0;
-}
-
-static void kvm_virtio_pci_vq_vector_release(VirtIOPCIProxy *proxy,
-                                             unsigned int vector)
-{
-    VirtIOIRQFD *irqfd = &proxy->vector_irqfd[vector];
-    if (--irqfd->users == 0) {
-        accel_irqchip_release_virq(irqfd->virq);
-    }
-}
-
-static int kvm_virtio_pci_irqfd_use(VirtIOPCIProxy *proxy,
-                                 EventNotifier *n,
-                                 unsigned int vector)
-{
-    VirtIOIRQFD *irqfd = &proxy->vector_irqfd[vector];
-    return accel_irqchip_add_irqfd_notifier_gsi(n, NULL, irqfd->virq);
-}
-
-static void kvm_virtio_pci_irqfd_release(VirtIOPCIProxy *proxy,
-                                      EventNotifier *n ,
-                                      unsigned int vector)
-{
-    VirtIOIRQFD *irqfd = &proxy->vector_irqfd[vector];
-    int ret;
-
-    ret = accel_irqchip_remove_irqfd_notifier_gsi(n, irqfd->virq);
-    assert(ret == 0);
-}
 static int virtio_pci_get_notifier(VirtIOPCIProxy *proxy, int queue_no,
                                       EventNotifier **n, unsigned int *vector)
 {
@@ -931,101 +795,6 @@ static int virtio_pci_get_notifier(VirtIOPCIProxy *proxy, int queue_no,
     return 0;
 }
 
-static int kvm_virtio_pci_vector_use_one(VirtIOPCIProxy *proxy, int queue_no)
-{
-    unsigned int vector;
-    int ret;
-    EventNotifier *n;
-    PCIDevice *dev = &proxy->pci_dev;
-    VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
-    VirtioDeviceClass *k = VIRTIO_DEVICE_GET_CLASS(vdev);
-
-    ret = virtio_pci_get_notifier(proxy, queue_no, &n, &vector);
-    if (ret < 0) {
-        return ret;
-    }
-    if (vector >= msix_nr_vectors_allocated(dev)) {
-        return 0;
-    }
-    ret = kvm_virtio_pci_vq_vector_use(proxy, vector);
-    if (ret < 0) {
-        return ret;
-    }
-    /*
-     * If guest supports masking, set up irqfd now.
-     * Otherwise, delay until unmasked in the frontend.
-     */
-    if (vdev->use_guest_notifier_mask && k->guest_notifier_mask) {
-        ret = kvm_virtio_pci_irqfd_use(proxy, n, vector);
-        if (ret < 0) {
-            kvm_virtio_pci_vq_vector_release(proxy, vector);
-            return ret;
-        }
-    }
-
-    return 0;
-}
-static int kvm_virtio_pci_vector_vq_use(VirtIOPCIProxy *proxy, int nvqs)
-{
-    int queue_no;
-    int ret = 0;
-    VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
-
-    for (queue_no = 0; queue_no < nvqs; queue_no++) {
-        if (!virtio_queue_get_num(vdev, queue_no)) {
-            return -1;
-        }
-        ret = kvm_virtio_pci_vector_use_one(proxy, queue_no);
-    }
-    return ret;
-}
-
-static int kvm_virtio_pci_vector_config_use(VirtIOPCIProxy *proxy)
-{
-    return kvm_virtio_pci_vector_use_one(proxy, VIRTIO_CONFIG_IRQ_IDX);
-}
-
-static void kvm_virtio_pci_vector_release_one(VirtIOPCIProxy *proxy,
-                                              int queue_no)
-{
-    VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
-    unsigned int vector;
-    EventNotifier *n;
-    int ret;
-    VirtioDeviceClass *k = VIRTIO_DEVICE_GET_CLASS(vdev);
-    PCIDevice *dev = &proxy->pci_dev;
-
-    ret = virtio_pci_get_notifier(proxy, queue_no, &n, &vector);
-    if (ret < 0) {
-        return;
-    }
-    if (vector >= msix_nr_vectors_allocated(dev)) {
-        return;
-    }
-    if (vdev->use_guest_notifier_mask && k->guest_notifier_mask) {
-        kvm_virtio_pci_irqfd_release(proxy, n, vector);
-    }
-    kvm_virtio_pci_vq_vector_release(proxy, vector);
-}
-
-static void kvm_virtio_pci_vector_vq_release(VirtIOPCIProxy *proxy, int nvqs)
-{
-    int queue_no;
-    VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
-
-    for (queue_no = 0; queue_no < nvqs; queue_no++) {
-        if (!virtio_queue_get_num(vdev, queue_no)) {
-            break;
-        }
-        kvm_virtio_pci_vector_release_one(proxy, queue_no);
-    }
-}
-
-static void kvm_virtio_pci_vector_config_release(VirtIOPCIProxy *proxy)
-{
-    kvm_virtio_pci_vector_release_one(proxy, VIRTIO_CONFIG_IRQ_IDX);
-}
-
 static int virtio_pci_one_vector_unmask(VirtIOPCIProxy *proxy,
                                        unsigned int queue_no,
                                        unsigned int vector,
@@ -1034,35 +803,15 @@ static int virtio_pci_one_vector_unmask(VirtIOPCIProxy *proxy,
 {
     VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
     VirtioDeviceClass *k = VIRTIO_DEVICE_GET_CLASS(vdev);
-    VirtIOIRQFD *irqfd;
-    int ret = 0;
 
-    if (proxy->vector_irqfd) {
-        irqfd = &proxy->vector_irqfd[vector];
-        if (irqfd->msg.data != msg.data || irqfd->msg.address != msg.address) {
-            ret = accel_irqchip_update_msi_route(irqfd->virq, msg,
-                                                 &proxy->pci_dev);
-            if (ret < 0) {
-                return ret;
-            }
-            accel_irqchip_commit_routes();
-        }
-    }
-
-    /* If guest supports masking, irqfd is already setup, unmask it.
-     * Otherwise, set it up now.
-     */
     if (vdev->use_guest_notifier_mask && k->guest_notifier_mask) {
         k->guest_notifier_mask(vdev, queue_no, false);
-        /* Test after unmasking to avoid losing events. */
         if (k->guest_notifier_pending &&
             k->guest_notifier_pending(vdev, queue_no)) {
             event_notifier_set(n);
         }
-    } else {
-        ret = kvm_virtio_pci_irqfd_use(proxy, n, vector);
     }
-    return ret;
+    return 0;
 }
 
 static void virtio_pci_one_vector_mask(VirtIOPCIProxy *proxy,
@@ -1073,13 +822,8 @@ static void virtio_pci_one_vector_mask(VirtIOPCIProxy *proxy,
     VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
     VirtioDeviceClass *k = VIRTIO_DEVICE_GET_CLASS(vdev);
 
-    /* If guest supports masking, keep irqfd but mask it.
-     * Otherwise, clean it up now.
-     */ 
     if (vdev->use_guest_notifier_mask && k->guest_notifier_mask) {
         k->guest_notifier_mask(vdev, queue_no, true);
-    } else {
-        kvm_virtio_pci_irqfd_release(proxy, n, vector);
     }
 }
 
@@ -1107,7 +851,7 @@ static int virtio_pci_vector_unmask(PCIDevice *dev, unsigned vector,
         }
         vq = virtio_vector_next_queue(vq);
     }
-    /* unmask config intr */
+    
     if (vector == vdev->config_vector) {
         n = virtio_config_get_guest_notifier(vdev);
         ret = virtio_pci_one_vector_unmask(proxy, VIRTIO_CONFIG_IRQ_IDX, vector,
@@ -1189,7 +933,7 @@ static void virtio_pci_vector_poll(PCIDevice *dev,
             msix_set_pending(dev, vector);
         }
     }
-    /* poll the config intr */
+    
     ret = virtio_pci_get_notifier(proxy, VIRTIO_CONFIG_IRQ_IDX, &notifier,
                                   &vector);
     if (ret < 0) {
@@ -1259,12 +1003,7 @@ static int virtio_pci_set_guest_notifier(DeviceState *d, int n, bool assign,
 static bool virtio_pci_query_guest_notifiers(DeviceState *d)
 {
     VirtIOPCIProxy *proxy = to_virtio_pci_proxy(d);
-
-    if (msix_enabled(&proxy->pci_dev)) {
-        return true;
-    } else {
-        return pci_irq_disabled(&proxy->pci_dev);
-    }
+    return msix_enabled(&proxy->pci_dev);
 }
 
 static int virtio_pci_set_guest_notifiers(DeviceState *d, int nvqs, bool assign)
@@ -1273,16 +1012,11 @@ static int virtio_pci_set_guest_notifiers(DeviceState *d, int nvqs, bool assign)
     VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
     VirtioDeviceClass *k = VIRTIO_DEVICE_GET_CLASS(vdev);
     int r, n;
-    bool with_irqfd = msix_enabled(&proxy->pci_dev) &&
-        accel_msi_via_irqfd_enabled() ;
+    bool with_irqfd = msix_enabled(&proxy->pci_dev);
 
     nvqs = MIN(nvqs, VIRTIO_QUEUE_MAX);
 
-    /*
-     * When deassigning, pass a consistent nvqs value to avoid leaking
-     * notifiers. But first check we've actually been configured, exit
-     * early if we haven't.
-     */
+    
     if (!assign && !proxy->nvqs_with_notifiers) {
         return 0;
     }
@@ -1290,14 +1024,12 @@ static int virtio_pci_set_guest_notifiers(DeviceState *d, int nvqs, bool assign)
 
     proxy->nvqs_with_notifiers = nvqs;
 
-    /* Must unset vector notifier while guest notifier is still assigned */
+    
     if ((proxy->vector_irqfd ||
          (vdev->use_guest_notifier_mask && k->guest_notifier_mask)) &&
         !assign) {
         msix_unset_vector_notifiers(&proxy->pci_dev);
         if (proxy->vector_irqfd) {
-            kvm_virtio_pci_vector_vq_release(proxy, nvqs);
-            kvm_virtio_pci_vector_config_release(proxy);
             g_free(proxy->vector_irqfd);
             proxy->vector_irqfd = NULL;
         }
@@ -1318,7 +1050,7 @@ static int virtio_pci_set_guest_notifiers(DeviceState *d, int nvqs, bool assign)
     if (r < 0) {
         goto config_assign_error;
     }
-    /* Must set vector notifier after guest notifier has been assigned */
+    
     if ((with_irqfd ||
          (vdev->use_guest_notifier_mask && k->guest_notifier_mask)) &&
         assign) {
@@ -1326,14 +1058,6 @@ static int virtio_pci_set_guest_notifiers(DeviceState *d, int nvqs, bool assign)
             proxy->vector_irqfd =
                 g_malloc0(sizeof(*proxy->vector_irqfd) *
                           msix_nr_vectors_allocated(&proxy->pci_dev));
-            r = kvm_virtio_pci_vector_vq_use(proxy, nvqs);
-            if (r < 0) {
-                goto config_assign_error;
-            }
-            r = kvm_virtio_pci_vector_config_use(proxy);
-            if (r < 0) {
-                goto config_error;
-            }
         }
 
         r = msix_set_vector_notifiers(&proxy->pci_dev, virtio_pci_vector_unmask,
@@ -1349,17 +1073,12 @@ static int virtio_pci_set_guest_notifiers(DeviceState *d, int nvqs, bool assign)
 notifiers_error:
     if (with_irqfd) {
         assert(assign);
-        kvm_virtio_pci_vector_vq_release(proxy, nvqs);
-    }
-config_error:
-    if (with_irqfd) {
-        kvm_virtio_pci_vector_config_release(proxy);
     }
 config_assign_error:
     virtio_pci_set_guest_notifier(d, VIRTIO_CONFIG_IRQ_IDX, !assign,
                                   with_irqfd);
 assign_error:
-    /* We get here on assignment failure. Recover by undoing for VQs 0 .. n. */
+    
     assert(assign);
     while (--n >= 0) {
         virtio_pci_set_guest_notifier(d, n, !assign, with_irqfd);
@@ -1396,9 +1115,7 @@ static void virtio_pci_vmstate_change(DeviceState *d, bool running)
     VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
 
     if (running) {
-        /* Old QEMU versions did not set bus master enable on status write.
-         * Detect DRIVER set and enable it.
-         */
+        
         if ((proxy->flags & VIRTIO_PCI_FLAG_BUS_MASTER_BUG_MIGRATION) &&
             (vdev->status & VIRTIO_CONFIG_S_DRIVER) &&
             !(proxy->pci_dev.config[PCI_COMMAND] & PCI_COMMAND_MASTER)) {
@@ -1412,9 +1129,7 @@ static void virtio_pci_vmstate_change(DeviceState *d, bool running)
     }
 }
 
-/*
- * virtio-pci: This is the PCIDevice which has a virtio-pci-bus.
- */
+
 
 static int virtio_pci_query_nvectors(DeviceState *d)
 {
@@ -1449,11 +1164,11 @@ static bool virtio_pci_queue_enabled(DeviceState *d, int n)
     VirtIOPCIProxy *proxy = VIRTIO_PCI(d);
     VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
 
-    if (virtio_vdev_is_legacy(vdev)) {
-        return virtio_queue_enabled_legacy(vdev, n);
+    if (virtio_vdev_has_feature(vdev, VIRTIO_F_VERSION_1)) {
+        return proxy->vqs[n].enabled;
     }
 
-    return proxy->vqs[n].enabled;
+    return virtio_queue_enabled_legacy(vdev, n);
 }
 
 static int virtio_pci_add_mem_cap(VirtIOPCIProxy *proxy,
@@ -1477,30 +1192,14 @@ static void virtio_pci_set_vector(VirtIODevice *vdev,
                                   int queue_no, uint16_t old_vector,
                                   uint16_t new_vector)
 {
-    bool kvm_irqfd = (vdev->status & VIRTIO_CONFIG_S_DRIVER_OK) &&
-        msix_enabled(&proxy->pci_dev) && accel_msi_via_irqfd_enabled();
-
     if (new_vector == old_vector) {
         return;
     }
 
-    /*
-     * If the device uses irqfd and the vector changes after DRIVER_OK is
-     * set, we need to release the old vector and set up the new one.
-     * Otherwise just need to set the new vector on the device.
-     */
-    if (kvm_irqfd && old_vector != VIRTIO_NO_VECTOR) {
-        kvm_virtio_pci_vector_release_one(proxy, queue_no);
-    }
-    /* Set the new vector on the device. */
     if (queue_no == VIRTIO_CONFIG_IRQ_IDX) {
         vdev->config_vector = new_vector;
     } else {
         virtio_queue_set_vector(vdev, queue_no, new_vector);
-    }
-    /* If the new vector changed need to set it up. */
-    if (kvm_irqfd && new_vector != VIRTIO_NO_VECTOR) {
-        kvm_virtio_pci_vector_use_one(proxy, queue_no);
     }
 }
 
@@ -1522,19 +1221,6 @@ int virtio_pci_add_shm_cap(VirtIOPCIProxy *proxy,
     return virtio_pci_add_mem_cap(proxy, &cap.cap);
 }
 
-static int virtio_pci_select_max(const VirtIODevice *vdev)
-{
-    int i;
-
-    for (i = VIRTIO_FEATURES_NU64S - 1; i > 0; i--) {
-        if (vdev->host_features_ex[i]) {
-            return (i + 1) * 2;
-        }
-    }
-
-    return 2;
-}
-
 static uint64_t virtio_pci_common_read(void *opaque, hwaddr addr,
                                        unsigned size)
 {
@@ -1552,21 +1238,18 @@ static uint64_t virtio_pci_common_read(void *opaque, hwaddr addr,
         val = proxy->dfselect;
         break;
     case VIRTIO_PCI_COMMON_DF:
-        if (proxy->dfselect < virtio_pci_select_max(vdev)) {
+        if (proxy->dfselect <= 1) {
             VirtioDeviceClass *vdc = VIRTIO_DEVICE_GET_CLASS(vdev);
 
-            val = vdev->host_features_ex[proxy->dfselect >> 1] >>
-                  (32 * (proxy->dfselect & 1));
-            if (proxy->dfselect <= 1) {
-                val &= (~vdc->legacy_features) >> (32 * proxy->dfselect);
-            }
+            val = (vdev->host_features & ~vdc->legacy_features) >>
+                (32 * proxy->dfselect);
         }
         break;
     case VIRTIO_PCI_COMMON_GFSELECT:
         val = proxy->gfselect;
         break;
     case VIRTIO_PCI_COMMON_GF:
-        if (proxy->gfselect < virtio_pci_select_max(vdev)) {
+        if (proxy->gfselect < ARRAY_SIZE(proxy->guest_features)) {
             val = proxy->guest_features[proxy->gfselect];
         }
         break;
@@ -1599,7 +1282,7 @@ static uint64_t virtio_pci_common_read(void *opaque, hwaddr addr,
         val = proxy->vqs[vdev->queue_sel].enabled;
         break;
     case VIRTIO_PCI_COMMON_Q_NOFF:
-        /* Simply map queues in order */
+        
         val = vdev->queue_sel;
         break;
     case VIRTIO_PCI_COMMON_Q_DESCLO:
@@ -1649,25 +1332,18 @@ static void virtio_pci_common_write(void *opaque, hwaddr addr,
         proxy->gfselect = val;
         break;
     case VIRTIO_PCI_COMMON_GF:
-        if (proxy->gfselect < virtio_pci_select_max(vdev)) {
-            uint64_t features[VIRTIO_FEATURES_NU64S];
-            int i;
-
+        if (proxy->gfselect < ARRAY_SIZE(proxy->guest_features)) {
             proxy->guest_features[proxy->gfselect] = val;
-            virtio_features_clear(features);
-            for (i = 0; i < ARRAY_SIZE(proxy->guest_features); ++i) {
-                uint64_t cur = proxy->guest_features[i];
-
-                features[i >> 1] |= cur << ((i & 1) * 32);
-            }
-            virtio_set_features_ex(vdev, features);
+            virtio_set_features(vdev,
+                                (((uint64_t)proxy->guest_features[1]) << 32) |
+                                proxy->guest_features[0]);
         }
         break;
     case VIRTIO_PCI_COMMON_MSIX:
         if (vdev->config_vector != VIRTIO_NO_VECTOR) {
             msix_vector_unuse(&proxy->pci_dev, vdev->config_vector);
         }
-        /* Make it possible for guest to discover an error took place. */
+        
         if (val < proxy->nvectors) {
             msix_vector_use(&proxy->pci_dev, val);
         } else {
@@ -1708,7 +1384,7 @@ static void virtio_pci_common_write(void *opaque, hwaddr addr,
         if (vector != VIRTIO_NO_VECTOR) {
             msix_vector_unuse(&proxy->pci_dev, vector);
         }
-        /* Make it possible for guest to discover an error took place. */
+        
         if (val < proxy->nvectors) {
             msix_vector_use(&proxy->pci_dev, val);
         } else {
@@ -2023,7 +1699,7 @@ static void virtio_pci_pre_plugged(DeviceState *d, Error **errp)
     virtio_add_feature(&vdev->host_features, VIRTIO_F_BAD_FEATURE);
 }
 
-/* This is called by virtio-bus just after the device is plugged. */
+
 static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
 {
     VirtIOPCIProxy *proxy = VIRTIO_PCI(d);
@@ -2034,13 +1710,10 @@ static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
     uint8_t *config;
     uint32_t size;
     VirtIODevice *vdev = virtio_bus_get_device(bus);
-    int16_t res;
 
-    /*
-     * Virtio capabilities present without
-     * VIRTIO_F_VERSION_1 confuses guests
-     */
-    if (!virtio_has_feature(vdev->host_features, VIRTIO_F_VERSION_1)) {
+    
+    if (!proxy->ignore_backend_features &&
+            !virtio_has_feature(vdev->host_features, VIRTIO_F_VERSION_1)) {
         virtio_pci_disable_modern(proxy);
 
         if (!legacy) {
@@ -2061,10 +1734,7 @@ static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
 
     if (legacy) {
         if (!virtio_legacy_allowed(vdev)) {
-            /*
-             * To avoid migration issues, we allow legacy mode when legacy
-             * check is disabled in the old machine types (< 5.1).
-             */
+            
             if (virtio_legacy_check_disabled(vdev)) {
                 warn_report("device is modern-only, but for backward "
                             "compatibility legacy is allowed");
@@ -2079,17 +1749,13 @@ static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
                        " neither legacy nor transitional device");
             return;
         }
-        /*
-         * Legacy and transitional devices use specific subsystem IDs.
-         * Note that the subsystem vendor ID (config + PCI_SUBSYSTEM_VENDOR_ID)
-         * is set to PCI_SUBVENDOR_ID_REDHAT_QUMRANET by default.
-         */
+        
         pci_set_word(config + PCI_SUBSYSTEM_ID, virtio_bus_get_vdev_id(bus));
         if (proxy->trans_devid) {
             pci_config_set_device_id(config, proxy->trans_devid);
         }
     } else {
-        /* pure virtio-1.0 */
+        
         pci_set_word(config + PCI_VENDOR_ID,
                      PCI_VENDOR_ID_REDHAT_QUMRANET);
         pci_set_word(config + PCI_DEVICE_ID,
@@ -2157,7 +1823,7 @@ static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
         int err = msix_init_exclusive_bar(&proxy->pci_dev, proxy->nvectors,
                                           proxy->msix_bar_idx, NULL);
         if (err) {
-            /* Notice when a system that supports MSIx can't initialize it */
+            
             if (err != -ENOTSUP) {
                 warn_report("unable to init msix vectors to %" PRIu32,
                             proxy->nvectors);
@@ -2180,20 +1846,6 @@ static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
 
         pci_register_bar(&proxy->pci_dev, proxy->legacy_io_bar_idx,
                          PCI_BASE_ADDRESS_SPACE_IO, &proxy->bar);
-    }
-
-    if (pci_is_express(&proxy->pci_dev)) {
-        if (pci_is_vf(&proxy->pci_dev)) {
-            pcie_ari_init(&proxy->pci_dev, proxy->last_pcie_cap_offset);
-            proxy->last_pcie_cap_offset += PCI_ARI_SIZEOF;
-        } else {
-            res = pcie_sriov_pf_init_from_user_created_vfs(
-                &proxy->pci_dev, proxy->last_pcie_cap_offset, errp);
-            if (res > 0) {
-                proxy->last_pcie_cap_offset += res;
-                virtio_add_feature(&vdev->host_features, VIRTIO_F_SR_IOV);
-            }
-        }
     }
 }
 
@@ -2223,21 +1875,7 @@ static void virtio_pci_realize(PCIDevice *pci_dev, Error **errp)
     bool pcie_port = pci_bus_is_express(pci_get_bus(pci_dev)) &&
                      !pci_bus_is_root(pci_get_bus(pci_dev));
 
-    /* fd-based ioevents can't be synchronized in record/replay */
-    if (replay_mode != REPLAY_MODE_NONE) {
-        proxy->flags &= ~VIRTIO_PCI_FLAG_USE_IOEVENTFD;
-    }
-
-    /*
-     * virtio pci bar layout used by default.
-     * subclasses can re-arrange things if needed.
-     *
-     *   region 0   --  virtio legacy io bar
-     *   region 1   --  msi-x bar
-     *   region 2   --  virtio modern io bar (off by default)
-     *   region 4+5 --  virtio modern memory (64bit) bar
-     *
-     */
+    
     proxy->legacy_io_bar_idx  = 0;
     proxy->msix_bar_idx       = 1;
     proxy->modern_io_bar_idx  = 2;
@@ -2263,9 +1901,9 @@ static void virtio_pci_realize(PCIDevice *pci_dev, Error **errp)
     proxy->notify_pio.size = 0x4;
     proxy->notify_pio.type = VIRTIO_PCI_CAP_NOTIFY_CFG;
 
-    /* subclasses can enforce modern, so do this unconditionally */
+    
     memory_region_init(&proxy->modern_bar, OBJECT(proxy), "virtio-pci",
-                       /* PCI BAR regions must be powers of 2 */
+                       
                        pow2ceil(proxy->notify.offset + proxy->notify.size));
 
     address_space_init(&proxy->modern_cfg_mem_as, &proxy->modern_bar,
@@ -2285,7 +1923,7 @@ static void virtio_pci_realize(PCIDevice *pci_dev, Error **errp)
 
     if (pcie_port && pci_is_express(pci_dev)) {
         int pos;
-        proxy->last_pcie_cap_offset = PCI_CONFIG_SPACE_SIZE;
+        uint16_t last_pcie_cap_offset = PCI_CONFIG_SPACE_SIZE;
 
         pos = pcie_endpoint_cap_init(pci_dev, 0);
         assert(pos > 0);
@@ -2295,48 +1933,48 @@ static void virtio_pci_realize(PCIDevice *pci_dev, Error **errp)
             return;
         }
 
-        /*
-         * Indicates that this function complies with revision 1.2 of the
-         * PCI Power Management Interface Specification.
-         */
+        
         pci_set_word(pci_dev->config + pos + PCI_PM_PMC, 0x3);
 
         if (proxy->flags & VIRTIO_PCI_FLAG_AER) {
-            pcie_aer_init(pci_dev, PCI_ERR_VER, proxy->last_pcie_cap_offset,
+            pcie_aer_init(pci_dev, PCI_ERR_VER, last_pcie_cap_offset,
                           PCI_ERR_SIZEOF, NULL);
-            proxy->last_pcie_cap_offset += PCI_ERR_SIZEOF;
+            last_pcie_cap_offset += PCI_ERR_SIZEOF;
         }
 
-        /* Init error enabling flags */
-        pcie_cap_deverr_init(pci_dev);
+        if (proxy->flags & VIRTIO_PCI_FLAG_INIT_DEVERR) {
+            
+            pcie_cap_deverr_init(pci_dev);
+        }
 
-        /* Init Link Control Register */
-        pcie_cap_lnkctl_init(pci_dev);
+        if (proxy->flags & VIRTIO_PCI_FLAG_INIT_LNKCTL) {
+            
+            pcie_cap_lnkctl_init(pci_dev);
+        }
 
         if (proxy->flags & VIRTIO_PCI_FLAG_PM_NO_SOFT_RESET) {
             pci_set_word(pci_dev->config + pos + PCI_PM_CTRL,
                          PCI_PM_CTRL_NO_SOFT_RESET);
         }
 
-        /* Init Power Management Control Register */
-        pci_set_word(pci_dev->wmask + pos + PCI_PM_CTRL,
-                     PCI_PM_CTRL_STATE_MASK);
+        if (proxy->flags & VIRTIO_PCI_FLAG_INIT_PM) {
+            
+            pci_set_word(pci_dev->wmask + pos + PCI_PM_CTRL,
+                         PCI_PM_CTRL_STATE_MASK);
+        }
 
         if (proxy->flags & VIRTIO_PCI_FLAG_ATS) {
-            pcie_ats_init(pci_dev, proxy->last_pcie_cap_offset,
+            pcie_ats_init(pci_dev, last_pcie_cap_offset,
                           proxy->flags & VIRTIO_PCI_FLAG_ATS_PAGE_ALIGNED);
-            proxy->last_pcie_cap_offset += PCI_EXT_CAP_ATS_SIZEOF;
+            last_pcie_cap_offset += PCI_EXT_CAP_ATS_SIZEOF;
         }
 
         if (proxy->flags & VIRTIO_PCI_FLAG_INIT_FLR) {
-            /* Set Function Level Reset capability bit */
+            
             pcie_cap_flr_init(pci_dev);
         }
     } else {
-        /*
-         * make future invocations of pci_is_express() return false
-         * and pci_config_size() return PCI_CONFIG_SPACE_SIZE.
-         */
+        
         pci_dev->cap_present &= ~QEMU_PCI_CAP_EXPRESS;
     }
 
@@ -2353,7 +1991,6 @@ static void virtio_pci_exit(PCIDevice *pci_dev)
                      !pci_bus_is_root(pci_get_bus(pci_dev));
     bool modern_pio = proxy->flags & VIRTIO_PCI_FLAG_MODERN_PIO_NOTIFY;
 
-    pcie_sriov_pf_exit(&proxy->pci_dev);
     msix_uninit_exclusive_bar(pci_dev);
     if (proxy->flags & VIRTIO_PCI_FLAG_AER && pcie_port &&
         pci_is_express(pci_dev)) {
@@ -2373,8 +2010,6 @@ static void virtio_pci_reset(DeviceState *qdev)
 
     virtio_bus_reset(bus);
     msix_unuse_all_vectors(&proxy->pci_dev);
-
-    memset(proxy->guest_features, 0, sizeof(proxy->guest_features));
 
     for (i = 0; i < VIRTIO_QUEUE_MAX; i++) {
         proxy->vqs[i].enabled = 0;
@@ -2396,10 +2031,7 @@ static bool virtio_pci_no_soft_reset(PCIDevice *dev)
 
     pmcsr = pci_get_word(dev->config + dev->pm_cap + PCI_PM_CTRL);
 
-    /*
-     * When No_Soft_Reset bit is set and the device
-     * is in D3hot state, don't reset device
-     */
+    
     return (pmcsr & PCI_PM_CTRL_NO_SOFT_RESET) &&
            (pmcsr & PCI_PM_CTRL_STATE_MASK) == 3;
 }
@@ -2416,25 +2048,42 @@ static void virtio_pci_bus_reset_hold(Object *obj, ResetType type)
     virtio_pci_reset(qdev);
 
     if (pci_is_express(dev)) {
+        VirtIOPCIProxy *proxy = VIRTIO_PCI(dev);
+
         pcie_cap_deverr_reset(dev);
         pcie_cap_lnkctl_reset(dev);
 
-        pci_word_test_and_clear_mask(dev->config + dev->pm_cap + PCI_PM_CTRL,
-                                     PCI_PM_CTRL_STATE_MASK);
+        if (proxy->flags & VIRTIO_PCI_FLAG_INIT_PM) {
+            pci_word_test_and_clear_mask(
+                dev->config + dev->pm_cap + PCI_PM_CTRL,
+                PCI_PM_CTRL_STATE_MASK);
+        }
     }
 }
 
 static const Property virtio_pci_properties[] = {
     DEFINE_PROP_BIT("virtio-pci-bus-master-bug-migration", VirtIOPCIProxy, flags,
                     VIRTIO_PCI_FLAG_BUS_MASTER_BUG_MIGRATION_BIT, false),
+    DEFINE_PROP_BIT("migrate-extra", VirtIOPCIProxy, flags,
+                    VIRTIO_PCI_FLAG_MIGRATE_EXTRA_BIT, true),
     DEFINE_PROP_BIT("modern-pio-notify", VirtIOPCIProxy, flags,
                     VIRTIO_PCI_FLAG_MODERN_PIO_NOTIFY_BIT, false),
+    DEFINE_PROP_BIT("x-disable-pcie", VirtIOPCIProxy, flags,
+                    VIRTIO_PCI_FLAG_DISABLE_PCIE_BIT, false),
     DEFINE_PROP_BIT("page-per-vq", VirtIOPCIProxy, flags,
                     VIRTIO_PCI_FLAG_PAGE_PER_VQ_BIT, false),
+    DEFINE_PROP_BOOL("x-ignore-backend-features", VirtIOPCIProxy,
+                     ignore_backend_features, false),
     DEFINE_PROP_BIT("ats", VirtIOPCIProxy, flags,
                     VIRTIO_PCI_FLAG_ATS_BIT, false),
     DEFINE_PROP_BIT("x-ats-page-aligned", VirtIOPCIProxy, flags,
                     VIRTIO_PCI_FLAG_ATS_PAGE_ALIGNED_BIT, true),
+    DEFINE_PROP_BIT("x-pcie-deverr-init", VirtIOPCIProxy, flags,
+                    VIRTIO_PCI_FLAG_INIT_DEVERR_BIT, true),
+    DEFINE_PROP_BIT("x-pcie-lnkctl-init", VirtIOPCIProxy, flags,
+                    VIRTIO_PCI_FLAG_INIT_LNKCTL_BIT, true),
+    DEFINE_PROP_BIT("x-pcie-pm-init", VirtIOPCIProxy, flags,
+                    VIRTIO_PCI_FLAG_INIT_PM_BIT, true),
     DEFINE_PROP_BIT("x-pcie-pm-no-soft-reset", VirtIOPCIProxy, flags,
                     VIRTIO_PCI_FLAG_PM_NO_SOFT_RESET_BIT, false),
     DEFINE_PROP_BIT("x-pcie-flr-init", VirtIOPCIProxy, flags,
@@ -2449,7 +2098,8 @@ static void virtio_pci_dc_realize(DeviceState *qdev, Error **errp)
     VirtIOPCIProxy *proxy = VIRTIO_PCI(qdev);
     PCIDevice *pci_dev = &proxy->pci_dev;
 
-    if (virtio_pci_modern(proxy)) {
+    if (!(proxy->flags & VIRTIO_PCI_FLAG_DISABLE_PCIE) &&
+        virtio_pci_modern(proxy)) {
         pci_dev->cap_present |= QEMU_PCI_CAP_EXPRESS;
     }
 
@@ -2464,7 +2114,7 @@ static int virtio_pci_sync_config(DeviceState *dev, Error **errp)
     return qdev_sync_config(DEVICE(vdev), errp);
 }
 
-static void virtio_pci_class_init(ObjectClass *klass, const void *data)
+static void virtio_pci_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -2498,7 +2148,7 @@ static const Property virtio_pci_generic_properties[] = {
     DEFINE_PROP_BOOL("disable-modern", VirtIOPCIProxy, disable_modern, false),
 };
 
-static void virtio_pci_base_class_init(ObjectClass *klass, const void *data)
+static void virtio_pci_base_class_init(ObjectClass *klass, void *data)
 {
     const VirtioPCIDeviceTypeInfo *t = data;
     if (t->class_init) {
@@ -2506,7 +2156,7 @@ static void virtio_pci_base_class_init(ObjectClass *klass, const void *data)
     }
 }
 
-static void virtio_pci_generic_class_init(ObjectClass *klass, const void *data)
+static void virtio_pci_generic_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -2546,7 +2196,7 @@ void virtio_pci_types_register(const VirtioPCIDeviceTypeInfo *t)
         .name = t->generic_name,
         .parent = base_type_info.name,
         .class_init = virtio_pci_generic_class_init,
-        .interfaces = (const InterfaceInfo[]) {
+        .interfaces = (InterfaceInfo[]) {
             { INTERFACE_PCIE_DEVICE },
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
             { }
@@ -2554,21 +2204,21 @@ void virtio_pci_types_register(const VirtioPCIDeviceTypeInfo *t)
     };
 
     if (!base_type_info.name) {
-        /* No base type -> register a single generic device type */
-        /* use intermediate %s-base-type to add generic device props */
+        
+        
         base_name = g_strdup_printf("%s-base-type", t->generic_name);
         base_type_info.name = base_name;
         base_type_info.class_init = virtio_pci_generic_class_init;
 
         generic_type_info.parent = base_name;
         generic_type_info.class_init = virtio_pci_base_class_init;
-        generic_type_info.class_data = t;
+        generic_type_info.class_data = (void *)t;
 
         assert(!t->non_transitional_name);
         assert(!t->transitional_name);
     } else {
         base_type_info.class_init = virtio_pci_base_class_init;
-        base_type_info.class_data = t;
+        base_type_info.class_data = (void *)t;
     }
 
     type_register_static(&base_type_info);
@@ -2581,7 +2231,7 @@ void virtio_pci_types_register(const VirtioPCIDeviceTypeInfo *t)
             .name          = t->non_transitional_name,
             .parent        = base_type_info.name,
             .instance_init = virtio_pci_non_transitional_instance_init,
-            .interfaces = (const InterfaceInfo[]) {
+            .interfaces = (InterfaceInfo[]) {
                 { INTERFACE_PCIE_DEVICE },
                 { INTERFACE_CONVENTIONAL_PCI_DEVICE },
                 { }
@@ -2595,11 +2245,8 @@ void virtio_pci_types_register(const VirtioPCIDeviceTypeInfo *t)
             .name          = t->transitional_name,
             .parent        = base_type_info.name,
             .instance_init = virtio_pci_transitional_instance_init,
-            .interfaces = (const InterfaceInfo[]) {
-                /*
-                 * Transitional virtio devices work only as Conventional PCI
-                 * devices because they require PIO ports.
-                 */
+            .interfaces = (InterfaceInfo[]) {
+                
                 { INTERFACE_CONVENTIONAL_PCI_DEVICE },
                 { }
             },
@@ -2611,36 +2258,17 @@ void virtio_pci_types_register(const VirtioPCIDeviceTypeInfo *t)
 
 unsigned virtio_pci_optimal_num_queues(unsigned fixed_queues)
 {
-    /*
-     * 1:1 vq to vCPU mapping is ideal because the same vCPU that submitted
-     * virtqueue buffers can handle their completion. When a different vCPU
-     * handles completion it may need to IPI the vCPU that submitted the
-     * request and this adds overhead.
-     *
-     * Virtqueues consume guest RAM and MSI-X vectors. This is wasteful in
-     * guests with very many vCPUs and a device that is only used by a few
-     * vCPUs. Unfortunately optimizing that case requires manual pinning inside
-     * the guest, so those users might as well manually set the number of
-     * queues. There is no upper limit that can be applied automatically and
-     * doing so arbitrarily would result in a sudden performance drop once the
-     * threshold number of vCPUs is exceeded.
-     */
+    
     unsigned num_queues = current_machine->smp.cpus;
 
-    /*
-     * The maximum number of MSI-X vectors is PCI_MSIX_FLAGS_QSIZE + 1, but the
-     * config change interrupt and the fixed virtqueues must be taken into
-     * account too.
-     */
+    
     num_queues = MIN(num_queues, PCI_MSIX_FLAGS_QSIZE - fixed_queues);
 
-    /*
-     * There is a limit to how many virtqueues a device can have.
-     */
+    
     return MIN(num_queues, VIRTIO_QUEUE_MAX - fixed_queues);
 }
 
-/* virtio-pci-bus */
+
 
 static void virtio_pci_bus_new(VirtioBusState *bus, size_t bus_size,
                                VirtIOPCIProxy *dev)
@@ -2651,7 +2279,7 @@ static void virtio_pci_bus_new(VirtioBusState *bus, size_t bus_size,
     qbus_init(bus, bus_size, TYPE_VIRTIO_PCI_BUS, qdev, virtio_bus_name);
 }
 
-static void virtio_pci_bus_class_init(ObjectClass *klass, const void *data)
+static void virtio_pci_bus_class_init(ObjectClass *klass, void *data)
 {
     BusClass *bus_class = BUS_CLASS(klass);
     VirtioBusClass *k = VIRTIO_BUS_CLASS(klass);
@@ -2689,10 +2317,9 @@ static const TypeInfo virtio_pci_bus_info = {
 
 static void virtio_pci_register_types(void)
 {
-    /* Base types: */
+    
     type_register_static(&virtio_pci_bus_info);
     type_register_static(&virtio_pci_info);
 }
 
 type_init(virtio_pci_register_types)
-

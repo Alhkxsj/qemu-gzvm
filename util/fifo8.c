@@ -1,16 +1,3 @@
-/*
- * Generic FIFO component, implemented as a circular buffer.
- *
- * Copyright (c) 2012 Peter A. G. Crosthwaite
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, see <http://www.gnu.org/licenses/>.
- */
 
 #include "qemu/osdep.h"
 #include "migration/vmstate.h"
@@ -71,7 +58,7 @@ uint8_t fifo8_pop(Fifo8 *fifo)
     return ret;
 }
 
-uint8_t fifo8_peek(const Fifo8 *fifo)
+uint8_t fifo8_peek(Fifo8 *fifo)
 {
     assert(fifo->num > 0);
     return fifo->data[fifo->head];
@@ -128,7 +115,6 @@ static uint32_t fifo8_peekpop_buf(Fifo8 *fifo, uint8_t *dest, uint32_t destlen,
         memcpy(dest, buf, n1);
     }
 
-    /* Add FIFO wraparound if needed */
     len -= n1;
     len = MIN(len, fifo8_num_used(fifo));
     if (len) {
@@ -157,22 +143,22 @@ void fifo8_drop(Fifo8 *fifo, uint32_t len)
     assert(len == 0);
 }
 
-bool fifo8_is_empty(const Fifo8 *fifo)
+bool fifo8_is_empty(Fifo8 *fifo)
 {
     return (fifo->num == 0);
 }
 
-bool fifo8_is_full(const Fifo8 *fifo)
+bool fifo8_is_full(Fifo8 *fifo)
 {
     return (fifo->num == fifo->capacity);
 }
 
-uint32_t fifo8_num_free(const Fifo8 *fifo)
+uint32_t fifo8_num_free(Fifo8 *fifo)
 {
     return fifo->capacity - fifo->num;
 }
 
-uint32_t fifo8_num_used(const Fifo8 *fifo)
+uint32_t fifo8_num_used(Fifo8 *fifo)
 {
     return fifo->num;
 }

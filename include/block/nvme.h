@@ -1,7 +1,7 @@
 #ifndef BLOCK_NVME_H
 #define BLOCK_NVME_H
 
-#include "hw/core/registerfields.h"
+#include "hw/registerfields.h"
 
 typedef struct QEMU_PACKED NvmeBar {
     uint64_t    cap;
@@ -1134,16 +1134,12 @@ enum NvmeIdCns {
     NVME_ID_CNS_CS_IND_NS_ALLOCATED   = 0x1f,
 };
 
-#define NVME_ID_CTRL_SN_MAX_LEN 20
-#define NVME_ID_CTRL_MN_MAX_LEN 40
-#define NVME_ID_CTRL_FR_MAX_LEN 8
-
 typedef struct QEMU_PACKED NvmeIdCtrl {
     uint16_t    vid;
     uint16_t    ssvid;
-    uint8_t     sn[NVME_ID_CTRL_SN_MAX_LEN];
-    uint8_t     mn[NVME_ID_CTRL_MN_MAX_LEN];
-    uint8_t     fr[NVME_ID_CTRL_FR_MAX_LEN];
+    uint8_t     sn[20];
+    uint8_t     mn[40];
+    uint8_t     fr[8];
     uint8_t     rab;
     uint8_t     ieee[3];
     uint8_t     cmic;
@@ -1550,7 +1546,6 @@ enum NvmeIdNsZonedZrwacap {
     NVME_ID_NS_ZONED_ZRWACAP_EXPFLUSHSUP = 1 << 0,
 };
 
-/*Deallocate Logical Block Features*/
 #define NVME_ID_NS_DLFEAT_GUARD_CRC(dlfeat)       ((dlfeat) & 0x10)
 #define NVME_ID_NS_DLFEAT_WRITE_ZEROES(dlfeat)    ((dlfeat) & 0x08)
 
@@ -1593,7 +1588,7 @@ enum NvmeIdNsMc {
 
 enum NvmeIdNsNsfeat {
     NVME_ID_NS_NSFEAT_THINP         = 1 << 0,
-    NVME_ID_NS_NSFEAT_NSABP         = 1 << 1,
+    NVME_ID_NS_NSFEAT_NSABPNS       = 1 << 1,
     NVME_ID_NS_NSFEAT_DAE           = 1 << 2,
     NVME_ID_NS_NSFEAT_UIDREUSE      = 1 << 3,
     NVME_ID_NS_NSFEAT_OPTPERF_ALL   = 3 << 4,
@@ -1782,21 +1777,6 @@ enum NvmeDirectiveTypes {
 enum NvmeDirectiveOperations {
     NVME_DIRECTIVE_RETURN_PARAMS = 0x1,
 };
-
-typedef enum SfscSecurityProtocol {
-    SFSC_SECURITY_PROT_INFO = 0x00,
-} SfscSecurityProtocol;
-
-typedef enum NvmeSecurityProtocols {
-    NVME_SEC_PROT_DMTF_SPDM    = 0xE8,
-} NvmeSecurityProtocols;
-
-typedef enum SpdmOperationCodes {
-    SPDM_STORAGE_DISCOVERY      = 0x1, /* Mandatory */
-    SPDM_STORAGE_PENDING_INFO   = 0x2, /* Optional */
-    SPDM_STORAGE_MSG            = 0x5, /* Mandatory */
-    SPDM_STORAGE_SEC_MSG        = 0x6, /* Optional */
-} SpdmOperationCodes;
 
 typedef struct QEMU_PACKED NvmeFdpConfsHdr {
     uint16_t num_confs;

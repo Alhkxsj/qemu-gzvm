@@ -1,5 +1,3 @@
-# This work is licensed under the terms of the GNU GPL, version 2 or later.
-# See the COPYING file in the top-level directory.
 
 from abc import ABC, abstractmethod
 
@@ -13,7 +11,6 @@ from .visit import gen_visit
 
 
 class QAPIBackend(ABC):
-    # pylint: disable=too-few-public-methods
 
     @abstractmethod
     def generate(self,
@@ -37,7 +34,6 @@ class QAPIBackend(ABC):
 
 
 class QAPICBackend(QAPIBackend):
-    # pylint: disable=too-few-public-methods
 
     def generate(self,
                  schema: QAPISchema,

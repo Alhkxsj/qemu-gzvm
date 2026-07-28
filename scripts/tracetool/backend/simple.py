@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
 
 """
 Simple built-in backend.
@@ -16,7 +15,6 @@ from tracetool import out
 
 
 PUBLIC = True
-CHECK_TRACE_EVENT_GET_STATE = True
 
 
 def is_string(arg):
@@ -37,7 +35,7 @@ def generate_h_begin(events, group):
 
 
 def generate_h(event, group):
-    out('        _simple_%(api)s(%(args)s);',
+    out('    _simple_%(api)s(%(args)s);',
         api=event.api(),
         args=", ".join(event.args.names()))
 
@@ -73,24 +71,32 @@ def generate_c(event, group):
     if len(event.args) == 0:
         sizestr = '0'
 
+    event_id = 'TRACE_' + event.name.upper()
+    if "vcpu" in event.properties:
+        cond = "true"
+    else:
+        cond = "trace_event_get_state(%s)" % event_id
+
     out('',
+        '    if (!%(cond)s) {',
+        '        return;',
+        '    }',
+        '',
         '    if (trace_record_start(&rec, %(event_obj)s.id, %(size_str)s)) {',
         '        return; /* Trace Buffer Full, Event Dropped ! */',
         '    }',
+        cond=cond,
         event_obj=event.api(event.QEMU_EVENT),
         size_str=sizestr)
 
     if len(event.args) > 0:
         for type_, name in event.args:
-            # string
             if is_string(type_):
                 out('    trace_record_write_str(&rec, %(name)s, arg%(name)s_len);',
                     name=name)
-            # pointer var (not string)
             elif type_.endswith('*'):
                 out('    trace_record_write_u64(&rec, (uintptr_t)(uint64_t *)%(name)s);',
                     name=name)
-            # primitive data type
             else:
                 out('    trace_record_write_u64(&rec, (uint64_t)%(name)s);',
                    name=name)
@@ -98,10 +104,3 @@ def generate_c(event, group):
     out('    trace_record_finish(&rec);',
         '}',
         '')
-
-def generate_rs(event, group):
-    out('        extern "C" { fn _simple_%(api)s(%(rust_args)s); }',
-        '        unsafe { _simple_%(api)s(%(args)s); }',
-        api=event.api(),
-        rust_args=event.args.rust_decl_extern(),
-        args=event.args.rust_call_extern())

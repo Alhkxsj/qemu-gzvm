@@ -3,31 +3,12 @@
 
 #include "qemu/processor.h"
 #include "qemu/atomic.h"
-#include "qemu/futex.h"
 
 typedef struct QemuCond QemuCond;
 typedef struct QemuSemaphore QemuSemaphore;
+typedef struct QemuEvent QemuEvent;
 typedef struct QemuLockCnt QemuLockCnt;
 typedef struct QemuThread QemuThread;
-
-/*
- * QemuEvent
- * =========
- *
- * QemuEvent is an implementation of Win32 manual-reset event object.
- * For details, refer to:
- * https://learn.microsoft.com/en-us/windows/win32/sync/using-event-objects
- *
- * QemuEvent is more lightweight than QemuSemaphore when HAVE_FUTEX is defined.
- */
-typedef struct QemuEvent {
-#ifndef HAVE_FUTEX
-    pthread_mutex_t lock;
-    pthread_cond_t cond;
-#endif
-    unsigned value;
-    bool initialized;
-} QemuEvent;
 
 #ifdef _WIN32
 #include "qemu/thread-win32.h"
@@ -35,7 +16,6 @@ typedef struct QemuEvent {
 #include "qemu/thread-posix.h"
 #endif
 
-/* include QSP header once QemuMutex, QemuCond etc. are defined */
 #include "qemu/qsp.h"
 
 #define QEMU_THREAD_JOINABLE 0
@@ -73,17 +53,12 @@ extern QemuRecMutexTrylockFunc qemu_rec_mutex_trylock_func;
 extern QemuCondWaitFunc qemu_cond_wait_func;
 extern QemuCondTimedWaitFunc qemu_cond_timedwait_func;
 
-/* convenience macros to bypass the profiler */
 #define qemu_mutex_lock__raw(m)                         \
         qemu_mutex_lock_impl(m, __FILE__, __LINE__)
 #define qemu_mutex_trylock__raw(m)                      \
         qemu_mutex_trylock_impl(m, __FILE__, __LINE__)
 
 #ifdef __COVERITY__
-/*
- * Coverity is severely confused by the indirect function calls,
- * hide them.
- */
 #define qemu_mutex_lock(m)                                              \
             qemu_mutex_lock_impl(m, __FILE__, __LINE__)
 #define qemu_mutex_trylock(m)                                           \
@@ -168,11 +143,6 @@ static inline void (qemu_rec_mutex_unlock)(QemuRecMutex *mutex)
 void qemu_cond_init(QemuCond *cond);
 void qemu_cond_destroy(QemuCond *cond);
 
-/*
- * IMPORTANT: The implementation does not guarantee that pthread_cond_signal
- * and pthread_cond_broadcast can be called except while the same mutex is
- * held as in the corresponding pthread_cond_wait calls!
- */
 void qemu_cond_signal(QemuCond *cond);
 void qemu_cond_broadcast(QemuCond *cond);
 void TSA_NO_TSA qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex,
@@ -185,7 +155,6 @@ static inline void (qemu_cond_wait)(QemuCond *cond, QemuMutex *mutex)
     qemu_cond_wait(cond, mutex);
 }
 
-/* Returns true if timeout has not expired, and false otherwise */
 static inline bool (qemu_cond_timedwait)(QemuCond *cond, QemuMutex *mutex,
                                          int ms)
 {
@@ -215,34 +184,14 @@ void *qemu_thread_join(QemuThread *thread);
 void qemu_thread_get_self(QemuThread *thread);
 bool qemu_thread_is_self(QemuThread *thread);
 G_NORETURN void qemu_thread_exit(void *retval);
-void qemu_thread_set_name(const char *name);
-const char *qemu_thread_get_name(void);
+void qemu_thread_naming(bool enable);
 
 struct Notifier;
-/**
- * qemu_thread_atexit_add:
- * @notifier: Notifier to add
- *
- * Add the specified notifier to a list which will be run via
- * notifier_list_notify() when this thread exits (either by calling
- * qemu_thread_exit() or by returning from its start_routine).
- * The usual usage is that the caller passes a Notifier which is
- * a per-thread variable; it can then use the callback to free
- * other per-thread data.
- *
- * If the thread exits as part of the entire process exiting,
- * it is unspecified whether notifiers are called or not.
- */
 void qemu_thread_atexit_add(struct Notifier *notifier);
-/**
- * qemu_thread_atexit_remove:
- * @notifier: Notifier to remove
- *
- * Remove the specified notifier from the thread-exit notification
- * list. It is not valid to try to remove a notifier which is not
- * on the list.
- */
 void qemu_thread_atexit_remove(struct Notifier *notifier);
+
+void qemu_thread_init_tls(void);
+
 
 #ifdef CONFIG_TSAN
 #include <sanitizer/tsan_interface.h>

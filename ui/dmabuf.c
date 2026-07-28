@@ -1,22 +1,12 @@
-/*
- * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * QemuDmaBuf struct and helpers used for accessing its data
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "ui/dmabuf.h"
 
 struct QemuDmaBuf {
-    int       fd[DMABUF_MAX_PLANES];
+    int       fd;
     uint32_t  width;
     uint32_t  height;
-    uint32_t  offset[DMABUF_MAX_PLANES];
-    uint32_t  stride[DMABUF_MAX_PLANES];
-    uint32_t  num_planes;
+    uint32_t  stride;
     uint32_t  fourcc;
     uint64_t  modifier;
     uint32_t  texture;
@@ -32,33 +22,28 @@ struct QemuDmaBuf {
 };
 
 QemuDmaBuf *qemu_dmabuf_new(uint32_t width, uint32_t height,
-                            const uint32_t *offset, const uint32_t *stride,
-                            uint32_t x, uint32_t y,
-                            uint32_t backing_width, uint32_t backing_height,
-                            uint32_t fourcc, uint64_t modifier,
-                            const int32_t *dmabuf_fd, uint32_t num_planes,
+                            uint32_t stride, uint32_t x,
+                            uint32_t y, uint32_t backing_width,
+                            uint32_t backing_height, uint32_t fourcc,
+                            uint64_t modifier, int32_t dmabuf_fd,
                             bool allow_fences, bool y0_top) {
     QemuDmaBuf *dmabuf;
-
-    assert(num_planes > 0 && num_planes <= DMABUF_MAX_PLANES);
 
     dmabuf = g_new0(QemuDmaBuf, 1);
 
     dmabuf->width = width;
     dmabuf->height = height;
-    memcpy(dmabuf->offset, offset, num_planes * sizeof(*offset));
-    memcpy(dmabuf->stride, stride, num_planes * sizeof(*stride));
+    dmabuf->stride = stride;
     dmabuf->x = x;
     dmabuf->y = y;
     dmabuf->backing_width = backing_width;
     dmabuf->backing_height = backing_height;
     dmabuf->fourcc = fourcc;
     dmabuf->modifier = modifier;
-    memcpy(dmabuf->fd, dmabuf_fd, num_planes * sizeof(*dmabuf_fd));
+    dmabuf->fd = dmabuf_fd;
     dmabuf->allow_fences = allow_fences;
     dmabuf->y0_top = y0_top;
     dmabuf->fence_fd = -1;
-    dmabuf->num_planes = num_planes;
 
     return dmabuf;
 }
@@ -72,40 +57,31 @@ void qemu_dmabuf_free(QemuDmaBuf *dmabuf)
     g_free(dmabuf);
 }
 
-const int *qemu_dmabuf_get_fds(QemuDmaBuf *dmabuf, int *nfds)
+int qemu_dmabuf_get_fd(QemuDmaBuf *dmabuf)
 {
     assert(dmabuf != NULL);
-
-    if (nfds) {
-        *nfds = ARRAY_SIZE(dmabuf->fd);
-    }
 
     return dmabuf->fd;
 }
 
-void qemu_dmabuf_dup_fds(QemuDmaBuf *dmabuf, int *fds, int nfds)
+int qemu_dmabuf_dup_fd(QemuDmaBuf *dmabuf)
 {
-    int i;
-
     assert(dmabuf != NULL);
-    assert(nfds >= dmabuf->num_planes);
 
-    for (i = 0; i < dmabuf->num_planes; i++) {
-        fds[i] = dmabuf->fd[i] >= 0 ? dup(dmabuf->fd[i]) : -1;
+    if (dmabuf->fd >= 0) {
+        return dup(dmabuf->fd);
+    } else {
+        return -1;
     }
 }
 
 void qemu_dmabuf_close(QemuDmaBuf *dmabuf)
 {
-    int i;
-
     assert(dmabuf != NULL);
 
-    for (i = 0; i < dmabuf->num_planes; i++) {
-        if (dmabuf->fd[i] >= 0) {
-            close(dmabuf->fd[i]);
-            dmabuf->fd[i] = -1;
-        }
+    if (dmabuf->fd >= 0) {
+        close(dmabuf->fd);
+        dmabuf->fd = -1;
     }
 }
 
@@ -123,33 +99,11 @@ uint32_t qemu_dmabuf_get_height(QemuDmaBuf *dmabuf)
     return dmabuf->height;
 }
 
-const uint32_t *qemu_dmabuf_get_offsets(QemuDmaBuf *dmabuf, int *noffsets)
+uint32_t qemu_dmabuf_get_stride(QemuDmaBuf *dmabuf)
 {
     assert(dmabuf != NULL);
-
-    if (noffsets) {
-        *noffsets = ARRAY_SIZE(dmabuf->offset);
-    }
-
-    return dmabuf->offset;
-}
-
-const uint32_t *qemu_dmabuf_get_strides(QemuDmaBuf *dmabuf, int *nstrides)
-{
-    assert(dmabuf != NULL);
-
-    if (nstrides) {
-        *nstrides = ARRAY_SIZE(dmabuf->stride);
-    }
 
     return dmabuf->stride;
-}
-
-uint32_t qemu_dmabuf_get_num_planes(QemuDmaBuf *dmabuf)
-{
-    assert(dmabuf != NULL);
-
-    return dmabuf->num_planes;
 }
 
 uint32_t qemu_dmabuf_get_fourcc(QemuDmaBuf *dmabuf)
@@ -258,4 +212,10 @@ void qemu_dmabuf_set_draw_submitted(QemuDmaBuf *dmabuf, bool draw_submitted)
 {
     assert(dmabuf != NULL);
     dmabuf->draw_submitted = draw_submitted;
+}
+
+void qemu_dmabuf_set_fd(QemuDmaBuf *dmabuf, int32_t fd)
+{
+    assert(dmabuf != NULL);
+    dmabuf->fd = fd;
 }

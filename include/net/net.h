@@ -4,7 +4,7 @@
 #include "qemu/queue.h"
 #include "qapi/qapi-types-net.h"
 #include "net/queue.h"
-#include "hw/core/qdev-properties-system.h"
+#include "hw/qdev-properties-system.h"
 
 #define MAC_FMT "%02X:%02X:%02X:%02X:%02X:%02X"
 #define MAC_ARG(x) ((uint8_t *)(x))[0], ((uint8_t *)(x))[1], \
@@ -13,16 +13,12 @@
 
 #define MAX_QUEUE_NUM 1024
 
-/* Maximum GSO packet size (64k) plus plenty of room for
- * the ethernet and virtio_net headers
- */
 #define NET_BUFSIZE (4096 + 65536)
 
 struct MACAddr {
     uint8_t a[6];
 };
 
-/* qdev nic properties */
 
 typedef struct NICPeers {
     NetClientState *ncs[MAX_QUEUE_NUM];
@@ -35,24 +31,11 @@ typedef struct NICConf {
     int32_t bootindex;
 } NICConf;
 
-typedef struct NetOffloads {
-    bool csum;
-    bool tso4;
-    bool tso6;
-    bool ecn;
-    bool ufo;
-    bool uso4;
-    bool uso6;
-    bool tnl;
-    bool tnl_csum;
-} NetOffloads;
-
 #define DEFINE_NIC_PROPERTIES(_state, _conf)                            \
     DEFINE_PROP_MACADDR("mac",   _state, _conf.macaddr),                \
     DEFINE_PROP_NETDEV("netdev", _state, _conf.peers)
 
 
-/* Net clients */
 
 typedef void (NetPoll)(NetClientState *, bool enable);
 typedef bool (NetCanReceive)(NetClientState *);
@@ -67,21 +50,17 @@ typedef void (NetClientDestructor)(NetClientState *);
 typedef RxFilterInfo *(QueryRxFilter)(NetClientState *);
 typedef bool (HasUfo)(NetClientState *);
 typedef bool (HasUso)(NetClientState *);
-typedef bool (HasTunnel)(NetClientState *);
 typedef bool (HasVnetHdr)(NetClientState *);
 typedef bool (HasVnetHdrLen)(NetClientState *, int);
-typedef void (SetOffload)(NetClientState *, const NetOffloads *);
+typedef void (SetOffload)(NetClientState *, int, int, int, int, int, int, int);
 typedef int (GetVnetHdrLen)(NetClientState *);
 typedef void (SetVnetHdrLen)(NetClientState *, int);
-typedef bool (GetVnetHashSupportedTypes)(NetClientState *, uint32_t *);
 typedef int (SetVnetLE)(NetClientState *, bool);
 typedef int (SetVnetBE)(NetClientState *, bool);
 typedef struct SocketReadState SocketReadState;
 typedef void (SocketReadStateFinalize)(SocketReadState *rs);
 typedef void (NetAnnounce)(NetClientState *);
-typedef bool (SetSteeringEBPF)(NetClientState *, int);
 typedef bool (NetCheckPeerType)(NetClientState *, ObjectClass *, Error **);
-typedef struct vhost_net *(GetVHostNet)(NetClientState *nc);
 
 typedef struct NetClientInfo {
     NetClientDriver type;
@@ -98,18 +77,14 @@ typedef struct NetClientInfo {
     NetPoll *poll;
     HasUfo *has_ufo;
     HasUso *has_uso;
-    HasTunnel *has_tunnel;
     HasVnetHdr *has_vnet_hdr;
     HasVnetHdrLen *has_vnet_hdr_len;
     SetOffload *set_offload;
     SetVnetHdrLen *set_vnet_hdr_len;
     SetVnetLE *set_vnet_le;
     SetVnetBE *set_vnet_be;
-    GetVnetHashSupportedTypes *get_vnet_hash_supported_types;
     NetAnnounce *announce;
-    SetSteeringEBPF *set_steering_ebpf;
     NetCheckPeerType *check_peer_type;
-    GetVHostNet *get_vhost_net;
 } NetClientInfo;
 
 struct NetClientState {
@@ -130,7 +105,6 @@ struct NetClientState {
     bool is_netdev;
     bool do_not_pad; /* do not pad to the minimum ethernet frame length */
     bool is_datapath;
-    QTAILQ_HEAD(, NetFilterState) filters;
 };
 
 typedef QTAILQ_HEAD(NetClientStateList, NetClientState) NetClientStateList;
@@ -144,9 +118,7 @@ typedef struct NICState {
 } NICState;
 
 struct SocketReadState {
-    /* 0 = getting length, 1 = getting vnet header length, 2 = getting data */
     int state;
-    /* This flag decide whether to read the vnet_hdr_len field */
     bool vnet_hdr;
     uint32_t index;
     uint32_t packet_len;
@@ -201,100 +173,33 @@ void qemu_set_info_str(NetClientState *nc,
 void qemu_format_nic_info_str(NetClientState *nc, uint8_t macaddr[6]);
 bool qemu_has_ufo(NetClientState *nc);
 bool qemu_has_uso(NetClientState *nc);
-bool qemu_has_tunnel(NetClientState *nc);
 bool qemu_has_vnet_hdr(NetClientState *nc);
 bool qemu_has_vnet_hdr_len(NetClientState *nc, int len);
-void qemu_set_offload(NetClientState *nc, const NetOffloads *ol);
+void qemu_set_offload(NetClientState *nc, int csum, int tso4, int tso6,
+                      int ecn, int ufo, int uso4, int uso6);
 int qemu_get_vnet_hdr_len(NetClientState *nc);
 void qemu_set_vnet_hdr_len(NetClientState *nc, int len);
-bool qemu_get_vnet_hash_supported_types(NetClientState *nc, uint32_t *types);
 int qemu_set_vnet_le(NetClientState *nc, bool is_le);
 int qemu_set_vnet_be(NetClientState *nc, bool is_be);
 void qemu_macaddr_default_if_unset(MACAddr *macaddr);
-/**
- * qemu_find_nic_info: Obtain NIC configuration information
- * @typename: Name of device object type
- * @match_default: Match NIC configurations with no model specified
- * @alias: Additional model string to match (for user convenience and
- *         backward compatibility).
- *
- * Search for a NIC configuration matching the NIC model constraints.
- */
 NICInfo *qemu_find_nic_info(const char *typename, bool match_default,
                             const char *alias);
-/**
- * qemu_configure_nic_device: Apply NIC configuration to a given device
- * @dev: Network device to be configured
- * @match_default: Match NIC configurations with no model specified
- * @alias: Additional model string to match
- *
- * Search for a NIC configuration for the provided device, using the
- * additionally specified matching constraints. If found, apply the
- * configuration using qdev_set_nic_properties() and return %true.
- *
- * This is used by platform code which creates the device anyway,
- * regardless of whether there is a configuration for it. This tends
- * to be platforms which ignore `--nodefaults` and create net devices
- * anyway, for example because the Ethernet device on that board is
- * always physically present.
- */
 bool qemu_configure_nic_device(DeviceState *dev, bool match_default,
                                const char *alias);
 
-/**
- * qemu_create_nic_device: Create a NIC device if a configuration exists for it
- * @typename: Object typename of network device
- * @match_default: Match NIC configurations with no model specified
- * @alias: Additional model string to match
- *
- * Search for a NIC configuration for the provided device type. If found,
- * create an object of the corresponding type and return it.
- */
 DeviceState *qemu_create_nic_device(const char *typename, bool match_default,
                                     const char *alias);
 
-/*
- * qemu_create_nic_bus_devices: Create configured NIC devices for a given bus
- * @bus: Bus on which to create devices
- * @parent_type: Object type for devices to be created (e.g. TYPE_PCI_DEVICE)
- * @default_model: Object type name for default NIC model (or %NULL)
- * @alias: Additional model string to replace, for user convenience
- * @alias_target: Actual object type name to be used in place of @alias
- *
- * Instantiate dynamic NICs on a given bus, typically a PCI bus. This scans
- * for available NIC configurations which either specify a model which is
- * a child type of @parent_type, or which do not specify a model when
- * @default_model is non-NULL. Each device is instantiated on the given @bus.
- *
- * A single substitution is supported, e.g. "xen" → "xen-net-device" for the
- * Xen bus, or "virtio" → "virtio-net-pci" for PCI. This allows the user to
- * specify a more understandable "model=" parameter on the command line, not
- * only the real object typename.
- */
 void qemu_create_nic_bus_devices(BusState *bus, const char *parent_type,
                                  const char *default_model,
                                  const char *alias, const char *alias_target);
-void print_net_client(Monitor *mon, NetClientState *nc);
 void net_socket_rs_init(SocketReadState *rs,
                         SocketReadStateFinalize *finalize,
                         bool vnet_hdr);
 NetClientState *qemu_get_peer(NetClientState *nc, int queue_index);
 
-/**
- * qemu_get_nic_models:
- * @device_type: Defines which devices should be taken into consideration
- *               (e.g. TYPE_DEVICE for all devices, or TYPE_PCI_DEVICE for PCI)
- *
- * Get an array of pointers to names of NIC devices that are available in
- * the QEMU binary. The array is terminated with a NULL pointer entry.
- * The caller is responsible for freeing the memory when it is not required
- * anymore, e.g. with g_ptr_array_free(..., true).
- *
- * Returns: Pointer to the array that contains the pointers to the names.
- */
 GPtrArray *qemu_get_nic_models(const char *device_type);
 
-/* NIC info */
 
 #define MAX_NICS 8
 
@@ -309,7 +214,6 @@ struct NICInfo {
     int nvectors;
 };
 
-/* from net.c */
 extern NetClientStateList net_clients;
 bool netdev_is_modern(const char *optstr);
 void netdev_parse_modern(const char *optstr);
@@ -317,18 +221,8 @@ void net_client_parse(QemuOptsList *opts_list, const char *optstr);
 void show_netdevs(void);
 void net_init_clients(void);
 void net_check_clients(void);
-void net_client_set_link(NetClientState **ncs, int queues, bool up);
 void net_cleanup(void);
-void hmp_host_net_add(Monitor *mon, const QDict *qdict);
-void hmp_host_net_remove(Monitor *mon, const QDict *qdict);
 void netdev_add(QemuOpts *opts, Error **errp);
-
-int net_hub_id_for_client(NetClientState *nc, int *id);
-
-#define DEFAULT_NETWORK_SCRIPT CONFIG_SYSCONFDIR "/qemu-ifup"
-#define DEFAULT_NETWORK_DOWN_SCRIPT CONFIG_SYSCONFDIR "/qemu-ifdown"
-#define DEFAULT_BRIDGE_HELPER CONFIG_QEMU_HELPERDIR "/qemu-bridge-helper"
-#define DEFAULT_BRIDGE_INTERFACE "br0"
 
 void qdev_set_nic_properties(DeviceState *dev, NICInfo *nd);
 

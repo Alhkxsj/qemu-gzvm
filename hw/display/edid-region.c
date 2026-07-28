@@ -1,5 +1,5 @@
 #include "qemu/osdep.h"
-#include "system/memory.h"
+#include "exec/memory.h"
 #include "hw/display/edid.h"
 
 static uint64_t edid_region_read(void *ptr, hwaddr addr, unsigned size)
@@ -12,7 +12,6 @@ static uint64_t edid_region_read(void *ptr, hwaddr addr, unsigned size)
 static void edid_region_write(void *ptr, hwaddr addr,
                              uint64_t val, unsigned size)
 {
-    /* read only */
 }
 
 static const MemoryRegionOps edid_region_ops = {

@@ -1,10 +1,10 @@
-system_ss.add(files('control-target.c', 'trace-hmp-cmds.c'))
-trace_rs_targets = []
+system_ss.add(files('control-target.c'))
+
 trace_events_files = []
 foreach item : [ '.' ] + trace_events_subdirs + qapi_trace_events
   if item in qapi_trace_events
     trace_events_file = item
-    group_name = fs.name(item).underscorify()
+    group_name = item.full_path().split('/')[-1].underscorify()
   else
     trace_events_file = meson.project_source_root() / item / 'trace-events'
     group_name = item == '.' ? 'root' : item.underscorify()
@@ -24,11 +24,6 @@ foreach item : [ '.' ] + trace_events_subdirs + qapi_trace_events
                           input: trace_events_file,
                           command: [ tracetool, group, '--format=c', '@INPUT@', '@OUTPUT@' ],
                           depend_files: tracetool_depends)
-  trace_rs = custom_target(fmt.format('trace', 'rs'),
-                          output: fmt.format('trace', 'rs'),
-                          input: trace_events_file,
-                          command: [ tracetool, group, '--format=rs', '@INPUT@', '@OUTPUT@' ],
-                          depend_files: tracetool_depends)
   if 'ust' in get_option('trace_backends')
     trace_ust_h = custom_target(fmt.format('trace-ust', 'h'),
                                 output: fmt.format('trace-ust', 'h'),
@@ -39,7 +34,6 @@ foreach item : [ '.' ] + trace_events_subdirs + qapi_trace_events
     genh += trace_ust_h
   endif
   trace_ss.add(trace_h, trace_c)
-  trace_rs_targets += trace_rs
   if 'dtrace' in get_option('trace_backends')
     trace_dtrace = custom_target(fmt.format('trace-dtrace', 'dtrace'),
                                  output: fmt.format('trace-dtrace', 'dtrace'),
@@ -63,11 +57,10 @@ foreach item : [ '.' ] + trace_events_subdirs + qapi_trace_events
   endif
 endforeach
 
-cat = [ python, '-c', 'import fileinput; [print(line, end="") for line in fileinput.input()]', '@INPUT@' ]
 trace_events_all = custom_target('trace-events-all',
                                  output: 'trace-events-all',
                                  input: trace_events_files,
-                                 command: cat,
+                                 command: [ 'cat', '@INPUT@' ],
                                  capture: true,
                                  install: get_option('trace_backends') != [ 'nop' ],
                                  install_dir: qemu_datadir)
@@ -87,11 +80,8 @@ if 'ust' in get_option('trace_backends')
   genh += trace_ust_all_h
 endif
 
-if 'simple' in get_option('trace_backends')
-  trace_ss.add(files('simple.c'))
-endif
-if 'ftrace' in get_option('trace_backends')
-  trace_ss.add(files('ftrace.c'))
+if 'simple' in get_option('trace_backends') or 'ftrace' in get_option('trace_backends')
+  error('Only the log trace backend is kept in this trimmed build')
 endif
 trace_ss.add(files('control.c'))
 if have_system or have_tools or have_ga

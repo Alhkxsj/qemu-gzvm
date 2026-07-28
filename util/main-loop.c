@@ -1,36 +1,11 @@
-/*
- * QEMU System Emulator
- *
- * Copyright (c) 2003-2008 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/cutils.h"
 #include "qemu/timer.h"
 #include "system/cpu-timers.h"
-#include "exec/icount.h"
-#include "system/replay.h"
 #include "qemu/main-loop.h"
-#include "qemu/aio.h"
+#include "block/aio.h"
 #include "block/thread-pool.h"
 #include "qemu/error-report.h"
 #include "qemu/queue.h"
@@ -42,19 +17,6 @@
 
 #ifndef _WIN32
 
-/* If we have signalfd, we mask out the signals we want to handle and then
- * use signalfd to listen for them.  We rely on whatever the current signal
- * handler is to dispatch the signals when we receive them.
- */
-/*
- * Disable CFI checks.
- * We are going to call a signal handler directly. Such handler may or may not
- * have been defined in our binary, so there's no guarantee that the pointer
- * used to set the handler is a cfi-valid pointer. Since the handlers are
- * stored in kernel memory, changing the handler to an attacker-defined
- * function requires being able to call a sigaction() syscall,
- * which is not as easy as overwriting a pointer in memory.
- */
 QEMU_DISABLE_CFI
 static void sigfd_handler(void *opaque)
 {
@@ -90,21 +52,10 @@ static int qemu_signal_init(Error **errp)
     int sigfd;
     sigset_t set;
 
-    /*
-     * SIG_IPI must be blocked in the main thread and must not be caught
-     * by sigwait() in the signal thread. Otherwise, the cpu thread will
-     * not catch it reliably.
-     */
     sigemptyset(&set);
     sigaddset(&set, SIG_IPI);
     sigaddset(&set, SIGIO);
     sigaddset(&set, SIGALRM);
-    sigaddset(&set, SIGBUS);
-    /* SIGINT cannot be handled via signalfd, so that ^C can be used
-     * to interrupt QEMU when it is being run under gdb.  SIGHUP and
-     * SIGTERM are also handled asynchronously, even though it is not
-     * strictly necessary, because they use the same handler as SIGINT.
-     */
     pthread_sigmask(SIG_BLOCK, &set, NULL);
 
     sigdelset(&set, SIG_IPI);
@@ -114,10 +65,7 @@ static int qemu_signal_init(Error **errp)
         return -errno;
     }
 
-    if (!qemu_set_blocking(sigfd, false, errp)) {
-        close(sigfd);
-        return -EINVAL;
-    }
+    g_unix_set_fd_nonblocking(sigfd, true, NULL);
 
     qemu_set_fd_handler(sigfd, sigfd_handler, NULL, (void *)(intptr_t)sigfd);
 
@@ -137,9 +85,6 @@ static QEMUBH *qemu_notify_bh;
 
 static void notify_event_cb(void *opaque)
 {
-    /* No need to do anything; this bottom half is only used to
-     * kick the kernel out of ppoll/poll/WaitForMultipleObjects.
-     */
 }
 
 AioContext *qemu_get_aio_context(void)
@@ -162,7 +107,7 @@ int qemu_init_main_loop(Error **errp)
     int ret;
     GSource *src;
 
-    qemu_init_clocks(qemu_timer_notify_cb);
+    init_clocks(qemu_timer_notify_cb);
 
     ret = qemu_signal_init(errp);
     if (ret) {
@@ -216,6 +161,7 @@ static void main_loop_init(EventLoopBase *base, Error **errp)
     main_loop_update_params(base, errp);
 
     mloop = m;
+    return;
 }
 
 static bool main_loop_can_be_deleted(EventLoopBase *base)
@@ -223,7 +169,7 @@ static bool main_loop_can_be_deleted(EventLoopBase *base)
     return false;
 }
 
-static void main_loop_class_init(ObjectClass *oc, const void *class_data)
+static void main_loop_class_init(ObjectClass *oc, void *class_data)
 {
     EventLoopBaseClass *bc = EVENT_LOOP_BASE_CLASS(oc);
 
@@ -303,11 +249,9 @@ static int os_host_main_loop_wait(int64_t timeout)
     glib_pollfds_fill(&timeout);
 
     bql_unlock();
-    replay_mutex_unlock();
 
     ret = qemu_poll_ns((GPollFD *)gpollfds->data, gpollfds->len, timeout);
 
-    replay_mutex_lock();
     bql_lock();
 
     glib_pollfds_poll();
@@ -317,8 +261,6 @@ static int os_host_main_loop_wait(int64_t timeout)
     return ret;
 }
 #else
-/***********************************************************/
-/* Polling handling */
 
 typedef struct PollingEntry {
     PollingFunc *func;
@@ -352,8 +294,6 @@ void qemu_del_polling_cb(PollingFunc *func, void *opaque)
     }
 }
 
-/***********************************************************/
-/* Wait objects support */
 typedef struct WaitObjects {
     int num;
     int revents[MAXIMUM_WAIT_OBJECTS];
@@ -374,7 +314,6 @@ int qemu_add_wait_object(HANDLE handle, WaitObjectFunc *func, void *opaque)
     }
 
     for (i = 0; i < w->num; i++) {
-        /* check if the same handle is added twice */
         if (w->events[i] == handle) {
             return -1;
         }
@@ -475,7 +414,6 @@ static int os_host_main_loop_wait(int64_t timeout)
 
     g_main_context_acquire(context);
 
-    /* XXX: need to suppress polling by better using win32 events */
     ret = 0;
     for (pe = first_polling_entry; pe != NULL; pe = pe->next) {
         ret |= pe->func(pe->opaque);
@@ -519,11 +457,7 @@ static int os_host_main_loop_wait(int64_t timeout)
 
     bql_unlock();
 
-    replay_mutex_unlock();
-
     g_poll_ret = qemu_poll_ns(poll_fds, n_poll_fds + w->num, poll_timeout_ns);
-
-    replay_mutex_lock();
 
     bql_lock();
     if (g_poll_ret > 0) {
@@ -574,9 +508,7 @@ void main_loop_wait(int nonblocking)
         mlpoll.timeout = 0;
     }
 
-    /* poll any events */
     g_array_set_size(gpollfds, 0); /* reset for new iteration */
-    /* XXX: separate device handlers from system ones */
     notifier_list_notify(&main_loop_poll_notifiers, &mlpoll);
 
     if (mlpoll.timeout == UINT32_MAX) {
@@ -593,17 +525,9 @@ void main_loop_wait(int nonblocking)
     mlpoll.state = ret < 0 ? MAIN_LOOP_POLL_ERR : MAIN_LOOP_POLL_OK;
     notifier_list_notify(&main_loop_poll_notifiers, &mlpoll);
 
-    if (icount_enabled()) {
-        /*
-         * CPU thread can infinitely wait for event after
-         * missing the warp
-         */
-        icount_start_warp_timer();
-    }
     qemu_clock_run_all_timers();
 }
 
-/* Functions to operate on the main QEMU AioContext.  */
 
 QEMUBH *qemu_bh_new_full(QEMUBHFunc *cb, void *opaque, const char *name,
                          MemReentrancyGuard *reentrancy_guard)
@@ -612,11 +536,6 @@ QEMUBH *qemu_bh_new_full(QEMUBHFunc *cb, void *opaque, const char *name,
                            reentrancy_guard);
 }
 
-/*
- * Functions to operate on the I/O handler AioContext.
- * This context runs on top of main loop. We can't reuse qemu_aio_context
- * because iohandlers mustn't be polled by aio_poll(qemu_aio_context).
- */
 static AioContext *iohandler_ctx;
 
 static void iohandler_init(void)

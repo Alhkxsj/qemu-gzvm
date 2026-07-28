@@ -1,26 +1,3 @@
-/*
- * QEMU System Emulator
- *
- * Copyright (c) 2003-2008 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
 #include "monitor/monitor.h"
@@ -30,8 +7,7 @@
 #include "qapi/qapi-commands-misc.h"
 #include "qapi/qapi-events-run-state.h"
 #include "qapi/qmp/qerror.h"
-#include "exec/gdbstub.h"
-#include "accel/accel-cpu-ops.h"
+#include "system/accel-ops.h"
 #include "system/hw_accel.h"
 #include "exec/cpu-common.h"
 #include "qemu/thread.h"
@@ -39,13 +15,12 @@
 #include "qemu/plugin.h"
 #include "system/cpus.h"
 #include "qemu/guest-random.h"
-#include "hw/core/nmi.h"
-#include "system/replay.h"
+#include "hw/nmi.h"
 #include "system/runstate.h"
 #include "system/cpu-timers.h"
 #include "system/whpx.h"
-#include "hw/core/boards.h"
-#include "hw/core/hw-error.h"
+#include "hw/boards.h"
+#include "hw/hw.h"
 #include "trace.h"
 
 #ifdef CONFIG_LINUX
@@ -66,12 +41,8 @@
 
 #endif /* CONFIG_LINUX */
 
-/* The Big QEMU Lock (BQL) */
 static QemuMutex bql;
 
-/*
- * The chosen accelerator is supposed to register this.
- */
 static const AccelOpsClass *cpus_accel;
 
 bool cpu_is_stopped(CPUState *cpu)
@@ -113,7 +84,6 @@ bool all_cpu_threads_idle(void)
     return true;
 }
 
-/***********************************************************/
 void hw_error(const char *fmt, ...)
 {
     va_list ap;
@@ -212,28 +182,12 @@ void cpu_exec_reset_hold(CPUState *cpu)
 
 int64_t cpus_get_virtual_clock(void)
 {
-    /*
-     * XXX
-     *
-     * need to check that cpus_accel is not NULL, because qcow2 calls
-     * qemu_get_clock_ns(CLOCK_VIRTUAL) without any accel initialized and
-     * with ticks disabled in some io-tests:
-     * 030 040 041 060 099 120 127 140 156 161 172 181 191 192 195 203 229 249 256 267
-     *
-     * is this expected?
-     *
-     * XXX
-     */
     if (cpus_accel && cpus_accel->get_virtual_clock) {
         return cpus_accel->get_virtual_clock();
     }
     return cpu_get_clock();
 }
 
-/*
- * Signal the new virtual time to the accelerator. This is only needed
- * by accelerators that need to track the changes as we warp time.
- */
 void cpus_set_virtual_clock(int64_t new_time)
 {
     if (cpus_accel && cpus_accel->set_virtual_clock) {
@@ -241,11 +195,6 @@ void cpus_set_virtual_clock(int64_t new_time)
     }
 }
 
-/*
- * return the time elapsed in VM between vm_start and vm_stop.  Unless
- * icount is active, cpus_get_elapsed_ticks() uses units of the host CPU cycle
- * counter.
- */
 int64_t cpus_get_elapsed_ticks(void)
 {
     if (cpus_accel->get_elapsed_ticks) {
@@ -254,15 +203,9 @@ int64_t cpus_get_elapsed_ticks(void)
     return cpu_get_ticks();
 }
 
-void cpu_set_interrupt(CPUState *cpu, int mask)
+static void generic_handle_interrupt(CPUState *cpu, int mask)
 {
-    /* Pairs with cpu_test_interrupt(). */
-    qatomic_or(&cpu->interrupt_request, mask);
-}
-
-void generic_handle_interrupt(CPUState *cpu, int mask)
-{
-    cpu_set_interrupt(cpu, mask);
+    cpu->interrupt_request |= mask;
 
     if (!qemu_cpu_is_self(cpu)) {
         qemu_cpu_kick(cpu);
@@ -271,14 +214,13 @@ void generic_handle_interrupt(CPUState *cpu, int mask)
 
 void cpu_interrupt(CPUState *cpu, int mask)
 {
-    g_assert(bql_locked());
-
-    cpus_accel->handle_interrupt(cpu, mask);
+    if (cpus_accel->handle_interrupt) {
+        cpus_accel->handle_interrupt(cpu, mask);
+    } else {
+        generic_handle_interrupt(cpu, mask);
+    }
 }
 
-/*
- * True if the vm was previously suspended, and has not been woken or reset.
- */
 static int vm_was_suspended;
 
 void vm_set_suspended(bool suspended)
@@ -303,26 +245,19 @@ static int do_vm_stop(RunState state, bool send_stop)
         if (oldstate == RUN_STATE_RUNNING) {
             pause_all_vcpus();
         }
-        ret = vm_state_notify(0, state);
+        vm_state_notify(0, state);
         if (send_stop) {
             qapi_event_send_stop();
         }
     }
 
     bdrv_drain_all();
-    /*
-     * Even if vm_state_notify() return failure,
-     * it would be better to flush as before.
-     */
-    ret |= bdrv_flush_all();
+    ret = bdrv_flush_all();
     trace_vm_stop_flush_all(ret);
 
     return ret;
 }
 
-/* Special vm_stop() variant for terminating the process.  Historically clients
- * did not expect a QMP STOP event and so we need to retain compatibility.
- */
 int vm_shutdown(void)
 {
     return do_vm_stop(RUN_STATE_SHUTDOWN, false);
@@ -341,22 +276,8 @@ bool cpu_can_run(CPUState *cpu)
 
 void cpu_handle_guest_debug(CPUState *cpu)
 {
-    if (replay_running_debug()) {
-        if (!cpu->singlestep_enabled) {
-            /*
-             * Report about the breakpoint and
-             * make a single step to skip it
-             */
-            replay_breakpoint();
-            cpu_single_step(cpu, SSTEP_ENABLE);
-        } else {
-            cpu_single_step(cpu, 0);
-        }
-    } else {
-        gdb_set_stop_cpu(cpu);
-        qemu_system_debug_request();
-        cpu->stopped = true;
-    }
+    qemu_system_debug_request();
+    cpu->stopped = true;
 }
 
 #ifdef CONFIG_LINUX
@@ -384,13 +305,11 @@ static void sigbus_handler(int n, siginfo_t *siginfo, void *ctx)
     }
 
     if (current_cpu) {
-        /* Called asynchronously in VCPU thread.  */
-        if (kvm_on_sigbus_vcpu(current_cpu, siginfo->si_code, siginfo->si_addr)) {
+        if (0) {
             sigbus_reraise();
         }
     } else {
-        /* Called synchronously (via signalfd) in main thread.  */
-        if (kvm_on_sigbus(siginfo->si_code, siginfo->si_addr)) {
+        if (0) {
             sigbus_reraise();
         }
     }
@@ -400,10 +319,6 @@ static void qemu_init_sigbus(void)
 {
     struct sigaction action;
 
-    /*
-     * ALERT: when modifying this, take care that SIGBUS forwarding in
-     * qemu_prealloc_mem() will continue working as expected.
-     */
     memset(&action, 0, sizeof(action));
     action.sa_flags = SA_SIGINFO;
     action.sa_sigaction = sigbus_handler;
@@ -419,9 +334,7 @@ static void qemu_init_sigbus(void)
 
 static QemuThread io_thread;
 
-/* cpu creation */
 static QemuCond qemu_cpu_cond;
-/* system init */
 static QemuCond qemu_pause_cond;
 
 void qemu_init_cpu_loop(void)
@@ -450,7 +363,7 @@ static void qemu_cpu_stop(CPUState *cpu, bool exit)
     qemu_cond_broadcast(&qemu_pause_cond);
 }
 
-void qemu_process_cpu_events_common(CPUState *cpu)
+void qemu_wait_io_event_common(CPUState *cpu)
 {
     qatomic_set_mb(&cpu->thread_kicked, false);
     if (cpu->stop) {
@@ -459,11 +372,10 @@ void qemu_process_cpu_events_common(CPUState *cpu)
     process_queued_cpu_work(cpu);
 }
 
-void qemu_process_cpu_events(CPUState *cpu)
+void qemu_wait_io_event(CPUState *cpu)
 {
     bool slept = false;
 
-    qatomic_set(&cpu->exit_request, false);
     while (cpu_thread_is_idle(cpu)) {
         if (!slept) {
             slept = true;
@@ -475,15 +387,15 @@ void qemu_process_cpu_events(CPUState *cpu)
         qemu_plugin_vcpu_resume_cb(cpu);
     }
 
-    qemu_process_cpu_events_common(cpu);
+    qemu_wait_io_event_common(cpu);
 }
 
 void cpus_kick_thread(CPUState *cpu)
 {
-    if (qatomic_read(&cpu->thread_kicked)) {
+    if (cpu->thread_kicked) {
         return;
     }
-    qatomic_set(&cpu->thread_kicked, true);
+    cpu->thread_kicked = true;
 
 #ifndef _WIN32
     int err = pthread_kill(cpu->thread->thread, SIG_IPI);
@@ -524,18 +436,6 @@ bool qemu_in_vcpu_thread(void)
 
 QEMU_DEFINE_STATIC_CO_TLS(bool, bql_locked)
 
-bool mutex_is_bql(QemuMutex *mutex)
-{
-    return mutex == &bql;
-}
-
-void bql_update_status(bool locked)
-{
-    /* This function should only be used when an update happened.. */
-    assert(bql_locked() != locked);
-    set_bql_locked(locked);
-}
-
 static uint32_t bql_unlock_blocked;
 
 void bql_block_unlock(bool increase)
@@ -544,7 +444,6 @@ void bql_block_unlock(bool increase)
 
     assert(bql_locked());
 
-    /* check for overflow! */
     new_value = bql_unlock_blocked + increase - !increase;
     assert((new_value > bql_unlock_blocked) == increase);
     bql_unlock_blocked = new_value;
@@ -566,22 +465,20 @@ void rust_bql_mock_lock(void)
     abort();
 }
 
-/*
- * The BQL is taken from so many places that it is worth profiling the
- * callers directly, instead of funneling them all through a single function.
- */
 void bql_lock_impl(const char *file, int line)
 {
     QemuMutexLockFunc bql_lock_fn = qatomic_read(&bql_mutex_lock_func);
 
     g_assert(!bql_locked());
     bql_lock_fn(&bql, file, line);
+    set_bql_locked(true);
 }
 
 void bql_unlock(void)
 {
     g_assert(bql_locked());
     g_assert(!bql_unlock_blocked);
+    set_bql_locked(false);
     qemu_mutex_unlock(&bql);
 }
 
@@ -595,14 +492,12 @@ void qemu_cond_timedwait_bql(QemuCond *cond, int ms)
     qemu_cond_timedwait(cond, &bql, ms);
 }
 
-/* signal CPU creation */
 void cpu_thread_signal_created(CPUState *cpu)
 {
     cpu->created = true;
     qemu_cond_signal(&qemu_cpu_cond);
 }
 
-/* signal CPU destruction */
 void cpu_thread_signal_destroyed(CPUState *cpu)
 {
     cpu->created = false;
@@ -615,7 +510,7 @@ void cpu_pause(CPUState *cpu)
         qemu_cpu_stop(cpu, true);
     } else {
         cpu->stop = true;
-        cpu_exit(cpu);
+        qemu_cpu_kick(cpu);
     }
 }
 
@@ -648,21 +543,14 @@ void pause_all_vcpus(void)
         cpu_pause(cpu);
     }
 
-    /* We need to drop the replay_lock so any vCPU threads woken up
-     * can finish their replay tasks
-     */
-    replay_mutex_unlock();
-
     while (!all_vcpus_paused()) {
         qemu_cond_wait(&qemu_pause_cond, &bql);
-        /* FIXME: is this needed? */
         CPU_FOREACH(cpu) {
             qemu_cpu_kick(cpu);
         }
     }
 
     bql_unlock();
-    replay_mutex_lock();
     bql_lock();
 }
 
@@ -684,7 +572,7 @@ void cpu_remove_sync(CPUState *cpu)
 {
     cpu->stop = true;
     cpu->unplug = true;
-    cpu_exit(cpu);
+    qemu_cpu_kick(cpu);
     bql_unlock();
     qemu_thread_join(cpu->thread);
     bql_lock();
@@ -694,14 +582,11 @@ void cpus_register_accel(const AccelOpsClass *ops)
 {
     assert(ops != NULL);
     assert(ops->create_vcpu_thread != NULL); /* mandatory */
-    assert(ops->handle_interrupt);
-
     cpus_accel = ops;
 }
 
 const AccelOpsClass *cpus_get_accel(void)
 {
-    /* broken if we call this early */
     assert(cpus_accel);
     return cpus_accel;
 }
@@ -715,13 +600,10 @@ void qemu_init_vcpu(CPUState *cpu)
     cpu->random_seed = qemu_guest_random_seed_thread_part1();
 
     if (!cpu->as) {
-        /* If the target cpu hasn't set up any address spaces itself,
-         * give it the default one.
-         */
+        cpu->num_ases = 1;
         cpu_address_space_init(cpu, 0, "cpu-memory", cpu->memory);
     }
 
-    /* accelerators all implement the AccelOpsClass */
     g_assert(cpus_accel != NULL && cpus_accel->create_vcpu_thread != NULL);
     cpus_accel->create_vcpu_thread(cpu);
 
@@ -743,10 +625,6 @@ int vm_stop(RunState state)
     if (qemu_in_vcpu_thread()) {
         qemu_system_vmstop_request_prepare();
         qemu_system_vmstop_request(state);
-        /*
-         * FIXME: should not return to device code in case
-         * vm_stop() has been requested.
-         */
         cpu_stop_current();
         return 0;
     }
@@ -754,11 +632,6 @@ int vm_stop(RunState state)
     return do_vm_stop(state, true);
 }
 
-/**
- * Prepare for (re)starting the VM.
- * Returns 0 if the vCPUs should be restarted, -1 on an error condition,
- * and 1 otherwise.
- */
 int vm_prepare_start(bool step_pending)
 {
     int ret = vm_was_suspended ? 1 : 0;
@@ -770,24 +643,16 @@ int vm_prepare_start(bool step_pending)
         return -1;
     }
 
-    /* Ensure that a STOP/RESUME pair of events is emitted if a
-     * vmstop request was pending.  The BLOCK_IO_ERROR event, for
-     * example, according to documentation is always followed by
-     * the STOP event.
-     */
     if (runstate_is_running()) {
         qapi_event_send_stop();
         qapi_event_send_resume();
         return -1;
     }
 
-    /*
-     * WHPX accelerator needs to know whether we are going to step
-     * any CPUs, before starting the first one.
-     */
-    accel_pre_resume(MACHINE(qdev_get_machine()), step_pending);
+    if (cpus_accel->synchronize_pre_resume) {
+        cpus_accel->synchronize_pre_resume(step_pending);
+    }
 
-    /* We are sending this now, but the CPUs will be resumed shortly later */
     qapi_event_send_resume();
 
     cpu_enable_ticks();
@@ -813,8 +678,6 @@ void vm_resume(RunState state)
     }
 }
 
-/* does a state transition even if the VM is already stopped,
-   current state is forgotten forever */
 int vm_stop_force_state(RunState state)
 {
     if (runstate_is_live(runstate_get())) {
@@ -824,8 +687,6 @@ int vm_stop_force_state(RunState state)
         runstate_set(state);
 
         bdrv_drain_all();
-        /* Make sure to return an error if the flush in a previous vm_stop()
-         * failed. */
         ret = bdrv_flush_all();
         trace_vm_stop_flush_all(ret);
         return ret;
@@ -915,4 +776,3 @@ void qmp_inject_nmi(Error **errp)
 {
     nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
 }
-

@@ -1,7 +1,3 @@
-/*
- * Routines for host instruction disassembly.
- * SPDX-License-Identifier: GPL-2.0-or-later
- */
 
 #include "qemu/osdep.h"
 #include "disas/disas.h"
@@ -9,23 +5,17 @@
 #include "disas-internal.h"
 
 
-/*
- * Get LENGTH bytes from info's buffer, at host address memaddr.
- * Transfer them to myaddr.
- */
 static int host_read_memory(bfd_vma memaddr, bfd_byte *myaddr, int length,
                             struct disassemble_info *info)
 {
     if (memaddr < info->buffer_vma
         || memaddr + length > info->buffer_vma + info->buffer_length) {
-        /* Out of bounds.  Use EIO because GDB uses it.  */
         return EIO;
     }
     memcpy (myaddr, info->buffer + (memaddr - info->buffer_vma), length);
     return 0;
 }
 
-/* Print address in hex, truncated to the width of a host virtual address. */
 static void host_print_address(bfd_vma addr, struct disassemble_info *info)
 {
     info->fprintf_func(info->stream, "0x%" PRIxPTR, (uintptr_t)addr);
@@ -44,15 +34,23 @@ static void initialize_debug_host(CPUDebug *s)
 #endif
 #if defined(CONFIG_TCG_INTERPRETER)
     s->info.print_insn = print_insn_tci;
+#elif defined(__i386__)
+    s->info.mach = bfd_mach_i386_i386;
+    s->info.cap_arch = CS_ARCH_X86;
+    s->info.cap_mode = CS_MODE_32;
+    s->info.cap_insn_unit = 1;
+    s->info.cap_insn_split = 8;
 #elif defined(__x86_64__)
     s->info.mach = bfd_mach_x86_64;
     s->info.cap_arch = CS_ARCH_X86;
     s->info.cap_mode = CS_MODE_64;
     s->info.cap_insn_unit = 1;
     s->info.cap_insn_split = 8;
-#elif defined(_ARCH_PPC64)
+#elif defined(_ARCH_PPC)
     s->info.cap_arch = CS_ARCH_PPC;
+# ifdef _ARCH_PPC64
     s->info.cap_mode = CS_MODE_64;
+# endif
 #elif defined(__riscv)
 #if defined(_ILP32) || (__riscv_xlen == 32)
     s->info.print_insn = print_insn_riscv32;
@@ -68,6 +66,8 @@ static void initialize_debug_host(CPUDebug *s)
 #elif defined(__sparc__)
     s->info.print_insn = print_insn_sparc;
     s->info.mach = bfd_mach_sparc_v9b;
+#elif defined(__arm__)
+    s->info.cap_arch = CS_ARCH_ARM;
 #elif defined(__MIPSEB__)
     s->info.print_insn = print_insn_big_mips;
 #elif defined(__MIPSEL__)
@@ -85,7 +85,6 @@ static void initialize_debug_host(CPUDebug *s)
 #endif
 }
 
-/* Disassemble this for me please... (debugging). */
 void disas(FILE *out, const void *code, size_t size)
 {
     uintptr_t pc;

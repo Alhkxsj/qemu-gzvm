@@ -1,26 +1,3 @@
-/*
- * QEMU System Emulator
- *
- * Copyright (c) 2003-2008 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/module.h"
@@ -38,7 +15,6 @@
 #endif
 
 #ifndef _WIN32
-/* init terminal so that we can grab keys */
 static struct termios oldtty;
 static int old_fd0_flags;
 static int old_fd1_flags;
@@ -56,7 +32,7 @@ static void term_exit(void)
     }
 }
 
-static void stdio_chr_set_echo(Chardev *chr, bool echo)
+static void qemu_chr_set_echo_stdio(Chardev *chr, bool echo)
 {
     struct termios tty;
 
@@ -81,52 +57,49 @@ static void stdio_chr_set_echo(Chardev *chr, bool echo)
 
 static void term_stdio_handler(int sig)
 {
-    /* restore echo after resume from suspend. */
-    stdio_chr_set_echo(NULL, stdio_echo_state);
+    qemu_chr_set_echo_stdio(NULL, stdio_echo_state);
 }
 
-static bool stdio_chr_open(Chardev *chr, ChardevBackend *backend, Error **errp)
+static void qemu_chr_open_stdio(Chardev *chr,
+                                ChardevBackend *backend,
+                                bool *be_opened,
+                                Error **errp)
 {
     ChardevStdio *opts = backend->u.stdio.data;
     struct sigaction act;
 
     if (is_daemonized()) {
         error_setg(errp, "cannot use stdio with -daemonize");
-        return false;
+        return;
     }
 
     if (stdio_in_use) {
         error_setg(errp, "cannot use stdio by multiple character devices");
-        return false;
+        return;
     }
 
     stdio_in_use = true;
     old_fd0_flags = fcntl(0, F_GETFL);
     old_fd1_flags = fcntl(1, F_GETFL);
     tcgetattr(0, &oldtty);
-    if (!qemu_set_blocking(0, false, errp)) {
-        return false;
+    if (!g_unix_set_fd_nonblocking(0, true, NULL)) {
+        error_setg_errno(errp, errno, "Failed to set FD nonblocking");
+        return;
     }
-
-    if (!qemu_chr_open_fd(chr, 0, 1, errp)) {
-        return false;
-    }
-
     atexit(term_exit);
 
     memset(&act, 0, sizeof(act));
     act.sa_handler = term_stdio_handler;
     sigaction(SIGCONT, &act, NULL);
 
-    stdio_allow_signal = !opts->has_signal || opts->signal;
-    stdio_chr_set_echo(chr, false);
+    qemu_chr_open_fd(chr, 0, 1);
 
-    qemu_chr_be_event(chr, CHR_EVENT_OPENED);
-    return true;
+    stdio_allow_signal = !opts->has_signal || opts->signal;
+    qemu_chr_set_echo_stdio(chr, false);
 }
 #endif
 
-static void stdio_chr_parse(QemuOpts *opts, ChardevBackend *backend,
+static void qemu_chr_parse_stdio(QemuOpts *opts, ChardevBackend *backend,
                                  Error **errp)
 {
     ChardevStdio *stdio;
@@ -138,14 +111,14 @@ static void stdio_chr_parse(QemuOpts *opts, ChardevBackend *backend,
     stdio->signal = qemu_opt_get_bool(opts, "signal", true);
 }
 
-static void char_stdio_class_init(ObjectClass *oc, const void *data)
+static void char_stdio_class_init(ObjectClass *oc, void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 
-    cc->chr_parse = stdio_chr_parse;
+    cc->parse = qemu_chr_parse_stdio;
 #ifndef _WIN32
-    cc->chr_open = stdio_chr_open;
-    cc->chr_set_echo = stdio_chr_set_echo;
+    cc->open = qemu_chr_open_stdio;
+    cc->chr_set_echo = qemu_chr_set_echo_stdio;
 #endif
 }
 

@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
 
 """
 Format management.
@@ -50,7 +49,6 @@ def get_list():
     for modname in sorted(modnames):
         module = tracetool.try_import("tracetool.format." + modname)
 
-        # just in case; should never fail unless non-module files are put there
         if not module[0]:
             continue
         module = module[1]
@@ -70,7 +68,7 @@ def exists(name):
     if len(name) == 0:
         return False
     name = name.replace("-", "_")
-    return tracetool.try_import("tracetool.format." + name)[0]
+    return tracetool.try_import("tracetool.format." + name)[1]
 
 
 def generate(events, format, backend, group):

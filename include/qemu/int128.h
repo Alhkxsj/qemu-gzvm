@@ -1,11 +1,8 @@
 #ifndef INT128_H
 #define INT128_H
 
-/*
- * With TCI, we need to use libffi for interfacing with TCG helpers.
- * But libffi does not support __int128_t, and therefore cannot pass
- * or return values of this type, force use of the Int128 struct.
- */
+#include "qemu/bswap.h"
+
 #if defined(CONFIG_INT128) && !defined(CONFIG_TCG_INTERPRETER)
 typedef __int128_t Int128;
 typedef __int128_t __attribute__((aligned(16))) Int128Aligned;
@@ -187,8 +184,7 @@ static inline Int128 bswap128(Int128 a)
 #if __has_builtin(__builtin_bswap128)
     return __builtin_bswap128(a);
 #else
-    return int128_make128(__builtin_bswap64(int128_gethi(a)),
-                          __builtin_bswap64(int128_getlo(a)));
+    return int128_make128(bswap64(int128_gethi(a)), bswap64(int128_getlo(a)));
 #endif
 }
 
@@ -226,14 +222,6 @@ static inline Int128 int128_rems(Int128 a, Int128 b)
 typedef struct Int128 Int128;
 typedef struct Int128 __attribute__((aligned(16))) Int128Aligned;
 
-/*
- * We guarantee that the in-memory byte representation of an
- * Int128 is that of a host-endian-order 128-bit integer
- * (whether using this struct or the __int128_t version of the type).
- * Some code using this type relies on this (eg when copying it into
- * guest memory or a gdb protocol buffer, or by using Int128 in
- * a union with other integer types).
- */
 struct Int128 {
 #if HOST_BIG_ENDIAN
     int64_t hi;
@@ -358,12 +346,6 @@ static inline Int128 int128_add(Int128 a, Int128 b)
 {
     uint64_t lo = a.lo + b.lo;
 
-    /* a.lo <= a.lo + b.lo < a.lo + k (k is the base, 2^64).  Hence,
-     * a.lo + b.lo >= k implies 0 <= lo = a.lo + b.lo - k < a.lo.
-     * Similarly, a.lo + b.lo < k implies a.lo <= lo = a.lo + b.lo < k.
-     *
-     * So the carry is lo < a.lo.
-     */
     return int128_make128(lo, (uint64_t)a.hi + b.hi + (lo < a.lo));
 }
 
@@ -450,7 +432,7 @@ static inline void int128_subfrom(Int128 *a, Int128 b)
 
 static inline Int128 bswap128(Int128 a)
 {
-    return int128_make128(__builtin_bswap64(a.hi), __builtin_bswap64(a.lo));
+    return int128_make128(bswap64(a.hi), bswap64(a.lo));
 }
 
 static inline int clz128(Int128 a)
@@ -477,11 +459,6 @@ static inline void bswap128s(Int128 *s)
 #define INT128_MAX int128_make128(UINT64_MAX, INT64_MAX)
 #define INT128_MIN int128_make128(0, INT64_MIN)
 
-/*
- * When compiler supports a 128-bit type, define a combination of
- * a possible structure and the native types.  Ease parameter passing
- * via use of the transparent union extension.
- */
 #ifdef CONFIG_INT128_TYPE
 typedef union {
     __uint128_t u;

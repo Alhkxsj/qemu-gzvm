@@ -8,8 +8,8 @@
 #include "system/gzvm_int.h"
 #include "linux-headers/linux/gzvm.h"
 #include "exec/cpu-common.h"
-#include "system/memory.h"
-#include "system/address-spaces.h"
+#include "exec/memory.h"
+#include "exec/address-spaces.h"
 #include "qemu/main-loop.h"
 #include "system/runstate.h"
 #include "qemu/guest-random.h"
@@ -164,8 +164,6 @@ void *gzvm_cpu_thread_fn(void *arg)
     }
 
     do {
-        qemu_process_cpu_events(cpu);
-
         if (cpu_can_run(cpu)) {
             ret = gzvm_cpu_exec(cpu);
             if (ret == EXCP_DEBUG) {
@@ -175,6 +173,7 @@ void *gzvm_cpu_thread_fn(void *arg)
                 vm_stop(RUN_STATE_INTERNAL_ERROR);
             }
         }
+        qemu_wait_io_event(cpu);
     } while (!cpu->unplug || cpu_can_run(cpu));
 
     gzvm_cpu_thread_cleanup(cpu);

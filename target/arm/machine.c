@@ -1,17 +1,11 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
-#include "cpregs.h"
-#include "trace.h"
 #include "qemu/error-report.h"
-#include "system/kvm.h"
 #include "system/tcg.h"
-#include "kvm_arm.h"
 #include "internals.h"
 #include "cpu-features.h"
-#include "migration/qemu-file-types.h"
-#include "migration/vmstate.h"
+#include "migration/cpu.h"
 #include "target/arm/gtimer.h"
-#include "hw/arm/machines-qom.h"
 
 static bool vfp_needed(void *opaque)
 {
@@ -24,26 +18,6 @@ static bool vfp_needed(void *opaque)
 
 static bool vfp_fpcr_fpsr_needed(void *opaque)
 {
-    /*
-     * If either the FPCR or the FPSR include set bits that are not
-     * visible in the AArch32 FPSCR view of floating point control/status
-     * then we must send the FPCR and FPSR as two separate fields in the
-     * cpu/vfp/fpcr_fpsr subsection, and we will send a 0 for the old
-     * FPSCR field in cpu/vfp.
-     *
-     * If all the set bits are representable in an AArch32 FPSCR then we
-     * send that value as the cpu/vfp FPSCR field, and don't send the
-     * cpu/vfp/fpcr_fpsr subsection.
-     *
-     * On incoming migration, if the cpu/vfp FPSCR field is non-zero we
-     * use it, and if the fpcr_fpsr subsection is present we use that.
-     * (The subsection will never be present with a non-zero FPSCR field,
-     * and if FPSCR is zero and the subsection is not present that means
-     * that FPSCR/FPSR/FPCR are zero.)
-     *
-     * This preserves migration compatibility with older QEMU versions,
-     * in both directions.
-     */
     ARMCPU *cpu = opaque;
     CPUARMState *env = &cpu->env;
 
@@ -59,7 +33,6 @@ static int get_fpscr(QEMUFile *f, void *opaque, size_t size,
     uint32_t val = qemu_get_be32(f);
 
     if (val) {
-        /* 0 means we might have the data in the fpcr_fpsr subsection */
         vfp_set_fpscr(env, val);
     }
     return 0;
@@ -168,7 +141,6 @@ static const VMStateDescription vmstate_vfp = {
     .minimum_version_id = 3,
     .needed = vfp_needed,
     .fields = (const VMStateField[]) {
-        /* For compatibility, store Qn out of Zn here.  */
         VMSTATE_UINT64_SUB_ARRAY(env.vfp.zregs[0].d, ARMCPU, 0, 2),
         VMSTATE_UINT64_SUB_ARRAY(env.vfp.zregs[1].d, ARMCPU, 0, 2),
         VMSTATE_UINT64_SUB_ARRAY(env.vfp.zregs[2].d, ARMCPU, 0, 2),
@@ -202,10 +174,6 @@ static const VMStateDescription vmstate_vfp = {
         VMSTATE_UINT64_SUB_ARRAY(env.vfp.zregs[30].d, ARMCPU, 0, 2),
         VMSTATE_UINT64_SUB_ARRAY(env.vfp.zregs[31].d, ARMCPU, 0, 2),
 
-        /* The xregs array is a little awkward because element 1 (FPSCR)
-         * requires a specific accessor, so we have to split it up in
-         * the vmstate:
-         */
         VMSTATE_UINT32(env.vfp.xregs[0], ARMCPU),
         VMSTATE_UINT32_SUB_ARRAY(env.vfp.xregs, ARMCPU, 2, 14),
         {
@@ -224,19 +192,35 @@ static const VMStateDescription vmstate_vfp = {
     }
 };
 
-/* The expression ARM_MAX_VQ - 2 is 0 for pure AArch32 build,
- * and ARMPredicateReg is actively empty.  This triggers errors
- * in the expansion of the VMSTATE macros.
- */
+static bool iwmmxt_needed(void *opaque)
+{
+    ARMCPU *cpu = opaque;
+    CPUARMState *env = &cpu->env;
+
+    return arm_feature(env, ARM_FEATURE_IWMMXT);
+}
+
+static const VMStateDescription vmstate_iwmmxt = {
+    .name = "cpu/iwmmxt",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = iwmmxt_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64_ARRAY(env.iwmmxt.regs, ARMCPU, 16),
+        VMSTATE_UINT32_ARRAY(env.iwmmxt.cregs, ARMCPU, 16),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+#ifdef TARGET_AARCH64
 
 static bool sve_needed(void *opaque)
 {
     ARMCPU *cpu = opaque;
 
-    return cpu_isar_feature(aa64_sve, cpu) || cpu_isar_feature(aa64_sme, cpu);
+    return cpu_isar_feature(aa64_sve, cpu);
 }
 
-/* The first two words of each Zreg is stored in VFP state.  */
 static const VMStateDescription vmstate_zreg_hi_reg = {
     .name = "cpu/sve/zreg_hi",
     .version_id = 1,
@@ -285,10 +269,6 @@ static bool za_needed(void *opaque)
 {
     ARMCPU *cpu = opaque;
 
-    /*
-     * When ZA storage is disabled, its contents are discarded.
-     * It will be zeroed when ZA storage is re-enabled.
-     */
     return FIELD_EX64(cpu->env.svcr, SVCR, ZA);
 }
 
@@ -298,30 +278,12 @@ static const VMStateDescription vmstate_za = {
     .minimum_version_id = 1,
     .needed = za_needed,
     .fields = (const VMStateField[]) {
-        VMSTATE_STRUCT_ARRAY(env.za_state.za, ARMCPU, ARM_MAX_VQ * 16, 0,
+        VMSTATE_STRUCT_ARRAY(env.zarray, ARMCPU, ARM_MAX_VQ * 16, 0,
                              vmstate_vreg, ARMVectorReg),
         VMSTATE_END_OF_LIST()
     }
 };
-
-static bool zt0_needed(void *opaque)
-{
-    ARMCPU *cpu = opaque;
-
-    return za_needed(cpu) && cpu_isar_feature(aa64_sme2, cpu);
-}
-
-static const VMStateDescription vmstate_zt0 = {
-    .name = "cpu/zt0",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = zt0_needed,
-    .fields = (VMStateField[]) {
-        VMSTATE_UINT64_ARRAY(env.za_state.zt0, ARMCPU,
-                             ARRAY_SIZE(((CPUARMState *)0)->za_state.zt0)),
-        VMSTATE_END_OF_LIST()
-    }
-};
+#endif /* AARCH64 */
 
 static bool serror_needed(void *opaque)
 {
@@ -364,7 +326,6 @@ static bool wfxt_timer_needed(void *opaque)
 {
     ARMCPU *cpu = opaque;
 
-    /* We'll only have the timer object if FEAT_WFxT is implemented */
     return cpu->wfxt_timer;
 }
 
@@ -399,14 +360,6 @@ static const VMStateDescription vmstate_m_faultmask_primask = {
     }
 };
 
-/* CSSELR is in a subsection because we didn't implement it previously.
- * Migration from an old implementation will leave it at zero, which
- * is OK since the only CPUs in the old implementation make the
- * register RAZ/WI.
- * Since there was no version of QEMU which implemented the CSSELR for
- * just non-secure, we transfer both banks here rather than putting
- * the secure banked version in the m-security subsection.
- */
 static bool csselr_vmstate_validate(void *opaque, int version_id)
 {
     ARMCPU *cpu = opaque;
@@ -510,24 +463,6 @@ static const VMStateDescription vmstate_m_mve = {
     },
 };
 
-static bool event_needed(void *opaque)
-{
-    ARMCPU *cpu = opaque;
-
-    return cpu->env.event_register;
-}
-
-static const VMStateDescription vmstate_event = {
-    .name = "cpu/event",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = event_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_BOOL(env.event_register, ARMCPU),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
 static const VMStateDescription vmstate_m = {
     .name = "cpu/m",
     .version_id = 4,
@@ -618,10 +553,6 @@ static bool pmsav7_rnr_needed(void *opaque)
     ARMCPU *cpu = opaque;
     CPUARMState *env = &cpu->env;
 
-    /* For R profile cores pmsav7.rnr is migrated via the cpreg
-     * "RGNR" definition in helper.h. For M profile we have to
-     * migrate it separately.
-     */
     return arm_feature(env, ARM_FEATURE_M);
 }
 
@@ -747,9 +678,6 @@ static const VMStateDescription vmstate_m_security = {
         VMSTATE_VALIDATE("SAU_RNR is valid", sau_rnr_vmstate_validate),
         VMSTATE_UINT32(env.sau.ctrl, ARMCPU),
         VMSTATE_UINT32(env.v7m.scr[M_REG_S], ARMCPU),
-        /* AIRCR is not secure-only, but our implementation is R/O if the
-         * security extension is unimplemented, so we migrate it here.
-         */
         VMSTATE_UINT32(env.v7m.aircr, ARMCPU),
         VMSTATE_END_OF_LIST()
     }
@@ -764,16 +692,6 @@ static int get_cpsr(QEMUFile *f, void *opaque, size_t size,
 
     if (arm_feature(env, ARM_FEATURE_M)) {
         if (val & XPSR_EXCP) {
-            /* This is a CPSR format value from an older QEMU. (We can tell
-             * because values transferred in XPSR format always have zero
-             * for the EXCP field, and CPSR format will always have bit 4
-             * set in CPSR_M.) Rearrange it into XPSR format. The significant
-             * differences are that the T bit is not in the same place, the
-             * primask/faultmask info may be in the CPSR I and F bits, and
-             * we do not want the mode bits.
-             * We know that this cleanup happened before v8M, so there
-             * is no complication with banked primask/faultmask.
-             */
             uint32_t newval = val;
 
             assert(!arm_feature(env, ARM_FEATURE_M_SECURITY));
@@ -782,11 +700,6 @@ static int get_cpsr(QEMUFile *f, void *opaque, size_t size,
             if (val & CPSR_T) {
                 newval |= XPSR_T;
             }
-            /* If the I or F bits are set then this is a migration from
-             * an old QEMU which still stored the M profile FAULTMASK
-             * and PRIMASK in env->daif. For a new QEMU, the data is
-             * transferred using the vmstate_m_faultmask_primask subsection.
-             */
             if (val & CPSR_F) {
                 env->v7m.faultmask[M_REG_NS] = 1;
             }
@@ -795,7 +708,6 @@ static int get_cpsr(QEMUFile *f, void *opaque, size_t size,
             }
             val = newval;
         }
-        /* Ignore the low bits, they are handled by vmstate_m. */
         xpsr_write(env, val, ~XPSR_EXCP);
         return 0;
     }
@@ -819,7 +731,6 @@ static int put_cpsr(QEMUFile *f, void *opaque, size_t size,
     uint32_t val;
 
     if (arm_feature(env, ARM_FEATURE_M)) {
-        /* The low 9 bits are v7m.exception, which is handled by vmstate_m. */
         val = xpsr_read(env) & ~XPSR_EXCP;
     } else if (is_a64(env)) {
         val = pstate_read(env);
@@ -837,80 +748,6 @@ static const VMStateInfo vmstate_cpsr = {
     .put = put_cpsr,
 };
 
-static int get_pstate64(QEMUFile *f, void *opaque, size_t size,
-                        const VMStateField *field)
-{
-    ARMCPU *cpu = opaque;
-    CPUARMState *env = &cpu->env;
-    uint64_t val = qemu_get_be64(f);
-
-    env->aarch64 = ((val & PSTATE_nRW) == 0);
-    if (is_a64(env)) {
-        pstate_write(env, val);
-    } else {
-        cpsr_write_from_spsr_elx(env, val);
-    }
-    return 0;
-}
-
-static int put_pstate64(QEMUFile *f, void *opaque, size_t size,
-                        const VMStateField *field, JSONWriter *vmdesc)
-{
-    ARMCPU *cpu = opaque;
-    CPUARMState *env = &cpu->env;
-    uint64_t val;
-
-    if (is_a64(env)) {
-        val = pstate_read(env);
-    } else {
-        val = cpsr_read_for_spsr_elx(env);
-    }
-    qemu_put_be64(f, val);
-    return 0;
-}
-
-static bool pstate64_needed(void *opaque)
-{
-    ARMCPU *cpu = opaque;
-    CPUARMState *env = &cpu->env;
-    uint64_t val;
-
-    if (arm_feature(env, ARM_FEATURE_M)) {
-        return false;
-    }
-    if (is_a64(env)) {
-        val = pstate_read(env);
-    } else {
-        val = cpsr_read_for_spsr_elx(env);
-        if (val & PSTATE_SS) {
-            return true;
-        }
-    }
-    return val > UINT32_MAX;
-}
-
-static const VMStateDescription vmstate_pstate64 = {
-    .name = "cpu/pstate64",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = pstate64_needed,
-    .fields = (const VMStateField[]) {
-        {
-            .name = "pstate64",
-            .version_id = 0,
-            .size = sizeof(uint64_t),
-            .info = &(const VMStateInfo) {
-                .name = "pstate64",
-                .get = get_pstate64,
-                .put = put_pstate64,
-            },
-            .flags = VMS_SINGLE,
-            .offset = 0,
-        },
-        VMSTATE_END_OF_LIST()
-    },
-};
-
 static int get_power(QEMUFile *f, void *opaque, size_t size,
                     const VMStateField *field)
 {
@@ -925,7 +762,6 @@ static int put_power(QEMUFile *f, void *opaque, size_t size,
 {
     ARMCPU *cpu = opaque;
 
-    /* Migration should never happen while we transition power states */
 
     if (cpu->power_state == PSCI_ON ||
         cpu->power_state == PSCI_OFF) {
@@ -943,90 +779,30 @@ static const VMStateInfo vmstate_powered_off = {
     .put = put_power,
 };
 
-static bool syndrome64_needed(void *opaque)
-{
-    ARMCPU *cpu = opaque;
-    return cpu->env.exception.syndrome > UINT32_MAX;
-}
-
-static const VMStateDescription vmstate_syndrome64 = {
-    .name = "cpu/syndrome64",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = syndrome64_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT64(env.exception.syndrome, ARMCPU),
-        VMSTATE_END_OF_LIST()
-    },
-};
-
-static bool fpmr_needed(void *opaque)
-{
-    ARMCPU *cpu = opaque;
-
-    return arm_feature(&cpu->env, ARM_FEATURE_AARCH64)
-           && cpu_isar_feature(aa64_fpmr, cpu);
-}
-
-static const VMStateDescription vmstate_fpmr = {
-    .name = "cpu/fpmr",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = fpmr_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT64(env.vfp.fpmr, ARMCPU),
-        VMSTATE_END_OF_LIST()
-    },
-};
-
 static int cpu_pre_save(void *opaque)
 {
     ARMCPU *cpu = opaque;
 
-    if (!kvm_enabled()) {
-        pmu_op_start(&cpu->env);
+    if (!write_cpustate_to_list(cpu)) {
+        g_assert_not_reached();
     }
 
-    if (kvm_enabled()) {
-        if (!write_kvmstate_to_list(cpu)) {
-            /* This should never fail */
-            g_assert_not_reached();
-        }
-
-        /*
-         * kvm_arm_cpu_pre_save() must be called after
-         * write_kvmstate_to_list()
-         */
-        kvm_arm_cpu_pre_save(cpu);
-    } else {
-        if (!write_cpustate_to_list(cpu, false)) {
-            /* This should never fail. */
-            g_assert_not_reached();
-        }
-    }
-
-    /*
-     * On outbound migration, send the data in our cpreg_{values,indexes}
-     * arrays. The migration code will not allocate anything, but just
-     * reads the data pointed to by the VMSTATE_VARRAY_INT32_ALLOC() fields.
-     */
-    cpu->cpreg_vmstate_indexes = cpu->cpreg_indexes;
-    cpu->cpreg_vmstate_values = cpu->cpreg_values;
     cpu->cpreg_vmstate_array_len = cpu->cpreg_array_len;
+    memcpy(cpu->cpreg_vmstate_indexes, cpu->cpreg_indexes,
+           cpu->cpreg_array_len * sizeof(uint64_t));
+    memcpy(cpu->cpreg_vmstate_values, cpu->cpreg_values,
+           cpu->cpreg_array_len * sizeof(uint64_t));
 
     return 0;
 }
 
-static void cpu_post_save(void *opaque)
+static int cpu_post_save(void *opaque)
 {
     ARMCPU *cpu = opaque;
 
-    if (!kvm_enabled()) {
-        pmu_op_finish(&cpu->env);
-    }
+    pmu_op_finish(&cpu->env);
 
-    cpu->cpreg_vmstate_indexes = NULL;
-    cpu->cpreg_vmstate_values = NULL;
+    return 0;
 }
 
 static int cpu_pre_load(void *opaque)
@@ -1034,106 +810,21 @@ static int cpu_pre_load(void *opaque)
     ARMCPU *cpu = opaque;
     CPUARMState *env = &cpu->env;
 
-    /*
-     * In an inbound migration where on the source FPSCR/FPSR/FPCR are 0,
-     * there will be no fpcr_fpsr subsection so we won't call vfp_set_fpcr()
-     * and vfp_set_fpsr() from get_fpcr() and get_fpsr(); also the get_fpscr()
-     * function will not call vfp_set_fpscr() because it will see a 0 in the
-     * inbound data. Ensure that in this case we have a correctly set up
-     * zero FPSCR/FPCR/FPSR.
-     *
-     * This is not strictly needed because FPSCR is zero out of reset, but
-     * it avoids the possibility of future confusing migration bugs if some
-     * future architecture change makes the reset value non-zero.
-     */
     vfp_set_fpscr(env, 0);
 
-    /*
-     * Pre-initialize irq_line_state to a value that's never valid as
-     * real data, so cpu_post_load() can tell whether we've seen the
-     * irq-line-state subsection in the incoming migration state.
-     */
     env->irq_line_state = UINT32_MAX;
 
-    if (!kvm_enabled()) {
-        pmu_op_start(env);
-    }
-
-    g_assert(!cpu->cpreg_vmstate_indexes);
-    g_assert(!cpu->cpreg_vmstate_values);
+    pmu_op_start(env);
 
     return 0;
-}
-
-static gchar *print_register_name(uint64_t kvm_regidx)
-{
-    if (kvm_enabled()) {
-        return kvm_print_register_name(kvm_regidx);
-    } else {
-        return g_strdup_printf("system register 0x%x", kvm_to_cpreg_id(kvm_regidx));
-    }
-}
-
-/*
- * Handle the situation where @kvmidx is on destination but not
- * in the incoming stream. This never fails the migration.
- */
-static void handle_cpreg_missing_in_incoming_stream(ARMCPU *cpu, uint64_t kvmidx)
-{
-    g_autofree gchar *name = print_register_name(kvmidx);
-
-    if (arm_cpu_match_cpreg_mig_tolerance(cpu, kvmidx,
-                                          0, 0, ToleranceNotOnBothEnds)) {
-        trace_tolerate_cpreg_missing_in_incoming_stream(name);
-        return;
-    }
-    warn_report("%s: %s "
-                "expected by the destination but not in the incoming stream: "
-                 "skip it", __func__, name);
-}
-
-/*
- * Handle the situation where @kvmidx is in the incoming
- * stream but not on destination. This fails the migration if
- * no cpreg mig tolerance is matched for this @kvmidx
- * Return true if the migration should eventually fail
- */
-static bool
-handle_cpreg_only_in_incoming_stream(ARMCPU *cpu, uint64_t kvmidx, uint64_t value)
-{
-    g_autofree gchar *name = print_register_name(kvmidx);
-
-    if (arm_cpu_match_cpreg_mig_tolerance(cpu, kvmidx,
-                                          0, 0, ToleranceNotOnBothEnds) ||
-        arm_cpu_match_cpreg_mig_tolerance(cpu, kvmidx,
-                                          value, 0, ToleranceOnlySrcTestValue)) {
-        trace_tolerate_cpreg_only_in_incoming_stream(name);
-        return false;
-    }
-    error_report("%s: %s in the incoming stream but unknown on the "
-                 "destination: fail migration", __func__, name);
-    return true;
 }
 
 static int cpu_post_load(void *opaque, int version_id)
 {
     ARMCPU *cpu = opaque;
     CPUARMState *env = &cpu->env;
-    bool fail = false;
     int i, v;
 
-    trace_cpu_post_load(cpu->cpreg_vmstate_array_len,
-                        cpu->cpreg_array_len);
-
-    /*
-     * Handle migration compatibility from old QEMU which didn't
-     * send the irq-line-state subsection. A QEMU without it did not
-     * implement the HCR_EL2.{VI,VF} bits as generating interrupts,
-     * so for TCG the line state matches the bits set in cs->interrupt_request.
-     * For KVM the line state is not stored in cs->interrupt_request
-     * and so this will leave irq_line_state as 0, but this is OK because
-     * we only need to care about it for TCG.
-     */
     if (env->irq_line_state == UINT32_MAX) {
         CPUState *cs = CPU(cpu);
 
@@ -1142,75 +833,23 @@ static int cpu_post_load(void *opaque, int version_id)
              CPU_INTERRUPT_VIRQ | CPU_INTERRUPT_VFIQ);
     }
 
-    /* Update the values list from the incoming migration data.
-     * Anything in the incoming data which we don't know about is
-     * a migration failure; anything we know about but the incoming
-     * data doesn't specify retains its current (reset) value.
-     * The indexes list remains untouched -- we only inspect the
-     * incoming migration index list so we can match the values array
-     * entries with the right slots in our own values array.
-     */
 
     for (i = 0, v = 0; i < cpu->cpreg_array_len
-             && v < cpu->cpreg_vmstate_array_len;) {
+             && v < cpu->cpreg_vmstate_array_len; i++) {
         if (cpu->cpreg_vmstate_indexes[v] > cpu->cpreg_indexes[i]) {
-            handle_cpreg_missing_in_incoming_stream(cpu, cpu->cpreg_indexes[i++]);
             continue;
         }
         if (cpu->cpreg_vmstate_indexes[v] < cpu->cpreg_indexes[i]) {
-            fail = handle_cpreg_only_in_incoming_stream(cpu,
-                                                        cpu->cpreg_vmstate_indexes[v],
-                                                        cpu->cpreg_vmstate_values[v]);
-            v++;
-            continue;
+            return -1;
         }
-        /* matching register, copy the value over */
         cpu->cpreg_values[i] = cpu->cpreg_vmstate_values[v];
-        i++;
         v++;
     }
 
-    /*
-     * if we have reached the end of the incoming array but there are
-     * still regs in cpreg, continue parsing the regs which are missing
-     * in the input stream
-     */
-    for ( ; i < cpu->cpreg_array_len; i++) {
-        handle_cpreg_missing_in_incoming_stream(cpu, cpu->cpreg_indexes[i]);
-    }
-    /*
-     * if we have reached the end of the cpreg array but there are
-     * still regs in the input stream, continue parsing the vmstate array
-     */
-    for ( ; v < cpu->cpreg_vmstate_array_len; v++) {
-        fail = handle_cpreg_only_in_incoming_stream(cpu,
-                                                    cpu->cpreg_vmstate_indexes[v],
-                                                    cpu->cpreg_vmstate_values[v]);
-    }
-    if (fail) {
+    if (!write_list_to_cpustate(cpu)) {
         return -1;
     }
 
-    if (kvm_enabled()) {
-        if (!kvm_arm_cpu_post_load(cpu)) {
-            return -1;
-        }
-    } else {
-        if (!write_list_to_cpustate(cpu)) {
-            return -1;
-        }
-    }
-
-    g_free(cpu->cpreg_vmstate_indexes);
-    g_free(cpu->cpreg_vmstate_values);
-    cpu->cpreg_vmstate_indexes = NULL;
-    cpu->cpreg_vmstate_values = NULL;
-
-    /*
-     * Misaligned thumb pc is architecturally impossible. Fail the
-     * incoming migration. For TCG it would trigger the assert in
-     * thumb_tr_translate_insn().
-     */
     if (!is_a64(env) && env->thumb && (env->regs[15] & 1)) {
         return -1;
     }
@@ -1220,11 +859,6 @@ static int cpu_post_load(void *opaque, int version_id)
         hw_watchpoint_update_all(cpu);
     }
 
-    /*
-     * TCG gen_update_fp_context() relies on the invariant that
-     * FPDSCR.LTPSIZE is constant 4 for M-profile with the LOB extension;
-     * forbid bogus incoming data with some other value.
-     */
     if (arm_feature(env, ARM_FEATURE_M) && cpu_isar_feature(aa32_lob, cpu)) {
         if (extract32(env->v7m.fpdscr[M_REG_NS],
                       FPCR_LTPSIZE_SHIFT, FPCR_LTPSIZE_LENGTH) != 4 ||
@@ -1234,9 +868,7 @@ static int cpu_post_load(void *opaque, int version_id)
         }
     }
 
-    if (!kvm_enabled()) {
-        pmu_op_finish(env);
-    }
+    pmu_op_finish(env);
 
     if (tcg_enabled()) {
         arm_rebuild_hflags(env);
@@ -1257,12 +889,6 @@ const VMStateDescription vmstate_arm_cpu = {
         VMSTATE_UINT32_ARRAY(env.regs, ARMCPU, 16),
         VMSTATE_UINT64_ARRAY(env.xregs, ARMCPU, 32),
         VMSTATE_UINT64(env.pc, ARMCPU),
-        /*
-         * If any bits are set in the upper 32 bits of cpsr/pstate,
-         * or if the cpu is in aa32 mode and PSTATE.SS is set, then
-         * the cpu/pstate64 subsection will override this with the
-         * full 64 bit state.
-         */
         {
             .name = "cpsr",
             .version_id = 0,
@@ -1279,34 +905,18 @@ const VMStateDescription vmstate_arm_cpu = {
         VMSTATE_UINT32_ARRAY(env.fiq_regs, ARMCPU, 5),
         VMSTATE_UINT64_ARRAY(env.elr_el, ARMCPU, 4),
         VMSTATE_UINT64_ARRAY(env.sp_el, ARMCPU, 4),
-        /*
-         * The length must come before the arrays so we can
-         * allocate the arrays before their data arrives
-         */
-        VMSTATE_INT32(cpreg_vmstate_array_len, ARMCPU),
-        VMSTATE_VARRAY_INT32_ALLOC(cpreg_vmstate_indexes, ARMCPU,
-                                   cpreg_vmstate_array_len,
-                                   0, vmstate_info_uint64, uint64_t),
-        VMSTATE_VARRAY_INT32_ALLOC(cpreg_vmstate_values, ARMCPU,
-                                   cpreg_vmstate_array_len,
-                                   0, vmstate_info_uint64, uint64_t),
+        VMSTATE_INT32_POSITIVE_LE(cpreg_vmstate_array_len, ARMCPU),
+        VMSTATE_VARRAY_INT32(cpreg_vmstate_indexes, ARMCPU,
+                             cpreg_vmstate_array_len,
+                             0, vmstate_info_uint64, uint64_t),
+        VMSTATE_VARRAY_INT32(cpreg_vmstate_values, ARMCPU,
+                             cpreg_vmstate_array_len,
+                             0, vmstate_info_uint64, uint64_t),
         VMSTATE_UINT64(env.exclusive_addr, ARMCPU),
         VMSTATE_UINT64(env.exclusive_val, ARMCPU),
         VMSTATE_UINT64(env.exclusive_high, ARMCPU),
         VMSTATE_UNUSED(sizeof(uint64_t)),
-        /*
-         * If any bits are set in the upper 32 bits of syndrome,
-         * then the cpu/syndrome64 subsection will override this
-         * with the full 64 bit state.
-         */
-        {
-            .name = "env.exception.syndrome",
-            .version_id = 0,
-            .size = sizeof(uint32_t),
-            .info = &vmstate_info_uint32,
-            .flags = VMS_SINGLE,
-            .offset = offsetoflow32(ARMCPU, env.exception.syndrome),
-        },
+        VMSTATE_UINT32(env.exception.syndrome, ARMCPU),
         VMSTATE_UINT32(env.exception.fsr, ARMCPU),
         VMSTATE_UINT64(env.exception.vaddress, ARMCPU),
         VMSTATE_TIMER_PTR(gt_timer[GTIMER_PHYS], ARMCPU),
@@ -1323,43 +933,20 @@ const VMStateDescription vmstate_arm_cpu = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_vfp,
+        &vmstate_iwmmxt,
         &vmstate_m,
         &vmstate_thumb2ee,
-        /* pmsav7_rnr must come before pmsav7 so that we have the
-         * region number before we test it in the VMSTATE_VALIDATE
-         * in vmstate_pmsav7.
-         */
         &vmstate_pmsav7_rnr,
         &vmstate_pmsav7,
         &vmstate_pmsav8,
         &vmstate_m_security,
+#ifdef TARGET_AARCH64
         &vmstate_sve,
         &vmstate_za,
-        &vmstate_zt0,
+#endif
         &vmstate_serror,
         &vmstate_irq_line_state,
         &vmstate_wfxt_timer,
-        &vmstate_syndrome64,
-        &vmstate_pstate64,
-        &vmstate_event,
-        &vmstate_fpmr,
         NULL
     }
-};
-
-const InterfaceInfo arm_machine_interfaces[] = {
-    { TYPE_TARGET_ARM_MACHINE },
-    { TYPE_TARGET_AARCH64_MACHINE },
-    { }
-};
-
-const InterfaceInfo arm_aarch64_machine_interfaces[] = {
-    { TYPE_TARGET_ARM_MACHINE },
-    { TYPE_TARGET_AARCH64_MACHINE },
-    { }
-};
-
-const InterfaceInfo aarch64_machine_interfaces[] = {
-    { TYPE_TARGET_AARCH64_MACHINE },
-    { }
 };

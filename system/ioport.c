@@ -1,35 +1,9 @@
-/*
- * QEMU System Emulator
- *
- * Copyright (c) 2003-2008 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
-/*
- * split out ioport related stuffs from vl.c.
- */
 
 #include "qemu/osdep.h"
-#include "system/ioport.h"
-#include "system/memory.h"
-#include "system/address-spaces.h"
-#include "hw/core/qdev.h"
+#include "cpu.h"
+#include "exec/ioport.h"
+#include "exec/memory.h"
+#include "exec/address-spaces.h"
 #include "trace.h"
 
 struct MemoryRegionPortioList {
@@ -56,56 +30,64 @@ static void unassigned_io_write(void *opaque, hwaddr addr, uint64_t val,
 const MemoryRegionOps unassigned_io_ops = {
     .read = unassigned_io_read,
     .write = unassigned_io_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
 void cpu_outb(uint32_t addr, uint8_t val)
 {
     trace_cpu_out(addr, 'b', val);
-    address_space_stb(&address_space_io, addr, val,
-                      MEMTXATTRS_UNSPECIFIED, NULL);
+    address_space_write(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED,
+                        &val, 1);
 }
 
 void cpu_outw(uint32_t addr, uint16_t val)
 {
+    uint8_t buf[2];
+
     trace_cpu_out(addr, 'w', val);
-    address_space_stw_le(&address_space_io, addr, val,
-                         MEMTXATTRS_UNSPECIFIED, NULL);
+    stw_p(buf, val);
+    address_space_write(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED,
+                        buf, 2);
 }
 
 void cpu_outl(uint32_t addr, uint32_t val)
 {
+    uint8_t buf[4];
+
     trace_cpu_out(addr, 'l', val);
-    address_space_stl_le(&address_space_io, addr, val,
-                         MEMTXATTRS_UNSPECIFIED, NULL);
+    stl_p(buf, val);
+    address_space_write(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED,
+                        buf, 4);
 }
 
 uint8_t cpu_inb(uint32_t addr)
 {
     uint8_t val;
 
-    val = address_space_ldub(&address_space_io, addr,
-                             MEMTXATTRS_UNSPECIFIED, NULL);
+    address_space_read(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED,
+                       &val, 1);
     trace_cpu_in(addr, 'b', val);
     return val;
 }
 
 uint16_t cpu_inw(uint32_t addr)
 {
+    uint8_t buf[2];
     uint16_t val;
 
-    val = address_space_lduw_le(&address_space_io, addr,
-                                MEMTXATTRS_UNSPECIFIED, NULL);
+    address_space_read(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED, buf, 2);
+    val = lduw_p(buf);
     trace_cpu_in(addr, 'w', val);
     return val;
 }
 
 uint32_t cpu_inl(uint32_t addr)
 {
+    uint8_t buf[4];
     uint32_t val;
 
-    val = address_space_ldl_le(&address_space_io, addr,
-                               MEMTXATTRS_UNSPECIFIED, NULL);
+    address_space_read(&address_space_io, addr, MEMTXATTRS_UNSPECIFIED, buf, 4);
+    val = ldl_p(buf);
     trace_cpu_in(addr, 'l', val);
     return val;
 }
@@ -226,7 +208,6 @@ static void portio_list_add_1(PortioList *piolist,
     char *name;
     unsigned i;
 
-    /* Copy the sub-list and null-terminate it.  */
     mrpio = MEMORY_REGION_PORTIO_LIST(
                 object_new(TYPE_MEMORY_REGION_PORTIO_LIST));
     mrpio->portio_opaque = piolist->opaque;
@@ -234,19 +215,13 @@ static void portio_list_add_1(PortioList *piolist,
     memcpy(mrpio->ports, pio_init, sizeof(MemoryRegionPortio) * count);
     memset(mrpio->ports + count, 0, sizeof(MemoryRegionPortio));
 
-    /* Adjust the offsets to all be zero-based for the region.  */
     for (i = 0; i < count; ++i) {
         mrpio->ports[i].offset -= off_low;
     }
 
-    /*
-     * The MemoryRegion owner is the MemoryRegionPortioList since that manages
-     * the lifecycle via the refcount
-     */
     memory_region_init_io(&mrpio->mr, OBJECT(mrpio), &portio_ops, mrpio,
                           piolist->name, off_high - off_low);
 
-    /* Reparent the MemoryRegion to the piolist owner */
     object_ref(&mrpio->mr);
     object_unparent(OBJECT(&mrpio->mr));
     if (!piolist->owner) {
@@ -277,21 +252,17 @@ void portio_list_add(PortioList *piolist,
     piolist->address_space = address_space;
     piolist->addr = start;
 
-    /* Handle the first entry specially.  */
     off_last = off_low = pio_start->offset;
     off_high = off_low + pio_start->len + pio_start->size - 1;
     count = 1;
 
     for (pio = pio_start + 1; pio->size != 0; pio++, count++) {
-        /* All entries must be sorted by offset.  */
         assert(pio->offset >= off_last);
         off_last = pio->offset;
 
-        /* If we see a hole, break the region.  */
         if (off_last > off_high) {
             portio_list_add_1(piolist, pio_start, count, start, off_low,
                               off_high);
-            /* ... and start collecting anew.  */
             pio_start = pio;
             off_low = off_last;
             off_high = off_low + pio->len + pio_start->size - 1;
@@ -301,7 +272,6 @@ void portio_list_add(PortioList *piolist,
         }
     }
 
-    /* There will always be an open sub-list.  */
     portio_list_add_1(piolist, pio_start, count, start, off_low, off_high);
 }
 
@@ -346,15 +316,8 @@ static void memory_region_portio_list_finalize(Object *obj)
 {
     MemoryRegionPortioList *mrpio = MEMORY_REGION_PORTIO_LIST(obj);
 
-    /*
-     * This check makes sure any random object_new() (without doing the
-     * rest inits in portio_list_add_1()) will not crash when finalizing.
-     * One example is QMP command qom-list-properties.
-     */
-    if (mrpio->ports) {
-        object_unref(&mrpio->mr);
-        g_free(mrpio->ports);
-    }
+    object_unref(&mrpio->mr);
+    g_free(mrpio->ports);
 }
 
 static const TypeInfo memory_region_portio_list_info = {

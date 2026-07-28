@@ -24,12 +24,13 @@
 bool user_creatable_complete(UserCreatable *uc, Error **errp)
 {
     UserCreatableClass *ucc = USER_CREATABLE_GET_CLASS(uc);
-    ERRP_GUARD();
+    Error *err = NULL;
 
     if (ucc->complete) {
-        ucc->complete(uc, errp);
+        ucc->complete(uc, &err);
+        error_propagate(errp, err);
     }
-    return !*errp;
+    return !err;
 }
 
 bool user_creatable_can_be_deleted(UserCreatable *uc)
@@ -44,11 +45,106 @@ bool user_creatable_can_be_deleted(UserCreatable *uc)
     }
 }
 
+static void object_set_properties_from_qdict(Object *obj, const QDict *qdict,
+                                             Visitor *v, Error **errp)
+{
+    const QDictEntry *e;
+
+    if (!visit_start_struct(v, NULL, NULL, 0, errp)) {
+        return;
+    }
+    for (e = qdict_first(qdict); e; e = qdict_next(qdict, e)) {
+        if (!object_property_set(obj, e->key, v, errp)) {
+            goto out;
+        }
+    }
+    visit_check_struct(v, errp);
+out:
+    visit_end_struct(v, NULL);
+}
+
+void object_set_properties_from_keyval(Object *obj, const QDict *qdict,
+                                       bool from_json, Error **errp)
+{
+    Visitor *v;
+    if (from_json) {
+        v = qobject_input_visitor_new(QOBJECT(qdict));
+    } else {
+        v = qobject_input_visitor_new_keyval(QOBJECT(qdict));
+    }
+    object_set_properties_from_qdict(obj, qdict, v, errp);
+    visit_free(v);
+}
+
+Object *user_creatable_add_type(const char *type, const char *id,
+                                const QDict *qdict,
+                                Visitor *v, Error **errp)
+{
+    ERRP_GUARD();
+    Object *obj;
+    ObjectClass *klass;
+    Error *local_err = NULL;
+
+    if (id != NULL && !id_wellformed(id)) {
+        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "id", "an identifier");
+        error_append_hint(errp, "Identifiers consist of letters, digits, "
+                          "'-', '.', '_', starting with a letter.\n");
+        return NULL;
+    }
+
+    klass = module_object_class_by_name(type);
+    if (!klass) {
+        error_setg(errp, "invalid object type: %s", type);
+        return NULL;
+    }
+
+    if (!object_class_dynamic_cast(klass, TYPE_USER_CREATABLE)) {
+        error_setg(errp, "object type '%s' isn't supported by object-add",
+                   type);
+        return NULL;
+    }
+
+    if (object_class_is_abstract(klass)) {
+        error_setg(errp, "object type '%s' is abstract", type);
+        return NULL;
+    }
+
+    assert(qdict);
+    obj = object_new_with_class(klass);
+    object_set_properties_from_qdict(obj, qdict, v, &local_err);
+    if (local_err) {
+        goto out;
+    }
+
+    if (id != NULL) {
+        object_property_try_add_child(object_get_objects_root(),
+                                      id, obj, &local_err);
+        if (local_err) {
+            goto out;
+        }
+    }
+
+    if (!user_creatable_complete(USER_CREATABLE(obj), &local_err)) {
+        if (id != NULL) {
+            object_property_del(object_get_objects_root(), id);
+        }
+        goto out;
+    }
+out:
+    if (local_err) {
+        error_propagate(errp, local_err);
+        object_unref(obj);
+        return NULL;
+    }
+    return obj;
+}
+
 void user_creatable_add_qapi(ObjectOptions *options, Error **errp)
 {
     Visitor *v;
     QObject *qobj;
     QDict *props;
+    Object *obj;
 
     v = qobject_output_visitor_new(&qobj);
     visit_type_ObjectOptions(v, NULL, &options, &error_abort);
@@ -60,9 +156,9 @@ void user_creatable_add_qapi(ObjectOptions *options, Error **errp)
     qdict_del(props, "id");
 
     v = qobject_input_visitor_new(QOBJECT(props));
-    object_new_with_props_from_qdict(ObjectType_str(options->qom_type),
-                                     object_get_objects_root(),
-                                     options->id, props, v, errp);
+    obj = user_creatable_add_type(ObjectType_str(options->qom_type),
+                                  options->id, props, v, errp);
+    object_unref(obj);
     qobject_unref(qobj);
     visit_free(v);
 }
@@ -235,7 +331,6 @@ bool user_creatable_add_from_str(const char *str, Error **errp)
 void user_creatable_process_cmdline(const char *cmdline)
 {
     if (!user_creatable_add_from_str(cmdline, &error_fatal)) {
-        /* Help was printed */
         exit(EXIT_SUCCESS);
     }
 }
@@ -258,10 +353,6 @@ bool user_creatable_del(const char *id, Error **errp)
         return false;
     }
 
-    /*
-     * if object was defined on the command-line, remove its corresponding
-     * option group entry
-     */
     opts_list = qemu_find_opts_err("object", NULL);
     if (opts_list) {
         qemu_opts_del(qemu_opts_find(opts_list, id));

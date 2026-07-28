@@ -1,17 +1,7 @@
-/*
- *      PCI Class, Vendor and Device IDs
- *
- *      Please keep sorted.
- *
- *      Abbreviated version of linux/pci_ids.h
- *
- *      QEMU-specific definitions belong in pci.h
- */
 
 #ifndef HW_PCI_IDS_H
 #define HW_PCI_IDS_H
 
-/* Device classes and subclasses */
 
 #define PCI_CLASS_NOT_DEFINED            0x0000
 #define PCI_CLASS_NOT_DEFINED_VGA        0x0001
@@ -54,7 +44,6 @@
 #define PCI_BASE_CLASS_MEMORY            0x05
 #define PCI_CLASS_MEMORY_RAM             0x0500
 #define PCI_CLASS_MEMORY_FLASH           0x0501
-#define PCI_CLASS_MEMORY_CXL             0x0502
 #define PCI_CLASS_MEMORY_OTHER           0x0580
 
 #define PCI_BASE_CLASS_BRIDGE            0x06
@@ -156,9 +145,7 @@
 
 #define PCI_CLASS_OTHERS                 0xff
 
-/* Vendors and devices.  Sort key: vendor first, device next. */
 
-/* Ref: PCIe r6.0 Table 6-32 */
 #define PCI_VENDOR_ID_PCI_SIG            0x0001
 
 #define PCI_VENDOR_ID_LSI_LOGIC          0x1000
@@ -290,7 +277,5 @@
 #define PCI_VENDOR_ID_SYNOPSYS           0x16C3
 
 #define PCI_VENDOR_ID_NVIDIA             0x10de
-
-#define PCI_VENDOR_ID_ASPEED             0x1A03
 
 #endif

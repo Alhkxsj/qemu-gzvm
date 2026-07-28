@@ -1,27 +1,9 @@
-/*
- *  System (CPU) Bus device support code
- *
- *  Copyright (c) 2009 CodeSourcery
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
- */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/core/sysbus.h"
+#include "hw/sysbus.h"
 #include "monitor/monitor.h"
-#include "system/address-spaces.h"
+#include "exec/address-spaces.h"
 
 static void sysbus_dev_print(Monitor *mon, DeviceState *dev, int indent);
 static char *sysbus_get_fw_dev_path(DeviceState *dev);
@@ -31,7 +13,6 @@ typedef struct SysBusFind {
     FindSysbusDeviceFunc *func;
 } SysBusFind;
 
-/* Run func() for every sysbus device, traverse the tree for everything else */
 static int find_sysbus_device(Object *obj, void *opaque)
 {
     SysBusFind *find = opaque;
@@ -42,7 +23,6 @@ static int find_sysbus_device(Object *obj, void *opaque)
     sbdev = (SysBusDevice *)dev;
 
     if (!sbdev) {
-        /* Container, traverse it for children */
         return object_child_foreach(obj, find_sysbus_device, opaque);
     }
 
@@ -51,10 +31,6 @@ static int find_sysbus_device(Object *obj, void *opaque)
     return 0;
 }
 
-/*
- * Loop through all dynamically created sysbus devices and call
- * func() for each instance.
- */
 void foreach_dynamic_sysbus_device(FindSysbusDeviceFunc *func, void *opaque)
 {
     Object *container;
@@ -63,7 +39,6 @@ void foreach_dynamic_sysbus_device(FindSysbusDeviceFunc *func, void *opaque)
         .opaque = opaque,
     };
 
-    /* Loop through all sysbus devices that were spawned outside the machine */
     container = machine_get_container("peripheral");
     find_sysbus_device(container, &find);
     container = machine_get_container("peripheral-anon");
@@ -71,7 +46,7 @@ void foreach_dynamic_sysbus_device(FindSysbusDeviceFunc *func, void *opaque)
 }
 
 
-static void system_bus_class_init(ObjectClass *klass, const void *data)
+static void system_bus_class_init(ObjectClass *klass, void *data)
 {
     BusClass *k = BUS_CLASS(klass);
 
@@ -79,8 +54,7 @@ static void system_bus_class_init(ObjectClass *klass, const void *data)
     k->get_fw_dev_path = sysbus_get_fw_dev_path;
 }
 
-/* Check whether an IRQ source exists */
-bool sysbus_has_irq(const SysBusDevice *dev, int n)
+bool sysbus_has_irq(SysBusDevice *dev, int n)
 {
     char *prop = g_strdup_printf("%s[%d]", SYSBUS_DEVICE_GPIO_IRQ, n);
     ObjectProperty *r;
@@ -91,12 +65,12 @@ bool sysbus_has_irq(const SysBusDevice *dev, int n)
     return (r != NULL);
 }
 
-bool sysbus_is_irq_connected(const SysBusDevice *dev, int n)
+bool sysbus_is_irq_connected(SysBusDevice *dev, int n)
 {
     return !!sysbus_get_connected_irq(dev, n);
 }
 
-qemu_irq sysbus_get_connected_irq(const SysBusDevice *dev, int n)
+qemu_irq sysbus_get_connected_irq(SysBusDevice *dev, int n)
 {
     DeviceState *d = DEVICE(dev);
     return qdev_get_gpio_out_connector(d, SYSBUS_DEVICE_GPIO_IRQ, n);
@@ -104,11 +78,16 @@ qemu_irq sysbus_get_connected_irq(const SysBusDevice *dev, int n)
 
 void sysbus_connect_irq(SysBusDevice *dev, int n, qemu_irq irq)
 {
+    SysBusDeviceClass *sbd = SYS_BUS_DEVICE_GET_CLASS(dev);
+
     qdev_connect_gpio_out_named(DEVICE(dev), SYSBUS_DEVICE_GPIO_IRQ, n, irq);
+
+    if (sbd->connect_irq_notifier) {
+        sbd->connect_irq_notifier(dev, irq);
+    }
 }
 
-/* Check whether an MMIO region exists */
-bool sysbus_has_mmio(const SysBusDevice *dev, unsigned int n)
+bool sysbus_has_mmio(SysBusDevice *dev, unsigned int n)
 {
     return (n < dev->num_mmio);
 }
@@ -119,11 +98,9 @@ static void sysbus_mmio_map_common(SysBusDevice *dev, int n, hwaddr addr,
     assert(n >= 0 && n < dev->num_mmio);
 
     if (dev->mmio[n].addr == addr) {
-        /* ??? region already mapped here.  */
         return;
     }
     if (dev->mmio[n].addr != (hwaddr)-1) {
-        /* Unregister previous mapping.  */
         memory_region_del_subregion(get_system_memory(), dev->mmio[n].memory);
     }
     dev->mmio[n].addr = addr;
@@ -145,30 +122,17 @@ void sysbus_mmio_map(SysBusDevice *dev, int n, hwaddr addr)
     sysbus_mmio_map_common(dev, n, addr, false, 0);
 }
 
-int sysbus_mmio_map_name(SysBusDevice *dev, const char *name, hwaddr addr)
-{
-    for (int i = 0; i < dev->num_mmio; i++) {
-        if (!strcmp(dev->mmio[i].memory->name, name)) {
-            sysbus_mmio_map(dev, i, addr);
-            return i;
-        }
-    }
-    return -1;
-}
-
 void sysbus_mmio_map_overlap(SysBusDevice *dev, int n, hwaddr addr,
                              int priority)
 {
     sysbus_mmio_map_common(dev, n, addr, true, priority);
 }
 
-/* Request an IRQ source.  The actual IRQ object may be populated later.  */
 void sysbus_init_irq(SysBusDevice *dev, qemu_irq *p)
 {
     qdev_init_gpio_out_named(DEVICE(dev), p, SYSBUS_DEVICE_GPIO_IRQ, 1);
 }
 
-/* Pass IRQs from a target device.  */
 void sysbus_pass_irq(SysBusDevice *dev, SysBusDevice *target)
 {
     qdev_pass_gpios(DEVICE(target), DEVICE(dev), SYSBUS_DEVICE_GPIO_IRQ);
@@ -184,7 +148,7 @@ void sysbus_init_mmio(SysBusDevice *dev, MemoryRegion *memory)
     dev->mmio[n].memory = memory;
 }
 
-MemoryRegion *sysbus_mmio_get_region(const SysBusDevice *dev, int n)
+MemoryRegion *sysbus_mmio_get_region(SysBusDevice *dev, int n)
 {
     assert(n >= 0 && n < QDEV_MAX_MMIO);
     return dev->mmio[n].memory;
@@ -200,11 +164,6 @@ void sysbus_init_ioports(SysBusDevice *dev, uint32_t ioport, uint32_t size)
     }
 }
 
-/* The purpose of preserving this empty realize function
- * is to prevent the parent_realize field of some subclasses
- * from being set to NULL to break the normal init/realize
- * of some devices.
- */
 static void sysbus_device_realize(DeviceState *dev, Error **errp)
 {
 }
@@ -285,21 +244,11 @@ static char *sysbus_get_fw_dev_path(DeviceState *dev)
     return g_strdup(qdev_fw_name(dev));
 }
 
-static void sysbus_device_class_init(ObjectClass *klass, const void *data)
+static void sysbus_device_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *k = DEVICE_CLASS(klass);
     k->realize = sysbus_device_realize;
     k->bus_type = TYPE_SYSTEM_BUS;
-    /*
-     * device_add plugs devices into a suitable bus.  For "real" buses,
-     * that actually connects the device.  For sysbus, the connections
-     * need to be made separately, and device_add can't do that.  The
-     * device would be left unconnected, and will probably not work
-     *
-     * However, a few machines can handle device_add/-device with
-     * a few specific sysbus devices. In those cases, the device
-     * subclass needs to override it and set user_creatable=true.
-     */
     k->user_creatable = false;
 }
 
@@ -307,10 +256,6 @@ static BusState *main_system_bus;
 
 static void main_system_bus_create(void)
 {
-    /*
-     * assign main_system_bus before qbus_init()
-     * in order to make "if (bus != sysbus_get_default())" work
-     */
     main_system_bus = g_new0(BusState, 1);
     qbus_init(main_system_bus, sizeof(BusState),
               TYPE_SYSTEM_BUS, NULL, "main-system-bus");
@@ -325,8 +270,7 @@ BusState *sysbus_get_default(void)
     return main_system_bus;
 }
 
-static void dynamic_sysbus_device_class_init(ObjectClass *klass,
-                                             const void *data)
+static void dynamic_sysbus_device_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *k = DEVICE_CLASS(klass);
 

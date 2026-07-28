@@ -1,26 +1,3 @@
-/*
- * QEMU keysym to keycode conversion using rdesktop keymaps
- *
- * Copyright (c) 2004 Johannes Schindelin
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/datadir.h"
@@ -86,25 +63,19 @@ static int parse_keyboard_layout(kbd_layout_t *k,
                                  const name2keysym_t *table,
                                  const char *language, Error **errp)
 {
-    g_autofree char *filename = NULL;
     int ret;
     FILE *f;
+    char * filename;
     char line[1024];
     char keyname[64];
     int len;
 
     filename = qemu_find_file(QEMU_FILE_TYPE_KEYMAP, language);
-    if (!filename) {
-        error_setg(errp, "could not find keymap file for language '%s'",
-                   language);
-        return -1;
-    }
-
     trace_keymap_parse(filename);
-
-    f = fopen(filename, "r");
+    f = filename ? fopen(filename, "r") : NULL;
+    g_free(filename);
     if (!f) {
-        error_setg_file_open(errp, errno, filename);
+        error_setg(errp, "could not read keymap file: '%s'", language);
         return -1;
     }
 
@@ -139,7 +110,6 @@ static int parse_keyboard_layout(kbd_layout_t *k,
                 int keysym;
                 keysym = get_keysym(table, keyname);
                 if (keysym == 0) {
-                    /* warn_report("unknown keysym %s", line);*/
                 } else {
                     const char *rest = line + offset + 1;
                     int keycode = strtol(rest, NULL, 0);
@@ -178,24 +148,17 @@ out:
     return ret;
 }
 
-void kbd_layout_free(kbd_layout_t *k)
-{
-    if (!k) {
-        return;
-    }
-    g_hash_table_unref(k->hash);
-    g_free(k);
-}
 
-kbd_layout_t *kbd_layout_new(const name2keysym_t *table,
-                             const char *language, Error **errp)
+kbd_layout_t *init_keyboard_layout(const name2keysym_t *table,
+                                   const char *language, Error **errp)
 {
     kbd_layout_t *k;
 
     k = g_new0(kbd_layout_t, 1);
-    k->hash = g_hash_table_new_full(NULL, NULL, NULL, g_free);
+    k->hash = g_hash_table_new(NULL, NULL);
     if (parse_keyboard_layout(k, table, language, errp) < 0) {
-        kbd_layout_free(k);
+        g_hash_table_unref(k->hash);
+        g_free(k);
         return NULL;
     }
     return k;
@@ -227,13 +190,7 @@ int keysym2scancode(kbd_layout_t *k, int keysym,
         return keysym2code->keycodes[0];
     }
 
-    /* We have multiple keysym -> keycode mappings. */
     if (down) {
-        /*
-         * On keydown: Check whenever we find one mapping where the
-         * modifier state of the mapping matches the current user
-         * interface modifier state.  If so, prefer that one.
-         */
         mods = 0;
         if (kbd && qkbd_state_modifier_get(kbd, QKBD_MOD_SHIFT)) {
             mods |= SCANCODE_SHIFT;
@@ -251,13 +208,10 @@ int keysym2scancode(kbd_layout_t *k, int keysym,
             }
         }
     } else {
-        /*
-         * On keyup: Try find a key which is actually down.
-         */
         for (i = 0; i < keysym2code->count; i++) {
-            unsigned int lnx = qemu_input_key_number_to_linux
+            QKeyCode qcode = qemu_input_key_number_to_qcode
                 (keysym2code->keycodes[i]);
-            if (kbd && qkbd_state_key_get(kbd, lnx)) {
+            if (kbd && qkbd_state_key_get(kbd, qcode)) {
                 return keysym2code->keycodes[i];
             }
         }

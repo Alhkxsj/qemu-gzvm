@@ -1,38 +1,28 @@
 #ifndef SHPC_H
 #define SHPC_H
 
-#include "system/memory.h"
-#include "hw/core/hotplug.h"
+#include "exec/memory.h"
+#include "hw/hotplug.h"
 #include "hw/pci/pci_device.h"
 #include "migration/vmstate.h"
 
 struct SHPCDevice {
-    /* Capability offset in device's config space */
     int cap;
 
-    /* # of hot-pluggable slots */
     int nslots;
 
-    /* SHPC WRS: working register set */
     uint8_t *config;
 
-    /* Used to enable checks on load. Note that writable bits are
-     * never checked even if set in cmask. */
     uint8_t *cmask;
 
-    /* Used to implement R/W bytes */
     uint8_t *wmask;
 
-    /* Used to implement RW1C(Write 1 to Clear) bytes */
     uint8_t *w1cmask;
 
-    /* MMIO for the SHPC BAR */
     MemoryRegion mmio;
 
-    /* Bus controlled by this SHPC */
     PCIBus *sec_bus;
 
-    /* MSI already requested for this event */
     int msi_requested;
 };
 

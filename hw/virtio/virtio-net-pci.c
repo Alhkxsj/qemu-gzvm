@@ -1,23 +1,7 @@
-/*
- * Virtio net PCI Bindings
- *
- * Copyright IBM, Corp. 2007
- * Copyright (c) 2009 CodeSourcery
- *
- * Authors:
- *  Anthony Liguori   <aliguori@us.ibm.com>
- *  Paul Brook        <paul@codesourcery.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2.  See
- * the COPYING file in the top-level directory.
- *
- * Contributions after 2012-01-13 are licensed under the terms of the
- * GNU GPL, version 2 or (at your option) any later version.
- */
 
 #include "qemu/osdep.h"
 
-#include "hw/core/qdev-properties.h"
+#include "hw/qdev-properties.h"
 #include "hw/virtio/virtio-net.h"
 #include "hw/virtio/virtio-pci.h"
 #include "qapi/error.h"
@@ -26,9 +10,6 @@
 
 typedef struct VirtIONetPCI VirtIONetPCI;
 
-/*
- * virtio-net-pci: This extends VirtioPCIProxy.
- */
 #define TYPE_VIRTIO_NET_PCI "virtio-net-pci-base"
 DECLARE_INSTANCE_CHECKER(VirtIONetPCI, VIRTIO_NET_PCI,
                          TYPE_VIRTIO_NET_PCI)
@@ -63,7 +44,7 @@ static void virtio_net_pci_realize(VirtIOPCIProxy *vpci_dev, Error **errp)
     qdev_realize(vdev, BUS(&vpci_dev->bus), errp);
 }
 
-static void virtio_net_pci_class_init(ObjectClass *klass, const void *data)
+static void virtio_net_pci_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
@@ -74,7 +55,6 @@ static void virtio_net_pci_class_init(ObjectClass *klass, const void *data)
     k->device_id = PCI_DEVICE_ID_VIRTIO_NET;
     k->revision = VIRTIO_PCI_ABI_VERSION;
     k->class_id = PCI_CLASS_NETWORK_ETHERNET;
-    k->sriov_vf_user_creatable = true;
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
     device_class_set_props(dc, virtio_net_properties);
     vpciklass->realize = virtio_net_pci_realize;
@@ -93,8 +73,6 @@ static void virtio_net_pci_instance_init(Object *obj)
 static const VirtioPCIDeviceTypeInfo virtio_net_pci_info = {
     .base_name             = TYPE_VIRTIO_NET_PCI,
     .generic_name          = "virtio-net-pci",
-    .transitional_name     = "virtio-net-pci-transitional",
-    .non_transitional_name = "virtio-net-pci-non-transitional",
     .instance_size = sizeof(VirtIONetPCI),
     .instance_init = virtio_net_pci_instance_init,
     .class_init    = virtio_net_pci_class_init,

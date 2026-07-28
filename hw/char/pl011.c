@@ -1,31 +1,13 @@
-/*
- * Arm PrimeCell PL011 UART
- *
- * Copyright (c) 2006 CodeSourcery.
- * Written by Paul Brook
- *
- * This code is licensed under the GPL.
- */
 
-/*
- * QEMU interface:
- *  + sysbus MMIO region 0: device registers
- *  + sysbus IRQ 0: UARTINTR (combined interrupt line)
- *  + sysbus IRQ 1: UARTRXINTR (receive FIFO interrupt line)
- *  + sysbus IRQ 2: UARTTXINTR (transmit FIFO interrupt line)
- *  + sysbus IRQ 3: UARTRTINTR (receive timeout interrupt line)
- *  + sysbus IRQ 4: UARTMSINTR (momem status interrupt line)
- *  + sysbus IRQ 5: UARTEINTR (error interrupt line)
- */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/char/pl011.h"
-#include "hw/core/irq.h"
-#include "hw/core/sysbus.h"
-#include "hw/core/qdev-clock.h"
-#include "hw/core/qdev-properties.h"
-#include "hw/core/qdev-properties-system.h"
+#include "hw/irq.h"
+#include "hw/sysbus.h"
+#include "hw/qdev-clock.h"
+#include "hw/qdev-properties.h"
+#include "hw/qdev-properties-system.h"
 #include "migration/vmstate.h"
 #include "chardev/char-fe.h"
 #include "chardev/char-serial.h"
@@ -48,7 +30,6 @@ DeviceState *pl011_create(hwaddr addr, qemu_irq irq, Chardev *chr)
     return dev;
 }
 
-/* Flag Register, UARTFR */
 #define PL011_FLAG_RI   0x100
 #define PL011_FLAG_TXFE 0x80
 #define PL011_FLAG_RXFF 0x40
@@ -58,10 +39,8 @@ DeviceState *pl011_create(hwaddr addr, qemu_irq irq, Chardev *chr)
 #define PL011_FLAG_DSR  0x02
 #define PL011_FLAG_CTS  0x01
 
-/* Data Register, UARTDR */
 #define DR_BE   (1 << 10)
 
-/* Interrupt status bits in UARTRIS, UARTMIS, UARTIMSC */
 #define INT_OE (1 << 10)
 #define INT_BE (1 << 9)
 #define INT_PE (1 << 8)
@@ -76,11 +55,9 @@ DeviceState *pl011_create(hwaddr addr, qemu_irq irq, Chardev *chr)
 #define INT_E (INT_OE | INT_BE | INT_PE | INT_FE)
 #define INT_MS (INT_RI | INT_DSR | INT_DCD | INT_CTS)
 
-/* Line Control Register, UARTLCR_H */
 #define LCR_FEN     (1 << 4)
 #define LCR_BRK     (1 << 0)
 
-/* Control Register, UARTCR */
 #define CR_OUT2     (1 << 13)
 #define CR_OUT1     (1 << 12)
 #define CR_RTS      (1 << 11)
@@ -90,10 +67,8 @@ DeviceState *pl011_create(hwaddr addr, qemu_irq irq, Chardev *chr)
 #define CR_LBE      (1 << 7)
 #define CR_UARTEN   (1 << 0)
 
-/* Integer Baud Rate Divider, UARTIBRD */
 #define IBRD_MASK 0xffff
 
-/* Fractional Baud Rate Divider, UARTFBRD */
 #define FBRD_MASK 0x3f
 
 static const unsigned char pl011_id_arm[8] =
@@ -119,7 +94,6 @@ static const char *pl011_regname(hwaddr offset)
     return "UNKN";
 }
 
-/* Which bits in the interrupt status matter for each outbound IRQ line ? */
 static const uint32_t irqmask[] = {
     INT_E | INT_MS | INT_RT | INT_TX | INT_RX, /* combined IRQ */
     INT_RX,
@@ -153,7 +127,6 @@ static bool pl011_is_fifo_enabled(PL011State *s)
 
 static inline unsigned pl011_get_fifo_depth(PL011State *s)
 {
-    /* Note: FIFO depth is expected to be power-of-2 */
     return pl011_is_fifo_enabled(s) ? PL011_FIFO_DEPTH : 1;
 }
 
@@ -162,14 +135,12 @@ static inline void pl011_reset_rx_fifo(PL011State *s)
     s->read_count = 0;
     s->read_pos = 0;
 
-    /* Reset FIFO flags */
     s->flags &= ~PL011_FLAG_RXFF;
     s->flags |= PL011_FLAG_RXFE;
 }
 
 static inline void pl011_reset_tx_fifo(PL011State *s)
 {
-    /* Reset FIFO flags */
     s->flags &= ~PL011_FLAG_TXFF;
     s->flags |= PL011_FLAG_TXFE;
 }
@@ -202,58 +173,20 @@ static void pl011_loopback_tx(PL011State *s, uint32_t value)
         return;
     }
 
-    /*
-     * Caveat:
-     *
-     * In real hardware, TX loopback happens at the serial-bit level
-     * and then reassembled by the RX logics back into bytes and placed
-     * into the RX fifo. That is, loopback happens after TX fifo.
-     *
-     * Because the real hardware TX fifo is time-drained at the frame
-     * rate governed by the configured serial format, some loopback
-     * bytes in TX fifo may still be able to get into the RX fifo
-     * that could be full at times while being drained at software
-     * pace.
-     *
-     * In such scenario, the RX draining pace is the major factor
-     * deciding which loopback bytes get into the RX fifo, unless
-     * hardware flow-control is enabled.
-     *
-     * For simplicity, the above described is not emulated.
-     */
     pl011_fifo_rx_put(s, value);
 }
 
 static void pl011_write_txdata(PL011State *s, uint8_t data)
 {
     if (!(s->cr & CR_UARTEN)) {
-        /*
-         * Only log this message once, not every time the guest outputs:
-         * otherwise we would flood the logs with this message, making
-         * harder to debug guests. (Some very popular guests like Linux
-         * don't actively enable the UART.)
-         */
-        if (!s->logged_disabled_uart) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "PL011 data written to disabled UART\n");
-            s->logged_disabled_uart = true;
-        }
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "PL011 data written to disabled UART\n");
     }
     if (!(s->cr & CR_TXE)) {
-        /*
-         * We don't bother with the only-log-once machinery for this check
-         * because TXE is enabled by default from PL011 reset, so there
-         * isn't likely to be existing in-the-wild guest code that trips
-         * over this one.
-         */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "PL011 data written to disabled TX UART\n");
     }
 
-    /*
-     * XXX this blocks entire thread. Rewrite to use
-     * qemu_chr_fe_write and background I/O callbacks
-     */
     qemu_chr_fe_write_all(&s->chr, &data, 1);
     pl011_loopback_tx(s, data);
     s->int_level |= INT_TX;
@@ -347,10 +280,6 @@ static uint64_t pl011_read(void *opaque, hwaddr offset,
 static void pl011_set_read_trigger(PL011State *s)
 {
 #if 0
-    /* The docs say the RX interrupt is triggered when the FIFO exceeds
-       the threshold.  However linux only reads the FIFO in response to an
-       interrupt.  Triggering the interrupt when the FIFO is non-empty seems
-       to make things work.  */
     if (s->lcr & LCR_FEN)
         s->read_trigger = (s->ifl >> 1) & 0x1c;
     else
@@ -385,19 +314,6 @@ static void pl011_loopback_mdmctrl(PL011State *s)
         return;
     }
 
-    /*
-     * Loopback software-driven modem control outputs to modem status inputs:
-     *   FR.RI  <= CR.Out2
-     *   FR.DCD <= CR.Out1
-     *   FR.CTS <= CR.RTS
-     *   FR.DSR <= CR.DTR
-     *
-     * The loopback happens immediately even if this call is triggered
-     * by setting only CR.LBE.
-     *
-     * CTS/RTS updates due to enabled hardware flow controls are not
-     * dealt with here.
-     */
     cr = s->cr;
     fr = s->flags & ~(PL011_FLAG_RI | PL011_FLAG_DCD |
                       PL011_FLAG_DSR | PL011_FLAG_CTS);
@@ -406,7 +322,6 @@ static void pl011_loopback_mdmctrl(PL011State *s)
     fr |= (cr & CR_RTS)  ? PL011_FLAG_CTS : 0;
     fr |= (cr & CR_DTR)  ? PL011_FLAG_DSR : 0;
 
-    /* Change interrupts based on updated FR */
     il = s->int_level & ~(INT_DSR | INT_DCD | INT_CTS | INT_RI);
     il |= (fr & PL011_FLAG_DSR) ? INT_DSR : 0;
     il |= (fr & PL011_FLAG_DCD) ? INT_DCD : 0;
@@ -442,7 +357,6 @@ static void pl011_write(void *opaque, hwaddr offset,
         s->rsr = 0;
         break;
     case 6: /* UARTFR */
-        /* Writes to Flag register are ignored.  */
         break;
     case 8: /* UARTILPR */
         s->ilpr = value;
@@ -456,7 +370,6 @@ static void pl011_write(void *opaque, hwaddr offset,
         pl011_trace_baudrate_change(s);
         break;
     case 11: /* UARTLCR_H */
-        /* Reset the FIFO state on FIFO enable or disable */
         if ((s->lcr ^ value) & LCR_FEN) {
             pl011_reset_rx_fifo(s);
             pl011_reset_tx_fifo(s);
@@ -471,11 +384,6 @@ static void pl011_write(void *opaque, hwaddr offset,
         pl011_set_read_trigger(s);
         break;
     case 12: /* UARTCR */
-        /* ??? Need to implement the enable bit.  */
-        if ((s->cr ^ value) & CR_UARTEN) {
-            /* Re-arm the log warning when the guest toggles UARTEN */
-            s->logged_disabled_uart = false;
-        }
         s->cr = value;
         pl011_loopback_mdmctrl(s);
         break;
@@ -509,15 +417,6 @@ static int pl011_can_receive(void *opaque)
     unsigned fifo_depth = pl011_get_fifo_depth(s);
     unsigned fifo_available = fifo_depth - s->read_count;
 
-    /*
-     * In theory we should check the UART and RX enable bits here and
-     * return 0 if they are not set (so the guest can't receive data
-     * until you have enabled the UART). In practice we suspect there
-     * is at least some guest code out there which has been tested only
-     * on QEMU and which never bothers to enable the UART because we
-     * historically never enforced that. So we effectively keep the
-     * UART continuously enabled regardless of the enable bits.
-     */
 
     trace_pl011_can_receive(s->lcr, s->read_count, fifo_depth, fifo_available);
     return fifo_available;
@@ -526,11 +425,6 @@ static int pl011_can_receive(void *opaque)
 static void pl011_receive(void *opaque, const uint8_t *buf, int size)
 {
     trace_pl011_receive(size);
-    /*
-     * In loopback mode, the RX input signal is internally disconnected
-     * from the entire receiving logics; thus, all inputs are ignored,
-     * and BREAK detection on RX input signal is also not performed.
-     */
     if (pl011_loopback_enabled(opaque)) {
         return;
     }
@@ -557,7 +451,7 @@ static void pl011_clock_update(void *opaque, ClockEvent event)
 static const MemoryRegionOps pl011_ops = {
     .read = pl011_read,
     .write = pl011_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
+    .endianness = DEVICE_NATIVE_ENDIAN,
     .impl.min_access_size = 4,
     .impl.max_access_size = 4,
 };
@@ -584,19 +478,12 @@ static int pl011_post_load(void *opaque, int version_id)
 {
     PL011State* s = opaque;
 
-    /* Sanity-check input state */
     if (s->read_pos >= ARRAY_SIZE(s->read_fifo) ||
         s->read_count > ARRAY_SIZE(s->read_fifo)) {
         return -1;
     }
 
     if (!pl011_is_fifo_enabled(s) && s->read_count > 0 && s->read_pos > 0) {
-        /*
-         * Older versions of PL011 didn't ensure that the single
-         * character in the FIFO in FIFO-disabled mode is in
-         * element 0 of the array; convert to follow the current
-         * code's assumptions.
-         */
         s->read_fifo[0] = s->read_fifo[s->read_pos];
         s->read_pos = 0;
     }
@@ -684,12 +571,11 @@ static void pl011_reset(DeviceState *dev)
     s->ifl = 0x12;
     s->cr = 0x300;
     s->flags = 0;
-    s->logged_disabled_uart = false;
     pl011_reset_rx_fifo(s);
     pl011_reset_tx_fifo(s);
 }
 
-static void pl011_class_init(ObjectClass *oc, const void *data)
+static void pl011_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 

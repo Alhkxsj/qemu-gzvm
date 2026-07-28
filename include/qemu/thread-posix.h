@@ -13,10 +13,6 @@ struct QemuMutex {
     bool initialized;
 };
 
-/*
- * QemuRecMutex cannot be a typedef of QemuMutex lest we have two
- * compatible cases in _Generic.  See qemu/lockable.h.
- */
 typedef struct QemuRecMutex {
     QemuMutex m;
 } QemuRecMutex;
@@ -30,6 +26,15 @@ struct QemuSemaphore {
     QemuMutex mutex;
     QemuCond cond;
     unsigned int count;
+};
+
+struct QemuEvent {
+#ifndef __linux__
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+#endif
+    unsigned value;
+    bool initialized;
 };
 
 struct QemuThread {

@@ -1,8 +1,3 @@
-/*
- * This work is licensed under the terms of the GNU GPL, version 2 or
- * (at your option) any later version.  See the COPYING file in the
- * top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -11,14 +6,13 @@
 #include "trace.h"
 
 #include "hw/virtio/virtio.h"
-#include "hw/core/qdev-properties.h"
+#include "hw/qdev-properties.h"
 #include "hw/virtio/virtio-input.h"
 
 #include "standard-headers/linux/input.h"
 
 #define VIRTIO_INPUT_VM_VERSION 1
 
-/* ----------------------------------------------------------------- */
 
 void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
 {
@@ -29,7 +23,6 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
         return;
     }
 
-    /* queue up events ... */
     if (vinput->qindex == vinput->qsize) {
         vinput->qsize++;
         vinput->queue = g_realloc(vinput->queue, vinput->qsize *
@@ -37,13 +30,11 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
     }
     vinput->queue[vinput->qindex++].event = *event;
 
-    /* ... until we see a report sync ... */
     if (event->type != cpu_to_le16(EV_SYN) ||
         event->code != cpu_to_le16(SYN_REPORT)) {
         return;
     }
 
-    /* ... then check available space ... */
     for (i = 0; i < vinput->qindex; i++) {
         elem = virtqueue_pop(vinput->evt, sizeof(VirtQueueElement));
         if (!elem) {
@@ -57,7 +48,6 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
         vinput->queue[i].elem = elem;
     }
 
-    /* ... and finally pass them to the guest */
     for (i = 0; i < vinput->qindex; i++) {
         elem = vinput->queue[i].elem;
         len = iov_from_buf(elem->in_sg, elem->in_num,
@@ -71,7 +61,6 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
 
 static void virtio_input_handle_evt(VirtIODevice *vdev, VirtQueue *vq)
 {
-    /* nothing */
 }
 
 static void virtio_input_handle_sts(VirtIODevice *vdev, VirtQueue *vq)
@@ -121,7 +110,6 @@ void virtio_input_add_config(VirtIOInput *vinput,
     VirtIOInputConfig *cfg;
 
     if (virtio_input_find_config(vinput, config->select, config->subsel)) {
-        /* should not happen */
         fprintf(stderr, "%s: duplicate config: %d/%d\n",
                 __func__, config->select, config->subsel);
         abort();
@@ -189,7 +177,7 @@ static uint64_t virtio_input_get_features(VirtIODevice *vdev, uint64_t f,
     return f;
 }
 
-static int virtio_input_set_status(VirtIODevice *vdev, uint8_t val)
+static void virtio_input_set_status(VirtIODevice *vdev, uint8_t val)
 {
     VirtIOInputClass *vic = VIRTIO_INPUT_GET_CLASS(vdev);
     VirtIOInput *vinput = VIRTIO_INPUT(vdev);
@@ -202,7 +190,6 @@ static int virtio_input_set_status(VirtIODevice *vdev, uint8_t val)
             }
         }
     }
-    return 0;
 }
 
 static void virtio_input_reset(VirtIODevice *vdev)
@@ -305,13 +292,14 @@ static const Property virtio_input_properties[] = {
     DEFINE_PROP_STRING("serial", VirtIOInput, serial),
 };
 
-static void virtio_input_class_init(ObjectClass *klass, const void *data)
+static void virtio_input_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     VirtioDeviceClass *vdc = VIRTIO_DEVICE_CLASS(klass);
 
     device_class_set_props(dc, virtio_input_properties);
     dc->vmsd           = &vmstate_virtio_input;
+    dc->user_creatable = false;
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
     vdc->realize      = virtio_input_device_realize;
     vdc->unrealize    = virtio_input_device_unrealize;
@@ -332,7 +320,6 @@ static const TypeInfo virtio_input_info = {
     .instance_finalize = virtio_input_finalize,
 };
 
-/* ----------------------------------------------------------------- */
 
 static void virtio_register_types(void)
 {

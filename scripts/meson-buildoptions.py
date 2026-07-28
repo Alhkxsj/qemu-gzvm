@@ -1,39 +1,16 @@
 #! /usr/bin/env python3
 
-# Generate configure command line options handling code, based on Meson's
-# user build options introspection data
-#
-# Copyright (C) 2021 Red Hat, Inc.
-#
-# Author: Paolo Bonzini <pbonzini@redhat.com>
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2, or (at your option)
-# any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import json
 import textwrap
 import shlex
 import sys
 
-# Options with nonstandard names (e.g. --with/--without) or OS-dependent
-# defaults.  Try not to add any.
 SKIP_OPTIONS = {
     "default_devices",
     "fuzzing_engine",
 }
 
-# Options whose name doesn't match the option for backwards compatibility
-# reasons, because Meson gives them a funny name, or both
 OPTION_NAMES = {
     "b_coverage": "gcov",
     "b_lto": "lto",
@@ -47,21 +24,11 @@ OPTION_NAMES = {
     "trace_file": "with-trace-file",
 }
 
-# Options that configure autodetects, even though meson defines them as boolean
 AUTO_OPTIONS = {
     "plugins",
     "werror",
 }
 
-# Options that configure prints help for, so we can skip
-CONFIGURE_HELP = {
-    "gdb",
-}
-
-# Builtin options that should be definable via configure.  Some of the others
-# we really do not want (e.g. c_args is defined via the native file, not
-# via -D, because it's a mix of CFLAGS and --extra-cflags); for specific
-# cases "../configure -D" can be used as an escape hatch.
 BUILTIN_OPTIONS = {
     "b_coverage",
     "b_lto",
@@ -83,8 +50,6 @@ BUILTIN_OPTIONS = {
 LINE_WIDTH = 76
 
 
-# Convert the default value of an option to the string used in
-# the help message
 def get_help(opt):
     if opt["name"] == "libdir":
         return 'system default'
@@ -116,19 +81,15 @@ def help_line(left, opt, indent, long):
     right = f'{opt["description"]}'
     if long:
         value = get_help(opt)
-        if value not in {"", "auto"}:
+        if value != "auto" and value != "":
             right += f" [{value}]"
     if "choices" in opt and long:
         choices = "/".join(sorted(opt["choices"]))
         right += f" (choices: {choices})"
-    for line in wrap("  " + left, right, indent):
-        sh_print(line)
+    for x in wrap("  " + left, right, indent):
+        sh_print(x)
 
 
-# Return whether the option (a dictionary) can be used with
-# arguments.  Booleans can never be used with arguments;
-# combos allow an argument only if they accept other values
-# than "auto", "enabled", and "disabled".
 def allow_arg(opt):
     if opt["type"] == "boolean":
         return False
@@ -137,10 +98,6 @@ def allow_arg(opt):
     return not (set(opt["choices"]) <= {"auto", "disabled", "enabled"})
 
 
-# Return whether the option (a dictionary) can be used without
-# arguments.  Booleans can only be used without arguments;
-# combos require an argument if they accept neither "enabled"
-# nor "disabled"
 def require_arg(opt):
     if opt["type"] == "boolean":
         return False
@@ -149,18 +106,18 @@ def require_arg(opt):
     return not ({"enabled", "disabled"}.intersection(opt["choices"]))
 
 
-def filter_options(opt):
-    if ":" in opt["name"]:
+def filter_options(json):
+    if ":" in json["name"]:
         return False
-    if opt["section"] == "user":
-        return opt["name"] not in SKIP_OPTIONS
+    if json["section"] == "user":
+        return json["name"] not in SKIP_OPTIONS
     else:
-        return opt["name"] in BUILTIN_OPTIONS
+        return json["name"] in BUILTIN_OPTIONS
 
 
-def load_options(opts):
-    opts = [opt for opt in opts if filter_options(opt)]
-    return sorted(opts, key=lambda opt: opt["name"])
+def load_options(json):
+    json = [x for x in json if filter_options(x)]
+    return sorted(json, key=lambda x: x["name"])
 
 
 def cli_option(opt):
@@ -192,11 +149,7 @@ def print_help(options):
     feature_opts = []
     for opt in sorted(options, key=cli_help_key):
         key = cli_help_key(opt)
-        # The first section includes options that have an arguments,
-        # and booleans (i.e., only one of enable/disable makes sense)
-        if opt["name"] in CONFIGURE_HELP:
-            pass
-        elif require_arg(opt):
+        if require_arg(opt):
             metavar = cli_metavar(opt)
             left = f"--{key}={metavar}"
             help_line(left, opt, 27, True)
@@ -230,7 +183,7 @@ def print_parse(options):
         key = cli_option(opt)
         name = opt["name"]
         if require_arg(opt):
-            if opt["type"] == "array" and "choices" not in opt:
+            if opt["type"] == "array" and not "choices" in opt:
                 print(f'    --{key}=*) quote_sh "-D{name}=$(meson_option_build_array $2)" ;;')
             else:
                 print(f'    --{key}=*) quote_sh "-D{name}=$2" ;;')
@@ -248,19 +201,14 @@ def print_parse(options):
     print("  esac")
     print("}")
 
-
-def main():
-    json_data = sys.stdin.read()
-    try:
-        options = load_options(json.loads(json_data))
-    except:
-        print("Failure in scripts/meson-buildoptions.py parsing stdin as json",
-              file=sys.stderr)
-        print(json_data, file=sys.stderr)
-        sys.exit(1)
-    print("# This file is generated by meson-buildoptions.py, do not edit!")
-    print_help(options)
-    print_parse(options)
-
-
-sys.exit(main())
+json_data = sys.stdin.read()
+try:
+    options = load_options(json.loads(json_data))
+except:
+    print("Failure in scripts/meson-buildoptions.py parsing stdin as json",
+          file=sys.stderr)
+    print(json_data, file=sys.stderr)
+    sys.exit(1)
+print("# This file is generated by meson-buildoptions.py, do not edit!")
+print_help(options)
+print_parse(options)

@@ -1,44 +1,19 @@
-/*
- * QEMU monitor.c for ARM.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
-#include "qemu/target-info.h"
-#include "hw/core/boards.h"
-#include "kvm_arm.h"
-#include "system/gzvm.h"
+#include "hw/boards.h"
+#include "target/arm/cpu.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qapi/qobject-input-visitor.h"
-#include "qapi/qapi-commands-machine.h"
-#include "qapi/qapi-commands-misc-arm.h"
+#include "qapi/qapi-commands-machine-target.h"
+#include "qapi/qapi-commands-misc-target.h"
 #include "qobject/qdict.h"
 #include "qom/qom-qobject.h"
-#include "cpu.h"
 
 static GICCapability *gic_cap_new(int version)
 {
     GICCapability *cap = g_new0(GICCapability, 1);
     cap->version = version;
-    /* by default, support none */
     cap->emulated = false;
     cap->kernel = false;
     return cap;
@@ -52,9 +27,7 @@ GICCapabilityList *qmp_query_gic_capabilities(Error **errp)
     v2->emulated = true;
     v3->emulated = true;
 
-    if (kvm_enabled()) {
-        arm_gic_cap_kvm_probe(v2, v3);
-    }
+    
 
     QAPI_LIST_PREPEND(head, v2);
     QAPI_LIST_PREPEND(head, v3);
@@ -64,18 +37,11 @@ GICCapabilityList *qmp_query_gic_capabilities(Error **errp)
 
 QEMU_BUILD_BUG_ON(ARM_MAX_VQ > 16);
 
-/*
- * These are cpu model features we want to advertise. The order here
- * matters as this is the order in which qmp_query_cpu_model_expansion
- * will attempt to set them. If there are dependencies between features,
- * then the order that considers those dependencies must be used.
- */
 static const char *cpu_model_advertised_features[] = {
     "aarch64", "pmu", "sve",
     "sve128", "sve256", "sve384", "sve512",
     "sve640", "sve768", "sve896", "sve1024", "sve1152", "sve1280",
     "sve1408", "sve1536", "sve1664", "sve1792", "sve1920", "sve2048",
-    "kvm-no-adjvtime", "kvm-steal-time",
     "pauth", "pauth-impdef", "pauth-qarma3", "pauth-qarma5",
     NULL
 };
@@ -97,38 +63,11 @@ CpuModelExpansionInfo *qmp_query_cpu_model_expansion(CpuModelExpansionType type,
         return NULL;
     }
 
-    if (!kvm_enabled() && !gzvm_enabled() && !strcmp(model->name, "host")) {
-        error_setg(errp, "The CPU type '%s' requires KVM or GZVM", model->name);
-        return NULL;
-    }
-
     oc = cpu_class_by_name(TYPE_ARM_CPU, model->name);
     if (!oc) {
         error_setg(errp, "The CPU type '%s' is not a recognized ARM CPU type",
                    model->name);
         return NULL;
-    }
-
-    if (kvm_enabled() || gzvm_enabled()) {
-        bool supported = false;
-
-        if (!strcmp(model->name, "host") || !strcmp(model->name, "max")) {
-            supported = true;
-        } else if (current_machine->cpu_type) {
-            const char *cpu_type = current_machine->cpu_type;
-            int len = strlen(cpu_type) - strlen(ARM_CPU_TYPE_SUFFIX);
-
-            if (strlen(model->name) == len &&
-                !strncmp(model->name, cpu_type, len)) {
-                /* Accelerator is enabled and we're using this type, so it works. */
-                supported = true;
-            }
-        }
-        if (!supported) {
-            error_setg(errp, "We cannot guarantee the CPU type '%s' works "
-                             "with KVM/GZVM on this host", model->name);
-            return NULL;
-        }
     }
 
     obj = object_new(object_class_get_name(oc));
@@ -221,7 +160,7 @@ CpuDefinitionInfoList *qmp_query_cpu_definitions(Error **errp)
     CpuDefinitionInfoList *cpu_list = NULL;
     GSList *list;
 
-    list = object_class_get_list(target_cpu_type(), false);
+    list = object_class_get_list(TYPE_ARM_CPU, false);
     g_slist_foreach(list, arm_cpu_add_definition, &cpu_list);
     g_slist_free(list);
 

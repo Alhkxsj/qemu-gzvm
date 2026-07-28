@@ -1,43 +1,9 @@
-/*
- *  Castagnoli CRC32C Checksum Algorithm
- *
- *  Polynomial: 0x1EDC6F41
- *
- *  Castagnoli93: Guy Castagnoli and Stefan Braeuer and Martin Herrman
- *               "Optimization of Cyclic Redundancy-Check Codes with 24
- *                 and 32 Parity Bits",IEEE Transactions on Communication,
- *                Volume 41, Number 6, June 1993
- *
- *  Copyright (c) 2013 Red Hat, Inc.,
- *
- *  Authors:
- *   Jeff Cody <jcody@redhat.com>
- *
- *  Based on the Linux kernel cryptographic crc32c module,
- *
- *  Copyright (c) 2004 Cisco Systems, Inc.
- *  Copyright (c) 2008 Herbert Xu <herbert@gondor.apana.org.au>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
- */
 
 #include "qemu/osdep.h"
 #include "qemu/crc32c.h"
 
-/*
- * This is the CRC-32C table
- * Generated with:
- * width = 32 bits
- * poly = 0x1EDC6F41
- * reflect input bytes = true
- * reflect output bytes = true
- */
 
-const uint32_t crc32c_table[256] = {
+static const uint32_t crc32c_table[256] = {
     0x00000000L, 0xF26B8303L, 0xE13B70F7L, 0x1350F3F4L,
     0xC79A971FL, 0x35F1141CL, 0x26A1E7E8L, 0xD4CA64EBL,
     0x8AD958CFL, 0x78B2DBCCL, 0x6BE22838L, 0x9989AB3BL,

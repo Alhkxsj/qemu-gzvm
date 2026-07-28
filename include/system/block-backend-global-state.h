@@ -1,26 +1,9 @@
-/*
- * QEMU Block backends
- *
- * Copyright (C) 2014-2016 Red Hat, Inc.
- *
- * Authors:
- *  Markus Armbruster <armbru@redhat.com>,
- *
- * This work is licensed under the terms of the GNU LGPL, version 2.1
- * or later.  See the COPYING.LIB file in the top-level directory.
- */
 
 #ifndef BLOCK_BACKEND_GLOBAL_STATE_H
 #define BLOCK_BACKEND_GLOBAL_STATE_H
 
 #include "block-backend-common.h"
 
-/*
- * Global state (GS) API. These functions run under the BQL.
- *
- * See include/block/block-global-state.h for more information about
- * the GS API.
- */
 
 BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm);
 
@@ -53,9 +36,7 @@ BlockBackend *blk_all_next(BlockBackend *blk);
 bool monitor_add_blk(BlockBackend *blk, const char *name, Error **errp);
 void monitor_remove_blk(BlockBackend *blk);
 
-BlockBackendPublic *blk_get_public(BlockBackend *blk);
-
-void GRAPH_UNLOCKED blk_remove_bs(BlockBackend *blk);
+void blk_remove_bs(BlockBackend *blk);
 int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp);
 int blk_replace_bs(BlockBackend *blk, BlockDriverState *new_bs, Error **errp);
 bool GRAPH_RDLOCK bdrv_has_blk(BlockDriverState *bs);
@@ -76,10 +57,9 @@ void blk_set_dev_ops(BlockBackend *blk, const BlockDevOps *ops, void *opaque);
 
 int blk_make_zero(BlockBackend *blk, BdrvRequestFlags flags);
 void blk_aio_cancel(BlockAIOCB *acb);
-int blk_commit_all(void);
 bool blk_in_drain(BlockBackend *blk);
-void GRAPH_UNLOCKED blk_drain(BlockBackend *blk);
-void GRAPH_UNLOCKED blk_drain_all(void);
+void blk_drain(BlockBackend *blk);
+void blk_drain_all(void);
 void blk_set_on_error(BlockBackend *blk, BlockdevOnError on_read_error,
                       BlockdevOnError on_write_error);
 bool blk_supports_write_perm(BlockBackend *blk);
@@ -108,10 +88,6 @@ int blk_load_vmstate(BlockBackend *blk, uint8_t *buf, int64_t pos, int size);
 int blk_probe_blocksizes(BlockBackend *blk, BlockSizes *bsz);
 int blk_probe_geometry(BlockBackend *blk, HDGeometry *geo);
 
-void blk_set_io_limits(BlockBackend *blk, ThrottleConfig *cfg);
-void GRAPH_UNLOCKED blk_io_limits_disable(BlockBackend *blk);
-void blk_io_limits_enable(BlockBackend *blk, const char *group);
-void blk_io_limits_update_group(BlockBackend *blk, const char *group);
 void blk_set_force_allow_inactivate(BlockBackend *blk);
 
 bool blk_register_buf(BlockBackend *blk, void *host, size_t size, Error **errp);

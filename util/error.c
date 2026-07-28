@@ -1,35 +1,26 @@
-/*
- * QEMU Error Objects
- *
- * Copyright IBM, Corp. 2011
- * Copyright (C) 2011-2015 Red Hat, Inc.
- *
- * Authors:
- *  Anthony Liguori   <aliguori@us.ibm.com>
- *  Markus Armbruster <armbru@redhat.com>,
- *
- * This work is licensed under the terms of the GNU LGPL, version 2.  See
- * the COPYING.LIB file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "qapi/error-internal.h"
+
+struct Error
+{
+    char *msg;
+    ErrorClass err_class;
+    const char *src, *func;
+    int line;
+    GString *hint;
+};
 
 Error *error_abort;
 Error *error_fatal;
+Error *error_warn;
 
 static void error_handle(Error **errp, Error *err)
 {
     if (errp == &error_abort) {
-        if (err->func) {
-            fprintf(stderr, "Unexpected error in %s() at %.*s:%d:\n",
-                    err->func, err->src_len, err->src, err->line);
-        } else {
-            fprintf(stderr, "Unexpected error at %.*s:%d:\n",
-		    err->src_len, err->src, err->line);
-        }
+        fprintf(stderr, "Unexpected error in %s() at %s:%d:\n",
+                err->func, err->src, err->line);
         error_report("%s", error_get_pretty(err));
         if (err->hint) {
             error_printf("%s", err->hint->str);
@@ -40,7 +31,9 @@ static void error_handle(Error **errp, Error *err)
         error_report_err(err);
         exit(1);
     }
-    if (errp && !*errp) {
+    if (errp == &error_warn) {
+        warn_report_err(err);
+    } else if (errp && !*errp) {
         *errp = err;
     } else {
         error_free(err);
@@ -69,7 +62,6 @@ static void error_setv(Error **errp,
         g_free(msg);
     }
     err->err_class = err_class;
-    err->src_len = -1;
     err->src = src;
     err->line = line;
     err->func = func;

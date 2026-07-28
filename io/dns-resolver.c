@@ -1,22 +1,3 @@
-/*
- * QEMU DNS resolver
- *
- * Copyright (c) 2016 Red Hat, Inc.
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
- *
- */
 
 #include "qemu/osdep.h"
 #include "io/dns-resolver.h"
@@ -101,7 +82,6 @@ static int qio_dns_resolver_lookup_sync_inet(QIODNSResolver *resolver,
 
     *addrs = g_new0(SocketAddress *, *naddrs);
 
-    /* create socket + bind */
     for (i = 0, e = res; e != NULL; i++, e = e->ai_next) {
         SocketAddress *newaddr = g_new0(SocketAddress, 1);
 
@@ -111,11 +91,22 @@ static int qio_dns_resolver_lookup_sync_inet(QIODNSResolver *resolver,
                     uaddr, INET6_ADDRSTRLEN, uport, 32,
                     NI_NUMERICHOST | NI_NUMERICSERV);
 
-        newaddr->u.inet = *iaddr;
-        newaddr->u.inet.host = g_strdup(uaddr),
-        newaddr->u.inet.port = g_strdup(uport),
-        newaddr->u.inet.has_numeric = true,
-        newaddr->u.inet.numeric = true,
+        newaddr->u.inet = (InetSocketAddress){
+            .host = g_strdup(uaddr),
+            .port = g_strdup(uport),
+            .has_numeric = true,
+            .numeric = true,
+            .has_to = iaddr->has_to,
+            .to = iaddr->to,
+            .has_ipv4 = iaddr->has_ipv4,
+            .ipv4 = iaddr->ipv4,
+            .has_ipv6 = iaddr->has_ipv6,
+            .ipv6 = iaddr->ipv6,
+#ifdef HAVE_IPPROTO_MPTCP
+            .has_mptcp = iaddr->has_mptcp,
+            .mptcp = iaddr->mptcp,
+#endif
+        };
 
         (*addrs)[i] = newaddr;
     }

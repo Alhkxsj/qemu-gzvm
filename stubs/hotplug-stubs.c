@@ -1,18 +1,5 @@
-/*
- * Hotplug handler stubs
- *
- * Copyright (c) Red Hat
- *
- * Authors:
- *  Philippe Mathieu-Daudé,
- *
- * SPDX-License-Identifier: GPL-2.0-or-later
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 #include "qemu/osdep.h"
-#include "hw/core/qdev.h"
+#include "hw/qdev-core.h"
 
 HotplugHandler *qdev_get_hotplug_handler(DeviceState *dev)
 {

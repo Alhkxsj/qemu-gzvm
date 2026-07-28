@@ -1,25 +1,6 @@
-/*
- * QEMU I/O channels
- *
- * Copyright (c) 2015 Red Hat, Inc.
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
- *
- */
 
 #include "qemu/osdep.h"
-#include "qemu/aio-wait.h"
+#include "block/aio-wait.h"
 #include "io/channel.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
@@ -159,32 +140,28 @@ int coroutine_mixed_fn qio_channel_readv_full_all_eof(QIOChannel *ioc,
         len = qio_channel_readv_full(ioc, local_iov, nlocal_iov, local_fds,
                                      local_nfds, flags, errp);
         if (len == QIO_CHANNEL_ERR_BLOCK) {
-            qio_channel_wait_cond(ioc, G_IO_IN);
+            if (qemu_in_coroutine()) {
+                qio_channel_yield(ioc, G_IO_IN);
+            } else {
+                qio_channel_wait(ioc, G_IO_IN);
+            }
             continue;
         }
 
         if (len == 0) {
             if (local_nfds && *local_nfds) {
-                /*
-                 * Got some FDs, but no data yet. This isn't an EOF
-                 * scenario (yet), so carry on to try to read data
-                 * on next loop iteration
-                 */
                 goto next_iter;
             } else if (!partial) {
-                /* No fds and no data - EOF before any data read */
                 ret = 0;
                 goto cleanup;
             } else {
                 len = -1;
                 error_setg(errp,
                            "Unexpected end-of-file before all data were read");
-                /* Fallthrough into len < 0 handling */
             }
         }
 
         if (len < 0) {
-            /* Close any FDs we previously received */
             if (nfds && fds) {
                 size_t i;
                 for (i = 0; i < (*nfds); i++) {
@@ -264,7 +241,11 @@ int coroutine_mixed_fn qio_channel_writev_full_all(QIOChannel *ioc,
                                             nfds, flags, errp);
 
         if (len == QIO_CHANNEL_ERR_BLOCK) {
-            qio_channel_wait_cond(ioc, G_IO_OUT);
+            if (qemu_in_coroutine()) {
+                qio_channel_yield(ioc, G_IO_OUT);
+            } else {
+                qio_channel_wait(ioc, G_IO_OUT);
+            }
             continue;
         }
         if (len < 0) {
@@ -302,7 +283,7 @@ ssize_t qio_channel_writev(QIOChannel *ioc,
 
 
 ssize_t qio_channel_read(QIOChannel *ioc,
-                         void *buf,
+                         char *buf,
                          size_t buflen,
                          Error **errp)
 {
@@ -312,7 +293,7 @@ ssize_t qio_channel_read(QIOChannel *ioc,
 
 
 ssize_t qio_channel_write(QIOChannel *ioc,
-                          const void *buf,
+                          const char *buf,
                           size_t buflen,
                           Error **errp)
 {
@@ -322,7 +303,7 @@ ssize_t qio_channel_write(QIOChannel *ioc,
 
 
 int coroutine_mixed_fn qio_channel_read_all_eof(QIOChannel *ioc,
-                                                void *buf,
+                                                char *buf,
                                                 size_t buflen,
                                                 Error **errp)
 {
@@ -332,7 +313,7 @@ int coroutine_mixed_fn qio_channel_read_all_eof(QIOChannel *ioc,
 
 
 int coroutine_mixed_fn qio_channel_read_all(QIOChannel *ioc,
-                                            void *buf,
+                                            char *buf,
                                             size_t buflen,
                                             Error **errp)
 {
@@ -342,7 +323,7 @@ int coroutine_mixed_fn qio_channel_read_all(QIOChannel *ioc,
 
 
 int coroutine_mixed_fn qio_channel_write_all(QIOChannel *ioc,
-                                             const void *buf,
+                                             const char *buf,
                                              size_t buflen,
                                              Error **errp)
 {
@@ -351,12 +332,12 @@ int coroutine_mixed_fn qio_channel_write_all(QIOChannel *ioc,
 }
 
 
-bool qio_channel_set_blocking(QIOChannel *ioc,
+int qio_channel_set_blocking(QIOChannel *ioc,
                               bool enabled,
                               Error **errp)
 {
     QIOChannelClass *klass = QIO_CHANNEL_GET_CLASS(ioc);
-    return klass->io_set_blocking(ioc, enabled, errp) == 0;
+    return klass->io_set_blocking(ioc, enabled, errp);
 }
 
 
@@ -467,7 +448,7 @@ ssize_t qio_channel_pwritev(QIOChannel *ioc, const struct iovec *iov,
     return klass->io_pwritev(ioc, iov, niov, offset, errp);
 }
 
-ssize_t qio_channel_pwrite(QIOChannel *ioc, void *buf, size_t buflen,
+ssize_t qio_channel_pwrite(QIOChannel *ioc, char *buf, size_t buflen,
                            off_t offset, Error **errp)
 {
     struct iovec iov = {
@@ -476,54 +457,6 @@ ssize_t qio_channel_pwrite(QIOChannel *ioc, void *buf, size_t buflen,
     };
 
     return qio_channel_pwritev(ioc, &iov, 1, offset, errp);
-}
-
-int coroutine_mixed_fn qio_channel_pwritev_all(QIOChannel *ioc,
-                                               const struct iovec *iov,
-                                               size_t niov,
-                                               off_t offset,
-                                               Error **errp)
-{
-    int ret = -1;
-    struct iovec *local_iov = g_new(struct iovec, niov);
-    struct iovec *local_iov_head = local_iov;
-    unsigned int nlocal_iov = niov;
-
-    nlocal_iov = iov_copy(local_iov, nlocal_iov,
-                          iov, niov,
-                          0, iov_size(iov, niov));
-
-    while (nlocal_iov > 0) {
-        ssize_t len;
-
-        len = qio_channel_pwritev(ioc, local_iov, nlocal_iov, offset, errp);
-
-        if (len == QIO_CHANNEL_ERR_BLOCK) {
-            qio_channel_wait_cond(ioc, G_IO_OUT);
-            continue;
-        }
-        if (len < 0) {
-            goto cleanup;
-        }
-
-        offset += len;
-        iov_discard_front(&local_iov, &nlocal_iov, len);
-    }
-
-    ret = 0;
- cleanup:
-    g_free(local_iov_head);
-    return ret;
-}
-
-int coroutine_mixed_fn qio_channel_pwrite_all(QIOChannel *ioc,
-                                              const void *buf,
-                                              size_t buflen,
-                                              off_t offset,
-                                              Error **errp)
-{
-    struct iovec iov = { .iov_base = (char *)buf, .iov_len = buflen };
-    return qio_channel_pwritev_all(ioc, &iov, 1, offset, errp);
 }
 
 ssize_t qio_channel_preadv(QIOChannel *ioc, const struct iovec *iov,
@@ -544,7 +477,7 @@ ssize_t qio_channel_preadv(QIOChannel *ioc, const struct iovec *iov,
     return klass->io_preadv(ioc, iov, niov, offset, errp);
 }
 
-ssize_t qio_channel_pread(QIOChannel *ioc, void *buf, size_t buflen,
+ssize_t qio_channel_pread(QIOChannel *ioc, char *buf, size_t buflen,
                           off_t offset, Error **errp)
 {
     struct iovec iov = {
@@ -553,97 +486,6 @@ ssize_t qio_channel_pread(QIOChannel *ioc, void *buf, size_t buflen,
     };
 
     return qio_channel_preadv(ioc, &iov, 1, offset, errp);
-}
-
-int coroutine_mixed_fn qio_channel_preadv_all_eof(QIOChannel *ioc,
-                                                  const struct iovec *iov,
-                                                  size_t niov,
-                                                  off_t offset,
-                                                  Error **errp)
-{
-    int ret = -1;
-    struct iovec *local_iov = g_new(struct iovec, niov);
-    struct iovec *local_iov_head = local_iov;
-    unsigned int nlocal_iov = niov;
-    bool partial = false;
-
-    nlocal_iov = iov_copy(local_iov, nlocal_iov,
-                          iov, niov,
-                          0, iov_size(iov, niov));
-
-    while (nlocal_iov > 0) {
-        ssize_t len;
-        len = qio_channel_preadv(ioc, local_iov, nlocal_iov, offset, errp);
-
-        if (len == QIO_CHANNEL_ERR_BLOCK) {
-            qio_channel_wait_cond(ioc, G_IO_IN);
-            continue;
-        }
-
-        if (len == 0) {
-            if (!partial) {
-                ret = 0;
-                goto cleanup;
-            }
-            error_setg(errp,
-                       "Unexpected end-of-file before all data were read");
-            goto cleanup;
-        }
-
-        if (len < 0) {
-            goto cleanup;
-        }
-
-        partial = true;
-        offset += len;
-        iov_discard_front(&local_iov, &nlocal_iov, len);
-    }
-
-    ret = 1;
-
- cleanup:
-    g_free(local_iov_head);
-    return ret;
-}
-
-int coroutine_mixed_fn qio_channel_preadv_all(QIOChannel *ioc,
-                                              const struct iovec *iov,
-                                              size_t niov,
-                                              off_t offset,
-                                              Error **errp)
-{
-    int ret = qio_channel_preadv_all_eof(ioc, iov, niov, offset, errp);
-
-    if (ret == 0) {
-        error_setg(errp,
-                   "Unexpected end-of-file before all data were read");
-        return -1;
-    }
-    if (ret == 1) {
-        return 0;
-    }
-
-    return ret;
-}
-
-int coroutine_mixed_fn qio_channel_pread_all_eof(QIOChannel *ioc,
-                                                 void *buf,
-                                                 size_t buflen,
-                                                 off_t offset,
-                                                 Error **errp)
-{
-    struct iovec iov = { .iov_base = buf, .iov_len = buflen };
-    return qio_channel_preadv_all_eof(ioc, &iov, 1, offset, errp);
-}
-
-int coroutine_mixed_fn qio_channel_pread_all(QIOChannel *ioc,
-                                             void *buf,
-                                             size_t buflen,
-                                             off_t offset,
-                                             Error **errp)
-{
-    struct iovec iov = { .iov_base = buf, .iov_len = buflen };
-    return qio_channel_preadv_all(ioc, &iov, 1, offset, errp);
 }
 
 int qio_channel_shutdown(QIOChannel *ioc,
@@ -734,7 +576,6 @@ static void qio_channel_restart_read(void *opaque)
         return;
     }
 
-    /* Assert that aio_co_wake() reenters the coroutine directly */
     assert(qemu_get_current_aio_context() ==
            qemu_coroutine_get_aio_context(co));
     aio_co_wake(co);
@@ -749,7 +590,6 @@ static void qio_channel_restart_write(void *opaque)
         return;
     }
 
-    /* Assert that aio_co_wake() reenters the coroutine directly */
     assert(qemu_get_current_aio_context() ==
            qemu_coroutine_get_aio_context(co));
     aio_co_wake(co);
@@ -772,14 +612,6 @@ qio_channel_set_fd_handlers(QIOChannel *ioc, GIOCondition condition)
         read_ctx = ctx;
         io_read = qio_channel_restart_read;
 
-        /*
-         * Thread safety: if the other coroutine is set and its AioContext
-         * matches ours, then there is mutual exclusion between read and write
-         * because they share a single thread and it's safe to set both read
-         * and write fd handlers here. If the AioContext does not match ours,
-         * then both threads may run in parallel but there is no shared state
-         * to worry about.
-         */
         if (ioc->write_coroutine && ioc->write_ctx == ctx) {
             write_ctx = ctx;
             io_write = qio_channel_restart_write;
@@ -853,8 +685,6 @@ void coroutine_fn qio_channel_yield(QIOChannel *ioc,
     qemu_coroutine_yield();
     assert(in_aio_context_home_thread(ioc_ctx));
 
-    /* Allow interrupting the operation by reentering the coroutine other than
-     * through the aio_fd_handlers. */
     if (condition == G_IO_IN) {
         assert(ioc->read_coroutine == NULL);
     } else if (condition == G_IO_OUT) {
@@ -905,21 +735,11 @@ void qio_channel_wait(QIOChannel *ioc,
     g_main_context_unref(ctxt);
 }
 
-void qio_channel_wait_cond(QIOChannel *ioc,
-                           GIOCondition condition)
-{
-    if (qemu_in_coroutine()) {
-        qio_channel_yield(ioc, condition);
-    } else {
-        qio_channel_wait(ioc, condition);
-    }
-}
 
 static void qio_channel_finalize(Object *obj)
 {
     QIOChannel *ioc = QIO_CHANNEL(obj);
 
-    /* Must not have coroutines in qio_channel_yield() */
     assert(!ioc->read_coroutine);
     assert(!ioc->write_coroutine);
 

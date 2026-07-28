@@ -1,35 +1,50 @@
-/*
- * QEMU guest-visible random functions
- *
- * Copyright 2019 Linaro, Ltd.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/cutils.h"
 #include "qapi/error.h"
 #include "qemu/guest-random.h"
 #include "crypto/random.h"
-#include "exec/replay-core.h"
 
+#ifdef __ANDROID__
+#include <pthread.h>
+static pthread_key_t thread_rand_key;
+static pthread_once_t thread_rand_once = PTHREAD_ONCE_INIT;
 
+static void thread_rand_destroy(void *p) {
+    if (p) g_rand_free((GRand *)p);
+}
+
+static void thread_rand_key_init(void) {
+    pthread_key_create(&thread_rand_key, thread_rand_destroy);
+}
+
+static GRand *get_thread_rand(void) {
+    pthread_once(&thread_rand_once, thread_rand_key_init);
+    return (GRand *)pthread_getspecific(thread_rand_key);
+}
+
+static void set_thread_rand(GRand *rand) {
+    pthread_once(&thread_rand_once, thread_rand_key_init);
+    pthread_setspecific(thread_rand_key, rand);
+}
+#else
 static __thread GRand *thread_rand;
+static GRand *get_thread_rand(void) { return thread_rand; }
+static void set_thread_rand(GRand *rand) { thread_rand = rand; }
+#endif
+
 static bool deterministic;
 
 
 static int glib_random_bytes(void *buf, size_t len)
 {
-    GRand *rand = thread_rand;
+    GRand *rand = get_thread_rand();
     size_t i;
     uint32_t x;
 
     if (unlikely(rand == NULL)) {
-        /* Thread not initialized for a cpu, or main w/o -seed.  */
-        thread_rand = rand = g_rand_new();
+        rand = g_rand_new();
+        set_thread_rand(rand);
     }
 
     for (i = 0; i + 4 <= len; i += 4) {
@@ -45,21 +60,10 @@ static int glib_random_bytes(void *buf, size_t len)
 
 int qemu_guest_getrandom(void *buf, size_t len, Error **errp)
 {
-    int ret;
-    if (replay_mode == REPLAY_MODE_PLAY) {
-        return replay_read_random(buf, len);
-    }
     if (unlikely(deterministic)) {
-        /* Deterministic implementation using Glib's Mersenne Twister.  */
-        ret = glib_random_bytes(buf, len);
-    } else {
-        /* Non-deterministic implementation using crypto routines.  */
-        ret = qcrypto_random_bytes(buf, len, errp);
+        return glib_random_bytes(buf, len);
     }
-    if (replay_mode == REPLAY_MODE_RECORD) {
-        replay_save_random(ret, buf, len);
-    }
-    return ret;
+    return qcrypto_random_bytes(buf, len, errp);
 }
 
 void qemu_guest_getrandom_nofail(void *buf, size_t len)
@@ -79,11 +83,11 @@ uint64_t qemu_guest_random_seed_thread_part1(void)
 
 void qemu_guest_random_seed_thread_part2(uint64_t seed)
 {
-    g_assert(thread_rand == NULL);
+    g_assert(get_thread_rand() == NULL);
     if (deterministic) {
-        thread_rand =
+        set_thread_rand(
             g_rand_new_with_seed_array((const guint32 *)&seed,
-                                       sizeof(seed) / sizeof(guint32));
+                                       sizeof(seed) / sizeof(guint32)));
     }
 }
 

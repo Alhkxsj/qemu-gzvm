@@ -1,7 +1,3 @@
-/*
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #ifndef QEMU_PIXMAN_H
 #define QEMU_PIXMAN_H
@@ -14,12 +10,6 @@
 
 #include "qapi/error.h"
 
-/*
- * pixman image formats are defined to be native endian,
- * that means host byte order on qemu.  So we go define
- * fixed formats here for cases where it is needed, like
- * feeding libjpeg / libpng and writing screenshots.
- */
 
 #if HOST_BIG_ENDIAN
 # define PIXMAN_BE_r8g8b8     PIXMAN_r8g8b8
@@ -59,7 +49,6 @@
 #define QEMU_PIXMAN_COLOR_BLACK QEMU_PIXMAN_COLOR(0x00, 0x00, 0x00)
 #define QEMU_PIXMAN_COLOR_GRAY QEMU_PIXMAN_COLOR(0xaa, 0xaa, 0xaa)
 
-/* -------------------------------------------------------------------- */
 
 typedef struct PixelFormat {
     uint8_t bits_per_pixel;
@@ -73,22 +62,14 @@ typedef struct PixelFormat {
 
 PixelFormat qemu_pixelformat_from_pixman(pixman_format_code_t format);
 pixman_format_code_t qemu_default_pixman_format(int bpp, bool native_endian);
-
-static inline PixelFormat qemu_default_pixelformat(int bpp)
-{
-    pixman_format_code_t fmt = qemu_default_pixman_format(bpp, true);
-    PixelFormat pf = qemu_pixelformat_from_pixman(fmt);
-    return pf;
-}
-
 pixman_format_code_t qemu_drm_format_to_pixman(uint32_t drm_format);
 uint32_t qemu_pixman_to_drm_format(pixman_format_code_t pixman);
-int qemu_pixman_get_type(int rshift, int gshift, int bshift, int endian);
+int qemu_pixman_get_type(int rshift, int gshift, int bshift);
 bool qemu_pixman_check_format(DisplayChangeListener *dcl,
                               pixman_format_code_t format);
 
 #ifdef CONFIG_PIXMAN
-pixman_format_code_t qemu_pixman_get_format(PixelFormat *pf, int endian);
+pixman_format_code_t qemu_pixman_get_format(PixelFormat *pf);
 pixman_image_t *qemu_pixman_linebuf_create(pixman_format_code_t format,
                                            int width);
 void qemu_pixman_linebuf_fill(pixman_image_t *linebuf, pixman_image_t *fb,

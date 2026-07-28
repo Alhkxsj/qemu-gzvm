@@ -1,45 +1,18 @@
-/*
- * QEMU System Emulator
- *
- * Copyright (c) 2003-2008 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
 
 #include "net/net.h"
 #include "clients.h"
-#include "hub.h"
-#include "hw/core/qdev-properties.h"
-#include "net/slirp.h"
+#include "hw/qdev-properties.h"
 #include "net/eth.h"
 #include "util.h"
 
 #include "monitor/monitor.h"
 #include "qemu/help_option.h"
-#include "qapi/qapi-commands-net.h"
 #include "qapi/qapi-visit-net.h"
 #include "qobject/qdict.h"
 #include "qapi/qmp/qerror.h"
 #include "qemu/error-report.h"
-#include "qemu/mem-reentrancy.h"
 #include "qemu/sockets.h"
 #include "qemu/cutils.h"
 #include "qemu/config-file.h"
@@ -53,16 +26,9 @@
 #include "qapi/error.h"
 #include "qapi/opts-visitor.h"
 #include "system/runstate.h"
-#include "net/colo-compare.h"
-#include "net/filter.h"
 #include "qapi/string-output-visitor.h"
 #include "qapi/qobject-input-visitor.h"
 #include "standard-headers/linux/virtio_net.h"
-
-/* Net bridge is currently not supported for W32. */
-#if !defined(_WIN32)
-# define CONFIG_NET_BRIDGE
-#endif
 
 static VMChangeStateEntry *net_change_state_entry;
 NetClientStateList net_clients;
@@ -82,8 +48,6 @@ static GHashTable *nic_model_help;
 static int nb_nics;
 static NICInfo nd_table[MAX_NICS];
 
-/***********************************************************/
-/* network device redirectors */
 
 int convert_host_port(struct sockaddr_in *saddr, const char *host,
                       const char *port, Error **errp)
@@ -229,11 +193,6 @@ void qemu_macaddr_default_if_unset(MACAddr *macaddr)
     qemu_macaddr_set_used(macaddr);
 }
 
-/**
- * Generate a name for net client
- *
- * Only net clients created with the legacy -net option and NICs need this.
- */
 static char *assign_name(NetClientState *nc1, const char *model)
 {
     NetClientState *nc;
@@ -287,7 +246,6 @@ static void qemu_net_client_setup(NetClientState *nc,
     nc->incoming_queue = qemu_new_net_queue(qemu_deliver_packet_iov, nc);
     nc->destructor = destructor;
     nc->is_datapath = is_datapath;
-    QTAILQ_INIT(&nc->filters);
 }
 
 NetClientState *qemu_new_net_client(NetClientInfo *info,
@@ -413,29 +371,14 @@ void qemu_del_net_client(NetClientState *nc)
 {
     NetClientState *ncs[MAX_QUEUE_NUM];
     int queues, i;
-    NetFilterState *nf, *next;
 
     assert(nc->info->type != NET_CLIENT_DRIVER_NIC);
 
-    /* If the NetClientState belongs to a multiqueue backend, we will change all
-     * other NetClientStates also.
-     */
     queues = qemu_find_net_clients_except(nc->name, ncs,
                                           NET_CLIENT_DRIVER_NIC,
                                           MAX_QUEUE_NUM);
     assert(queues != 0);
 
-    QTAILQ_FOREACH_SAFE(nf, &nc->filters, next, next) {
-        object_unparent(OBJECT(nf));
-    }
-
-    /*
-     * If there is a peer NIC, transfer ownership to it.  Delete the client
-     * from net_client list but do not cleanup nor free.  This way NIC can
-     * still access to members of the backend.
-     *
-     * The cleanup and free will be done when the NIC is free.
-     */
     if (nc->peer && nc->peer->info->type == NET_CLIENT_DRIVER_NIC) {
         NICState *nic = qemu_get_nic(nc->peer);
         if (nic->peer_deleted) {
@@ -469,15 +412,10 @@ void qemu_del_nic(NICState *nic)
 
     for (i = 0; i < queues; i++) {
         NetClientState *nc = qemu_get_subqueue(nic, i);
-        /*
-         * If this is a peer NIC and peer has already been deleted, clean it up
-         * and free it now.
-         */
         if (nic->peer_deleted) {
             qemu_cleanup_net_client(nc->peer, false);
             qemu_free_net_client(nc->peer);
         } else if (nc->peer) {
-            /* if there are RX packets pending, complete them */
             qemu_purge_queued_packets(nc->peer);
         }
     }
@@ -523,15 +461,6 @@ bool qemu_has_uso(NetClientState *nc)
     return nc->info->has_uso(nc);
 }
 
-bool qemu_has_tunnel(NetClientState *nc)
-{
-    if (!nc || !nc->info->has_tunnel) {
-        return false;
-    }
-
-    return nc->info->has_tunnel(nc);
-}
-
 bool qemu_has_vnet_hdr(NetClientState *nc)
 {
     if (!nc || !nc->info->has_vnet_hdr) {
@@ -550,13 +479,14 @@ bool qemu_has_vnet_hdr_len(NetClientState *nc, int len)
     return nc->info->has_vnet_hdr_len(nc, len);
 }
 
-void qemu_set_offload(NetClientState *nc, const NetOffloads *ol)
+void qemu_set_offload(NetClientState *nc, int csum, int tso4, int tso6,
+                          int ecn, int ufo, int uso4, int uso6)
 {
     if (!nc || !nc->info->set_offload) {
         return;
     }
 
-    nc->info->set_offload(nc, ol);
+    nc->info->set_offload(nc, csum, tso4, tso6, ecn, ufo, uso4, uso6);
 }
 
 int qemu_get_vnet_hdr_len(NetClientState *nc)
@@ -576,20 +506,10 @@ void qemu_set_vnet_hdr_len(NetClientState *nc, int len)
 
     assert(len == sizeof(struct virtio_net_hdr_mrg_rxbuf) ||
            len == sizeof(struct virtio_net_hdr) ||
-           len == sizeof(struct virtio_net_hdr_v1_hash) ||
-           len == sizeof(struct virtio_net_hdr_v1_hash_tunnel));
+           len == sizeof(struct virtio_net_hdr_v1_hash));
 
     nc->vnet_hdr_len = len;
     nc->info->set_vnet_hdr_len(nc, len);
-}
-
-bool qemu_get_vnet_hash_supported_types(NetClientState *nc, uint32_t *types)
-{
-    if (!nc || !nc->info->get_vnet_hash_supported_types) {
-        return false;
-    }
-
-    return nc->info->get_vnet_hash_supported_types(nc, types);
 }
 
 int qemu_set_vnet_le(NetClientState *nc, bool is_le)
@@ -644,54 +564,6 @@ int qemu_can_send_packet(NetClientState *sender)
     return qemu_can_receive_packet(sender->peer);
 }
 
-static ssize_t filter_receive_iov(NetClientState *nc,
-                                  NetFilterDirection direction,
-                                  NetClientState *sender,
-                                  unsigned flags,
-                                  const struct iovec *iov,
-                                  int iovcnt,
-                                  NetPacketSent *sent_cb)
-{
-    ssize_t ret = 0;
-    NetFilterState *nf;
-
-    if (direction == NET_FILTER_DIRECTION_TX) {
-        QTAILQ_FOREACH(nf, &nc->filters, next) {
-            ret = qemu_netfilter_receive(nf, direction, sender, flags, iov,
-                                         iovcnt, sent_cb);
-            if (ret) {
-                return ret;
-            }
-        }
-    } else {
-        QTAILQ_FOREACH_REVERSE(nf, &nc->filters, next) {
-            ret = qemu_netfilter_receive(nf, direction, sender, flags, iov,
-                                         iovcnt, sent_cb);
-            if (ret) {
-                return ret;
-            }
-        }
-    }
-
-    return ret;
-}
-
-static ssize_t filter_receive(NetClientState *nc,
-                              NetFilterDirection direction,
-                              NetClientState *sender,
-                              unsigned flags,
-                              const uint8_t *data,
-                              size_t size,
-                              NetPacketSent *sent_cb)
-{
-    struct iovec iov = {
-        .iov_base = (void *)data,
-        .iov_len = size
-    };
-
-    return filter_receive_iov(nc, direction, sender, flags, &iov, 1, sent_cb);
-}
-
 void qemu_purge_queued_packets(NetClientState *nc)
 {
     if (!nc->peer) {
@@ -705,18 +577,9 @@ void qemu_flush_or_purge_queued_packets(NetClientState *nc, bool purge)
 {
     nc->receive_disabled = 0;
 
-    if (nc->peer && nc->peer->info->type == NET_CLIENT_DRIVER_HUBPORT) {
-        if (net_hub_flush(nc->peer)) {
-            qemu_notify_event();
-        }
-    }
     if (qemu_net_queue_flush(nc->incoming_queue)) {
-        /* We emptied the queue successfully, signal to the IO thread to repoll
-         * the file descriptor (for tap, for example).
-         */
         qemu_notify_event();
     } else if (purge) {
-        /* Unable to empty the queue, purge remaining packets */
         qemu_net_queue_purge(nc->incoming_queue, nc->peer);
     }
 }
@@ -732,7 +595,6 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
                                                  NetPacketSent *sent_cb)
 {
     NetQueue *queue;
-    int ret;
 
 #ifdef DEBUG_NET
     printf("qemu_send_packet_async:\n");
@@ -741,19 +603,6 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
 
     if (sender->link_down || !sender->peer) {
         return size;
-    }
-
-    /* Let filters handle the packet first */
-    ret = filter_receive(sender, NET_FILTER_DIRECTION_TX,
-                         sender, flags, buf, size, sent_cb);
-    if (ret) {
-        return ret;
-    }
-
-    ret = filter_receive(sender->peer, NET_FILTER_DIRECTION_RX,
-                         sender, flags, buf, size, sent_cb);
-    if (ret) {
-        return ret;
     }
 
     queue = sender->peer->incoming_queue;
@@ -776,18 +625,8 @@ ssize_t qemu_send_packet(NetClientState *nc, const uint8_t *buf, int size)
 
 ssize_t qemu_receive_packet(NetClientState *nc, const uint8_t *buf, int size)
 {
-    uint8_t min_pkt[ETH_ZLEN];
-    size_t min_pktsz = sizeof(min_pkt);
-
     if (!qemu_can_receive_packet(nc)) {
         return 0;
-    }
-
-    if (net_peer_needs_padding(nc)) {
-        if (eth_pad_short_frame(min_pkt, &min_pktsz, buf, size)) {
-            buf = min_pkt;
-            size = min_pktsz;
-        }
     }
 
     return qemu_net_queue_receive(nc->incoming_queue, buf, size);
@@ -887,7 +726,6 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
 {
     NetQueue *queue;
     size_t size = iov_size(iov, iovcnt);
-    int ret;
 
     if (size > NET_BUFSIZE) {
         return size;
@@ -895,19 +733,6 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
 
     if (sender->link_down || !sender->peer) {
         return size;
-    }
-
-    /* Let filters handle the packet first */
-    ret = filter_receive_iov(sender, NET_FILTER_DIRECTION_TX, sender,
-                             QEMU_NET_PACKET_FLAG_NONE, iov, iovcnt, sent_cb);
-    if (ret) {
-        return ret;
-    }
-
-    ret = filter_receive_iov(sender->peer, NET_FILTER_DIRECTION_RX, sender,
-                             QEMU_NET_PACKET_FLAG_NONE, iov, iovcnt, sent_cb);
-    if (ret) {
-        return ret;
     }
 
     queue = sender->peer->incoming_queue;
@@ -981,13 +806,6 @@ GPtrArray *qemu_get_nic_models(const char *device_type)
         if (test_bit(DEVICE_CATEGORY_NETWORK, dc->categories) &&
             dc->user_creatable) {
             const char *name = object_class_get_name(list->data);
-            /*
-             * A network device might also be something else than a NIC, see
-             * e.g. the "rocker" device. Thus we have to look for the "netdev"
-             * property, too. Unfortunately, some devices like virtio-net only
-             * create this property during instance_init, so we have to create
-             * a temporary instance here to be able to check it.
-             */
             Object *obj = object_new_with_class(OBJECT_CLASS(dc));
             if (object_property_find(obj, "netdev")) {
                 g_ptr_array_add(nic_models, (gpointer)name);
@@ -1030,7 +848,9 @@ static int net_init_nic(const Netdev *netdev, const char *name,
             return -1;
         }
     } else {
-        assert(peer);
+        if (!peer) {
+            return 0;
+        }
         nd->netdev = peer;
     }
     nd->name = g_strdup(name);
@@ -1126,12 +946,10 @@ static void add_nic_model_help(const char *model, const char *alias)
 
     if (g_hash_table_lookup_extended(nic_model_help, model, NULL,
                                      (gpointer *)&alias_list)) {
-        /* Already exists, no alias to add: return */
         if (!alias) {
             return;
         }
         if (alias_list) {
-            /* Check if this alias is already in the list. Add if not. */
             if (!g_ptr_array_find_with_equal_func(alias_list, alias,
                                                   g_str_equal, NULL)) {
                 g_ptr_array_add(alias_list, g_strdup(alias));
@@ -1139,7 +957,6 @@ static void add_nic_model_help(const char *model, const char *alias)
             return;
         }
     }
-    /* Either this model wasn't in the list already, or a first alias added */
     if (alias) {
         alias_list = g_ptr_array_new();
         g_ptr_array_set_free_func(alias_list, g_free);
@@ -1176,10 +993,6 @@ NICInfo *qemu_find_nic_info(const char *typename, bool match_default,
 static bool is_nic_model_help_option(const char *model)
 {
     if (model && is_help_option(model)) {
-        /*
-         * Trigger the help output by instantiating the hash table which
-         * will gather tha available models as they get registered.
-         */
         if (!nic_model_help) {
             nic_model_help = g_hash_table_new_full(g_str_hash, g_str_equal,
                                                    g_free, NULL);
@@ -1189,7 +1002,6 @@ static bool is_nic_model_help_option(const char *model)
     return false;
 }
 
-/* "I have created a device. Please configure it if you can" */
 bool qemu_configure_nic_device(DeviceState *dev, bool match_default,
                                const char *alias)
 {
@@ -1203,7 +1015,6 @@ bool qemu_configure_nic_device(DeviceState *dev, bool match_default,
     return false;
 }
 
-/* "Please create a device, if you have a configuration for it" */
 DeviceState *qemu_create_nic_device(const char *typename, bool match_default,
                                     const char *alias)
 {
@@ -1238,7 +1049,6 @@ void qemu_create_nic_bus_devices(BusState *bus, const char *parent_type,
         }
     }
 
-    /* Drop the NULL terminator which would make g_str_equal() unhappy */
     nic_models->len--;
 
     for (i = 0; i < nb_nics; i++) {
@@ -1253,14 +1063,12 @@ void qemu_create_nic_bus_devices(BusState *bus, const char *parent_type,
             continue;
         }
 
-        /* Each bus type is allowed *one* substitution */
         if (g_str_equal(model, alias)) {
             model = alias_target;
         }
 
         if (!g_ptr_array_find_with_equal_func(nic_models, model,
                                               g_str_equal, NULL)) {
-            /* This NIC does not live on this bus. */
             continue;
         }
 
@@ -1277,43 +1085,7 @@ static int (* const net_client_init_fun[NET_CLIENT_DRIVER__MAX])(
     const char *name,
     NetClientState *peer, Error **errp) = {
         [NET_CLIENT_DRIVER_NIC]       = net_init_nic,
-#ifdef CONFIG_PASST
-        [NET_CLIENT_DRIVER_PASST]     = net_init_passt,
-#endif
-#ifdef CONFIG_SLIRP
-        [NET_CLIENT_DRIVER_USER]      = net_init_slirp,
-#endif
         [NET_CLIENT_DRIVER_TAP]       = net_init_tap,
-        [NET_CLIENT_DRIVER_SOCKET]    = net_init_socket,
-        [NET_CLIENT_DRIVER_STREAM]    = net_init_stream,
-        [NET_CLIENT_DRIVER_DGRAM]     = net_init_dgram,
-#ifdef CONFIG_VDE
-        [NET_CLIENT_DRIVER_VDE]       = net_init_vde,
-#endif
-#ifdef CONFIG_NETMAP
-        [NET_CLIENT_DRIVER_NETMAP]    = net_init_netmap,
-#endif
-#ifdef CONFIG_AF_XDP
-        [NET_CLIENT_DRIVER_AF_XDP]    = net_init_af_xdp,
-#endif
-#ifdef CONFIG_NET_BRIDGE
-        [NET_CLIENT_DRIVER_BRIDGE]    = net_init_bridge,
-#endif
-        [NET_CLIENT_DRIVER_HUBPORT]   = net_init_hubport,
-#ifdef CONFIG_VHOST_NET_USER
-        [NET_CLIENT_DRIVER_VHOST_USER] = net_init_vhost_user,
-#endif
-#ifdef CONFIG_VHOST_NET_VDPA
-        [NET_CLIENT_DRIVER_VHOST_VDPA] = net_init_vhost_vdpa,
-#endif
-#ifdef CONFIG_L2TPV3
-        [NET_CLIENT_DRIVER_L2TPV3]    = net_init_l2tpv3,
-#endif
-#ifdef CONFIG_VMNET
-        [NET_CLIENT_DRIVER_VMNET_HOST] = net_init_vmnet_host,
-        [NET_CLIENT_DRIVER_VMNET_SHARED] = net_init_vmnet_shared,
-        [NET_CLIENT_DRIVER_VMNET_BRIDGED] = net_init_vmnet_bridged,
-#endif /* CONFIG_VMNET */
 };
 
 
@@ -1333,22 +1105,10 @@ static int net_client_init1(const Netdev *netdev, bool is_netdev, Error **errp)
         if (netdev->type == NET_CLIENT_DRIVER_NONE) {
             return 0; /* nothing to do */
         }
-        if (netdev->type == NET_CLIENT_DRIVER_HUBPORT) {
-            error_setg(errp, "network backend '%s' is only supported with -netdev/-nic",
-                       NetClientDriver_str(netdev->type));
-            return -1;
-        }
-
         if (!net_client_init_fun[netdev->type]) {
             error_setg(errp, "network backend '%s' is not compiled into this binary",
                        NetClientDriver_str(netdev->type));
             return -1;
-        }
-
-        /* Do not add to a hub if it's a nic with a netdev= parameter. */
-        if (netdev->type != NET_CLIENT_DRIVER_NIC ||
-            !netdev->u.nic.netdev) {
-            peer = net_hub_add_port(0, NULL, NULL);
         }
     }
 
@@ -1359,7 +1119,6 @@ static int net_client_init1(const Netdev *netdev, bool is_netdev, Error **errp)
     }
 
     if (net_client_init_fun[netdev->type](netdev, netdev->id, peer, errp) < 0) {
-        /* FIXME drop when all init functions store an Error */
         if (errp && !*errp) {
             error_setg(errp, "Device '%s' could not be initialized",
                        NetClientDriver_str(netdev->type));
@@ -1380,41 +1139,7 @@ void show_netdevs(void)
 {
     int idx;
     const char *available_netdevs[] = {
-        "socket",
-        "stream",
-        "dgram",
-        "hubport",
         "tap",
-        "passt",
-#ifdef CONFIG_SLIRP
-        "user",
-#endif
-#ifdef CONFIG_L2TPV3
-        "l2tpv3",
-#endif
-#ifdef CONFIG_VDE
-        "vde",
-#endif
-#ifdef CONFIG_NET_BRIDGE
-        "bridge",
-#endif
-#ifdef CONFIG_NETMAP
-        "netmap",
-#endif
-#ifdef CONFIG_AF_XDP
-        "af-xdp",
-#endif
-#ifdef CONFIG_POSIX
-        "vhost-user",
-#endif
-#ifdef CONFIG_VHOST_VDPA
-        "vhost-vdpa",
-#endif
-#ifdef CONFIG_VMNET
-        "vmnet-host",
-        "vmnet-shared",
-        "vmnet-bridged",
-#endif
     };
 
     qemu_printf("Available netdev backend types:\n");
@@ -1430,7 +1155,6 @@ static int net_client_init(QemuOpts *opts, bool is_netdev, Error **errp)
     int ret = -1;
     Visitor *v = opts_visitor_new(opts);
 
-    /* Parse convenience option format ipv6-net=fec0::0[/64] */
     const char *ip6_net = qemu_opt_get(opts, "ipv6-net");
 
     if (ip6_net) {
@@ -1446,7 +1170,6 @@ static int net_client_init(QemuOpts *opts, bool is_netdev, Error **errp)
 
         prefix_addr = substrings[0];
 
-        /* Handle user-specified prefix length. */
         if (substrings[1] &&
             qemu_strtoul(substrings[1], NULL, 10, &prefix_len))
         {
@@ -1461,7 +1184,6 @@ static int net_client_init(QemuOpts *opts, bool is_netdev, Error **errp)
         qemu_opt_unset(opts, "ipv6-net");
     }
 
-    /* Create an ID for -net if the user did not specify one */
     if (!is_netdev && !qemu_opts_id(opts)) {
         qemu_opts_set_id(opts, id_generate(ID_NET));
     }
@@ -1483,210 +1205,6 @@ void netdev_add(QemuOpts *opts, Error **errp)
     net_client_init(opts, true, errp);
 }
 
-void qmp_netdev_add(Netdev *netdev, Error **errp)
-{
-    if (!id_wellformed(netdev->id)) {
-        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "id", "an identifier");
-        return;
-    }
-
-    net_client_init1(netdev, true, errp);
-}
-
-void qmp_netdev_del(const char *id, Error **errp)
-{
-    NetClientState *nc;
-    QemuOpts *opts;
-
-    nc = qemu_find_netdev(id);
-    if (!nc) {
-        error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
-                  "Device '%s' not found", id);
-        return;
-    }
-
-    if (!nc->is_netdev) {
-        error_setg(errp, "Device '%s' is not a netdev", id);
-        return;
-    }
-
-    qemu_del_net_client(nc);
-
-    /*
-     * Wart: we need to delete the QemuOpts associated with netdevs
-     * created via CLI or HMP, to avoid bogus "Duplicate ID" errors in
-     * HMP netdev_add.
-     */
-    opts = qemu_opts_find(qemu_find_opts("netdev"), id);
-    if (opts) {
-        qemu_opts_del(opts);
-    }
-}
-
-static void netfilter_print_info(Monitor *mon, NetFilterState *nf)
-{
-    char *str;
-    ObjectProperty *prop;
-    ObjectPropertyIterator iter;
-    Visitor *v;
-
-    /* generate info str */
-    object_property_iter_init(&iter, OBJECT(nf));
-    while ((prop = object_property_iter_next(&iter))) {
-        if (!strcmp(prop->name, "type")) {
-            continue;
-        }
-        v = string_output_visitor_new(false, &str);
-        object_property_get(OBJECT(nf), prop->name, v, NULL);
-        visit_complete(v, &str);
-        visit_free(v);
-        monitor_printf(mon, ",%s=%s", prop->name, str);
-        g_free(str);
-    }
-    monitor_printf(mon, "\n");
-}
-
-void print_net_client(Monitor *mon, NetClientState *nc)
-{
-    NetFilterState *nf;
-
-    monitor_printf(mon, "%s: index=%d,type=%s,%s\n", nc->name,
-                   nc->queue_index,
-                   NetClientDriver_str(nc->info->type),
-                   nc->info_str);
-    if (!QTAILQ_EMPTY(&nc->filters)) {
-        monitor_printf(mon, "filters:\n");
-    }
-    QTAILQ_FOREACH(nf, &nc->filters, next) {
-        monitor_printf(mon, "  - %s: type=%s",
-                       object_get_canonical_path_component(OBJECT(nf)),
-                       object_get_typename(OBJECT(nf)));
-        netfilter_print_info(mon, nf);
-    }
-}
-
-RxFilterInfoList *qmp_query_rx_filter(const char *name, Error **errp)
-{
-    NetClientState *nc;
-    RxFilterInfoList *filter_list = NULL, **tail = &filter_list;
-
-    QTAILQ_FOREACH(nc, &net_clients, next) {
-        RxFilterInfo *info;
-
-        if (name && strcmp(nc->name, name) != 0) {
-            continue;
-        }
-
-        /* only query rx-filter information of NIC */
-        if (nc->info->type != NET_CLIENT_DRIVER_NIC) {
-            if (name) {
-                error_setg(errp, "net client(%s) isn't a NIC", name);
-                assert(!filter_list);
-                return NULL;
-            }
-            continue;
-        }
-
-        /* only query information on queue 0 since the info is per nic,
-         * not per queue
-         */
-        if (nc->queue_index != 0)
-            continue;
-
-        if (nc->info->query_rx_filter) {
-            info = nc->info->query_rx_filter(nc);
-            QAPI_LIST_APPEND(tail, info);
-        } else if (name) {
-            error_setg(errp, "net client(%s) doesn't support"
-                       " rx-filter querying", name);
-            assert(!filter_list);
-            return NULL;
-        }
-
-        if (name) {
-            break;
-        }
-    }
-
-    if (filter_list == NULL && name) {
-        error_setg(errp, "invalid net client name: %s", name);
-    }
-
-    return filter_list;
-}
-
-void colo_notify_filters_event(int event, Error **errp)
-{
-    NetClientState *nc;
-    NetFilterState *nf;
-    NetFilterClass *nfc = NULL;
-    Error *local_err = NULL;
-
-    QTAILQ_FOREACH(nc, &net_clients, next) {
-        QTAILQ_FOREACH(nf, &nc->filters, next) {
-            nfc = NETFILTER_GET_CLASS(OBJECT(nf));
-            nfc->handle_event(nf, event, &local_err);
-            if (local_err) {
-                error_propagate(errp, local_err);
-                return;
-            }
-        }
-    }
-}
-
-void net_client_set_link(NetClientState **ncs, int queues, bool up)
-{
-    NetClientState *nc;
-    int i;
-
-    nc = ncs[0];
-
-    for (i = 0; i < queues; i++) {
-        ncs[i]->link_down = !up;
-    }
-
-    if (nc->info->link_status_changed) {
-        nc->info->link_status_changed(nc);
-    }
-
-    if (nc->peer) {
-        /* Change peer link only if the peer is NIC and then notify peer.
-         * If the peer is a HUBPORT or a backend, we do not change the
-         * link status.
-         *
-         * This behavior is compatible with qemu hubs where there could be
-         * multiple clients that can still communicate with each other in
-         * disconnected mode. For now maintain this compatibility.
-         */
-        if (nc->peer->info->type == NET_CLIENT_DRIVER_NIC) {
-            for (i = 0; i < queues; i++) {
-                ncs[i]->peer->link_down = !up;
-            }
-        }
-        if (nc->peer->info->link_status_changed) {
-            nc->peer->info->link_status_changed(nc->peer);
-        }
-    }
-}
-
-void qmp_set_link(const char *name, bool up, Error **errp)
-{
-    NetClientState *ncs[MAX_QUEUE_NUM];
-    int queues;
-
-    queues = qemu_find_net_clients_except(name, ncs,
-                                          NET_CLIENT_DRIVER__MAX,
-                                          MAX_QUEUE_NUM);
-
-    if (queues == 0) {
-        error_set(errp, ERROR_CLASS_DEVICE_NOT_FOUND,
-                  "Device '%s' not found", name);
-        return;
-    }
-
-    net_client_set_link(ncs, queues, up);
-}
-
 static void net_vm_change_state_handler(void *opaque, bool running,
                                         RunState state)
 {
@@ -1695,14 +1213,10 @@ static void net_vm_change_state_handler(void *opaque, bool running,
 
     QTAILQ_FOREACH_SAFE(nc, &net_clients, next, tmp) {
         if (running) {
-            /* Flush queued packets and wake up backends. */
             if (nc->peer && qemu_can_send_packet(nc)) {
                 qemu_flush_queued_packets(nc->peer);
             }
         } else {
-            /* Complete all queued packets, to guarantee we don't modify
-             * state later when VM is not running.
-             */
             qemu_flush_or_purge_queued_packets(nc, true);
         }
     }
@@ -1712,30 +1226,6 @@ void net_cleanup(void)
 {
     NetClientState *nc, **p = &QTAILQ_FIRST(&net_clients);
 
-    /*cleanup colo compare module for COLO*/
-    colo_compare_cleanup();
-
-    /*
-     * Walk the net_clients list and remove the netdevs but *not* any
-     * NET_CLIENT_DRIVER_NIC entries. The latter are owned by the device
-     * model which created them, and in some cases (e.g. xen-net-device)
-     * the device itself may do cleanup at exit and will be upset if we
-     * just delete its NIC from underneath it.
-     *
-     * Since qemu_del_net_client() may delete multiple entries, using
-     * QTAILQ_FOREACH_SAFE() is not safe here. The only safe pointer
-     * to keep as a bookmark is a NET_CLIENT_DRIVER_NIC entry, so keep
-     * 'p' pointing to either the head of the list, or the 'next' field
-     * of the latest NET_CLIENT_DRIVER_NIC, and operate on *p as we walk
-     * the list.
-     *
-     * However, the NIC may have peers that trust to be clean beyond this
-     * point.  For example, if they have been removed with device_del.
-     *
-     * The 'nc' variable isn't part of the list traversal; it's purely
-     * for convenience as too much '(*p)->' has a tendency to make the
-     * readers' eyes bleed.
-     */
     while (*p) {
         nc = *p;
         if (nc->info->type == NET_CLIENT_DRIVER_NIC) {
@@ -1750,7 +1240,6 @@ void net_cleanup(void)
                 }
             }
 
-            /* Skip NET_CLIENT_DRIVER_NIC entries */
             p = &QTAILQ_NEXT(nc, next);
         } else {
             qemu_del_net_client(nc);
@@ -1769,7 +1258,6 @@ void net_check_clients(void)
         show_nic_models();
         exit(0);
     }
-    net_hub_check_clients();
 
     QTAILQ_FOREACH(nc, &net_clients, next) {
         if (!nc->peer) {
@@ -1780,10 +1268,6 @@ void net_check_clients(void)
         }
     }
 
-    /* Check that all NICs requested via -net nic actually got created.
-     * NICs created via -device don't need to be checked here because
-     * they are always instantiated.
-     */
     for (i = 0; i < MAX_NICS; i++) {
         NICInfo *nd = &nd_table[i];
         if (nd->used && !nd->instantiated) {
@@ -1817,7 +1301,6 @@ static int net_init_netdev(void *dummy, QemuOpts *opts, Error **errp)
     return net_client_init(opts, true, errp);
 }
 
-/* For the convenience "--nic" parameter */
 static int net_param_nic(void *dummy, QemuOpts *opts, Error **errp)
 {
     char *mac, *nd_id;
@@ -1852,7 +1335,7 @@ static int net_param_nic(void *dummy, QemuOpts *opts, Error **errp)
     }
 
     if (!type) {
-        qemu_opt_set(opts, "type", "user", &error_abort);
+        qemu_opt_set(opts, "type", "tap", &error_abort);
     }
 
     ni = &nd_table[idx];
@@ -1863,14 +1346,12 @@ static int net_param_nic(void *dummy, QemuOpts *opts, Error **errp)
         return 0;
     }
 
-    /* Create an ID if the user did not specify one */
     nd_id = g_strdup(qemu_opts_id(opts));
     if (!nd_id) {
         nd_id = id_generate(ID_NET);
         qemu_opts_set_id(opts, nd_id);
     }
 
-    /* Handle MAC address */
     mac = qemu_opt_get_del(opts, "mac");
     if (mac) {
         ret = net_parse_macaddr(ni->macaddr.a, mac);
@@ -1932,11 +1413,6 @@ void net_init_clients(void)
                       &error_fatal);
 }
 
-/*
- * Does this -netdev argument use modern rather than traditional syntax?
- * Modern syntax is to be parsed with netdev_parse_modern().
- * Traditional syntax is to be parsed with net_client_parse().
- */
 bool netdev_is_modern(const char *optstr)
 {
     QemuOpts *opts;
@@ -1950,7 +1426,6 @@ bool netdev_is_modern(const char *optstr)
     };
 
     if (optstr[0] == '{') {
-        /* This is JSON, which means it's modern syntax */
         return true;
     }
 
@@ -1965,12 +1440,6 @@ bool netdev_is_modern(const char *optstr)
     return is_modern;
 }
 
-/*
- * netdev_parse_modern() uses modern, more expressive syntax than
- * net_client_parse(), but supports only the -netdev option.
- * netdev_parse_modern() appends to @nd_queue, whereas net_client_parse()
- * appends to @qemu_netdev_opts.
- */
 void netdev_parse_modern(const char *optstr)
 {
     Visitor *v;
@@ -1992,8 +1461,6 @@ void net_client_parse(QemuOptsList *opts_list, const char *optstr)
     }
 }
 
-/* From FreeBSD */
-/* XXX: optimize */
 uint32_t net_crc32(const uint8_t *p, int len)
 {
     uint32_t crc;
@@ -2043,10 +1510,6 @@ QemuOptsList qemu_netdev_opts = {
     .implied_opt_name = "type",
     .head = QTAILQ_HEAD_INITIALIZER(qemu_netdev_opts.head),
     .desc = {
-        /*
-         * no elements => accept any params
-         * validation will happen later
-         */
         { /* end of list */ }
     },
 };
@@ -2056,10 +1519,6 @@ QemuOptsList qemu_nic_opts = {
     .implied_opt_name = "type",
     .head = QTAILQ_HEAD_INITIALIZER(qemu_nic_opts.head),
     .desc = {
-        /*
-         * no elements => accept any params
-         * validation will happen later
-         */
         { /* end of list */ }
     },
 };
@@ -2069,10 +1528,6 @@ QemuOptsList qemu_net_opts = {
     .implied_opt_name = "type",
     .head = QTAILQ_HEAD_INITIALIZER(qemu_net_opts.head),
     .desc = {
-        /*
-         * no elements => accept any params
-         * validation will happen later
-         */
         { /* end of list */ }
     },
 };
@@ -2090,21 +1545,11 @@ void net_socket_rs_init(SocketReadState *rs,
     rs->finalize = finalize;
 }
 
-/*
- * Returns
- * 0: success
- * -1: error occurs
- */
 int net_fill_rstate(SocketReadState *rs, const uint8_t *buf, int size)
 {
     unsigned int l;
 
     while (size > 0) {
-        /* Reassemble a packet from the network.
-         * 0 = getting length.
-         * 1 = getting vnet header length.
-         * 2 = getting data.
-         */
         switch (rs->state) {
         case 0:
             l = 4 - rs->index;
@@ -2116,7 +1561,6 @@ int net_fill_rstate(SocketReadState *rs, const uint8_t *buf, int size)
             size -= l;
             rs->index += l;
             if (rs->index == 4) {
-                /* got length */
                 rs->packet_len = ntohl(*(uint32_t *)rs->buf);
                 rs->index = 0;
                 if (rs->vnet_hdr) {
@@ -2137,7 +1581,6 @@ int net_fill_rstate(SocketReadState *rs, const uint8_t *buf, int size)
             size -= l;
             rs->index += l;
             if (rs->index == 4) {
-                /* got vnet header length */
                 rs->vnet_hdr_len = ntohl(*(uint32_t *)rs->buf);
                 rs->index = 0;
                 rs->state = 2;

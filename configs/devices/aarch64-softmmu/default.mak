@@ -1,12 +1,13 @@
-# Default configuration for aarch64-softmmu
-
-# We support all the 32 bit boards so need all their config
-include ../arm-softmmu/default.mak
-
-# These are selected by default when TCG is enabled, uncomment them to
-# keep out of the build.
-# CONFIG_XLNX_ZYNQMP_ARM=n
-# CONFIG_XLNX_VERSAL=n
-# CONFIG_SBSA_REF=n
-# CONFIG_NPCM8XX=n
-CONFIG_VMAPPLE=n
+CONFIG_ARM_VIRT=y
+CONFIG_TEST_DEVICES=n
+CONFIG_PCI_DEVICES=n
+CONFIG_PCIE_DEVICES=n
+CONFIG_VIRTIO_GPU=y
+CONFIG_VIRTIO_INPUT=y
+CONFIG_VIRTIO_SND=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_BLK=y
+CONFIG_VIRTIO_MMIO=n
+CONFIG_GENERIC_LOADER=n
+CONFIG_SERIAL_MM=y

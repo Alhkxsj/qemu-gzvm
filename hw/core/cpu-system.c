@@ -1,32 +1,13 @@
-/*
- * QEMU CPU model (system specific)
- *
- * Copyright (c) 2012-2014 SUSE LINUX Products GmbH
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version 2
- * of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see
- * <http://www.gnu.org/licenses/gpl-2.0.html>
- */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "system/address-spaces.h"
+#include "exec/address-spaces.h"
 #include "exec/cputlb.h"
-#include "exec/target_page.h"
-#include "system/memory.h"
-#include "qemu/target-info.h"
-#include "hw/core/qdev.h"
-#include "hw/core/qdev-properties.h"
+#include "exec/memory.h"
+#include "exec/tb-flush.h"
+#include "exec/tswap.h"
+#include "hw/qdev-core.h"
+#include "hw/qdev-properties.h"
 #include "hw/core/sysemu-cpu-ops.h"
 #include "migration/vmstate.h"
 #include "system/tcg.h"
@@ -45,46 +26,27 @@ bool cpu_paging_enabled(const CPUState *cpu)
     return false;
 }
 
-bool cpu_get_memory_mapping(CPUState *cpu, MemoryMappingList *list,
-                            Error **errp)
+hwaddr cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
+                                     MemTxAttrs *attrs)
 {
-    if (cpu->cc->sysemu_ops->get_memory_mapping) {
-        return cpu->cc->sysemu_ops->get_memory_mapping(cpu, list, errp);
-    }
+    hwaddr paddr;
 
-    error_setg(errp, "Obtaining memory mappings is unsupported on this CPU.");
-    return false;
+    if (cpu->cc->sysemu_ops->get_phys_page_attrs_debug) {
+        paddr = cpu->cc->sysemu_ops->get_phys_page_attrs_debug(cpu, addr,
+                                                               attrs);
+    } else {
+        *attrs = MEMTXATTRS_UNSPECIFIED;
+        paddr = cpu->cc->sysemu_ops->get_phys_page_debug(cpu, addr);
+    }
+    attrs->debug = 1;
+    return paddr;
 }
 
-bool cpu_translate_for_debug(CPUState *cpu, vaddr addr,
-                             TranslateForDebugResult *result)
+hwaddr cpu_get_phys_page_debug(CPUState *cpu, vaddr addr)
 {
-    if (cpu->cc->sysemu_ops->translate_for_debug) {
-        return cpu->cc->sysemu_ops->translate_for_debug(cpu, addr, result);
-    } else {
-        /* Fallbacks for CPUs which don't implement translate_for_debug */
-        if (cpu->cc->sysemu_ops->get_phys_addr_attrs_debug) {
-            result->physaddr =
-                cpu->cc->sysemu_ops->get_phys_addr_attrs_debug(cpu, addr,
-                                                               &result->attrs);
-        } else {
-            result->physaddr
-                = cpu->cc->sysemu_ops->get_phys_addr_debug(cpu, addr);
-            result->attrs = MEMTXATTRS_UNSPECIFIED;
-        }
-        if (result->physaddr == -1) {
-            return false;
-        }
-        /* Indicate that this is a debug access. */
-        result->attrs.debug = 1;
-        /*
-         * Assume memory access permissions are valid for the whole page.
-         * Targets where this isn't true should implement the
-         * translate_for_debug method.
-         */
-        result->lg_page_size = TARGET_PAGE_BITS;
-        return true;
-    }
+    MemTxAttrs attrs = {};
+
+    return cpu_get_phys_page_attrs_debug(cpu, addr, &attrs);
 }
 
 int cpu_asidx_from_attrs(CPUState *cpu, MemTxAttrs attrs)
@@ -93,53 +55,17 @@ int cpu_asidx_from_attrs(CPUState *cpu, MemTxAttrs attrs)
 
     if (cpu->cc->sysemu_ops->asidx_from_attrs) {
         ret = cpu->cc->sysemu_ops->asidx_from_attrs(cpu, attrs);
-        assert(ret <= cpu->cc->max_as && ret >= 0);
+        assert(ret < cpu->num_ases && ret >= 0);
     }
     return ret;
 }
 
-int cpu_write_elf32_qemunote(WriteCoreDumpFunction f, CPUState *cpu,
-                             void *opaque)
+bool cpu_virtio_is_big_endian(CPUState *cpu)
 {
-    if (!cpu->cc->sysemu_ops->write_elf32_qemunote) {
-        return 0;
+    if (cpu->cc->sysemu_ops->virtio_is_big_endian) {
+        return cpu->cc->sysemu_ops->virtio_is_big_endian(cpu);
     }
-    return (*cpu->cc->sysemu_ops->write_elf32_qemunote)(f, cpu, opaque);
-}
-
-int cpu_write_elf32_note(WriteCoreDumpFunction f, CPUState *cpu,
-                         int cpuid, void *opaque)
-{
-    if (!cpu->cc->sysemu_ops->write_elf32_note) {
-        return -1;
-    }
-    return (*cpu->cc->sysemu_ops->write_elf32_note)(f, cpu, cpuid, opaque);
-}
-
-int cpu_write_elf64_qemunote(WriteCoreDumpFunction f, CPUState *cpu,
-                             void *opaque)
-{
-    if (!cpu->cc->sysemu_ops->write_elf64_qemunote) {
-        return 0;
-    }
-    return (*cpu->cc->sysemu_ops->write_elf64_qemunote)(f, cpu, opaque);
-}
-
-int cpu_write_elf64_note(WriteCoreDumpFunction f, CPUState *cpu,
-                         int cpuid, void *opaque)
-{
-    if (!cpu->cc->sysemu_ops->write_elf64_note) {
-        return -1;
-    }
-    return (*cpu->cc->sysemu_ops->write_elf64_note)(f, cpu, cpuid, opaque);
-}
-
-bool cpu_internal_is_big_endian(CPUState *cpu)
-{
-    if (cpu->cc->sysemu_ops->internal_is_big_endian) {
-        return cpu->cc->sysemu_ops->internal_is_big_endian(cpu);
-    }
-    return target_big_endian();
+    return target_words_bigendian();
 }
 
 GuestPanicInformation *cpu_get_crash_info(CPUState *cpu)
@@ -153,11 +79,6 @@ GuestPanicInformation *cpu_get_crash_info(CPUState *cpu)
 }
 
 static const Property cpu_system_props[] = {
-    /*
-     * Create a memory property for system CPU object, so users can
-     * wire up its memory.  The default if no link is set up is to use
-     * the system address space.
-     */
     DEFINE_PROP_LINK("memory", CPUState, memory, TYPE_MEMORY_REGION,
                      MemoryRegion *),
 };
@@ -178,10 +99,6 @@ void cpu_class_init_props(DeviceClass *dc)
 {
     ObjectClass *oc = OBJECT_CLASS(dc);
 
-    /*
-     * We can't use DEFINE_PROP_BOOL in the Property array for this
-     * property, because we want this to be settable after realize.
-     */
     object_class_property_add_bool(oc, "start-powered-off",
                                    cpu_get_start_powered_off,
                                    cpu_set_start_powered_off);
@@ -191,7 +108,6 @@ void cpu_class_init_props(DeviceClass *dc)
 
 void cpu_exec_class_post_init(CPUClass *cc)
 {
-    /* Check mandatory SysemuCPUOps handlers */
     g_assert(cc->sysemu_ops->has_work);
 }
 
@@ -206,13 +122,11 @@ static int cpu_common_post_load(void *opaque, int version_id)
     if (tcg_enabled()) {
         CPUState *cpu = opaque;
 
-        /*
-         * 0x01 was CPU_INTERRUPT_EXIT. This line can be removed when the
-         * version_id is increased.
-         */
-        cpu_reset_interrupt(cpu, 0x01);
+        cpu->interrupt_request &= ~0x01;
 
         tlb_flush(cpu);
+
+        tb_flush(cpu);
     }
 
     return 0;

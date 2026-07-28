@@ -1,33 +1,13 @@
-/*
- *  Dynamic device configuration and creation.
- *
- *  Copyright (c) 2009 CodeSourcery
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
- */
 
 #include "qemu/osdep.h"
-#include "hw/core/sysbus.h"
+#include "hw/sysbus.h"
 #include "monitor/hmp.h"
-#include "monitor/hmp-completion.h"
 #include "monitor/monitor.h"
 #include "monitor/qdev.h"
-#include "qemu/base-arch-defs.h"
+#include "system/arch_init.h"
 #include "system/runstate.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-qdev.h"
-#include "qapi/qmp-registry.h"
 #include "qobject/qdict.h"
 #include "qapi/qmp/qerror.h"
 #include "qobject/qstring.h"
@@ -35,21 +15,15 @@
 #include "qemu/config-file.h"
 #include "qemu/error-report.h"
 #include "qemu/help_option.h"
-#include "qemu/id.h"
 #include "qemu/option.h"
 #include "qemu/qemu-print.h"
 #include "qemu/option_int.h"
 #include "system/block-backend.h"
-#include "migration/misc.h"
 #include "qemu/cutils.h"
-#include "hw/core/qdev-properties.h"
-#include "hw/core/clock.h"
-#include "hw/core/boards.h"
+#include "hw/qdev-properties.h"
+#include "hw/clock.h"
+#include "hw/boards.h"
 
-/*
- * Aliases were a bad idea from the start.  Let's keep them
- * from spreading further.
- */
 typedef struct QDevAlias
 {
     const char *typename;
@@ -57,14 +31,13 @@ typedef struct QDevAlias
     uint32_t arch_mask;
 } QDevAlias;
 
-/* default virtio transport per architecture */
 #define QEMU_ARCH_VIRTIO_PCI (QEMU_ARCH_ALPHA | \
                               QEMU_ARCH_ARM | \
                               QEMU_ARCH_HPPA | \
                               QEMU_ARCH_I386 | \
                               QEMU_ARCH_LOONGARCH | \
                               QEMU_ARCH_MIPS | \
-                              QEMU_ARCH_OR1K | \
+                              QEMU_ARCH_OPENRISC | \
                               QEMU_ARCH_PPC | \
                               QEMU_ARCH_RISCV | \
                               QEMU_ARCH_SH4 | \
@@ -73,56 +46,10 @@ typedef struct QDevAlias
 #define QEMU_ARCH_VIRTIO_CCW (QEMU_ARCH_S390X)
 #define QEMU_ARCH_VIRTIO_MMIO (QEMU_ARCH_M68K)
 
-/* Please keep this table sorted by typename. */
 static const QDevAlias qdev_alias_table[] = {
-    { "AC97", "ac97" },
-    { "e1000", "e1000-82540em" },
-    { "ES1370", "es1370" },
-    { "ich9-ahci", "ahci" },
-    { "lsi53c895a", "lsi" },
-    { "virtio-9p-device", "virtio-9p", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-9p-ccw", "virtio-9p", QEMU_ARCH_VIRTIO_CCW },
-    { "virtio-9p-pci", "virtio-9p", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-balloon-device", "virtio-balloon", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-balloon-ccw", "virtio-balloon", QEMU_ARCH_VIRTIO_CCW },
-    { "virtio-balloon-pci", "virtio-balloon", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-blk-device", "virtio-blk", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-blk-ccw", "virtio-blk", QEMU_ARCH_VIRTIO_CCW },
     { "virtio-blk-pci", "virtio-blk", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-gpu-device", "virtio-gpu", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-gpu-ccw", "virtio-gpu", QEMU_ARCH_VIRTIO_CCW },
-    { "virtio-gpu-pci", "virtio-gpu", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-gpu-gl-device", "virtio-gpu-gl", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-gpu-gl-pci", "virtio-gpu-gl", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-gpu-rutabaga-device", "virtio-gpu-rutabaga",
-      QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-gpu-rutabaga-pci", "virtio-gpu-rutabaga", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-input-host-device", "virtio-input-host", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-input-host-ccw", "virtio-input-host", QEMU_ARCH_VIRTIO_CCW },
-    { "virtio-input-host-pci", "virtio-input-host", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-iommu-pci", "virtio-iommu", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-keyboard-device", "virtio-keyboard", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-keyboard-ccw", "virtio-keyboard", QEMU_ARCH_VIRTIO_CCW },
     { "virtio-keyboard-pci", "virtio-keyboard", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-mouse-device", "virtio-mouse", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-mouse-ccw", "virtio-mouse", QEMU_ARCH_VIRTIO_CCW },
-    { "virtio-mouse-pci", "virtio-mouse", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-net-device", "virtio-net", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-net-ccw", "virtio-net", QEMU_ARCH_VIRTIO_CCW },
     { "virtio-net-pci", "virtio-net", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-rng-device", "virtio-rng", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-rng-ccw", "virtio-rng", QEMU_ARCH_VIRTIO_CCW },
-    { "virtio-rng-pci", "virtio-rng", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-scsi-device", "virtio-scsi", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-scsi-ccw", "virtio-scsi", QEMU_ARCH_VIRTIO_CCW },
-    { "virtio-scsi-pci", "virtio-scsi", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-serial-device", "virtio-serial", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-serial-ccw", "virtio-serial", QEMU_ARCH_VIRTIO_CCW },
-    { "virtio-serial-pci", "virtio-serial", QEMU_ARCH_VIRTIO_PCI},
-    { "virtio-sound-device", "virtio-sound", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-sound-pci", "virtio-sound", QEMU_ARCH_VIRTIO_PCI },
-    { "virtio-tablet-device", "virtio-tablet", QEMU_ARCH_VIRTIO_MMIO },
-    { "virtio-tablet-ccw", "virtio-tablet", QEMU_ARCH_VIRTIO_CCW },
     { "virtio-tablet-pci", "virtio-tablet", QEMU_ARCH_VIRTIO_PCI },
     { }
 };
@@ -181,7 +108,6 @@ static void qdev_print_devinfos(bool show_no_user)
         [DEVICE_CATEGORY_SOUND]   = "Sound",
         [DEVICE_CATEGORY_MISC]    = "Misc",
         [DEVICE_CATEGORY_CPU]     = "CPU",
-        [DEVICE_CATEGORY_WATCHDOG]= "Watchdog",
         [DEVICE_CATEGORY_MAX]     = "Uncategorized",
     };
     GSList *list, *elt;
@@ -272,7 +198,6 @@ static DeviceClass *qdev_get_device_class(const char **driver, Error **errp)
     }
 
     if (object_class_dynamic_cast(oc, TYPE_SYS_BUS_DEVICE)) {
-        /* sysbus devices need to be allowed by the machine */
         MachineClass *mc = MACHINE_CLASS(object_get_class(qdev_get_machine()));
         if (!device_type_is_dynamic_sysbus(mc, *driver)) {
             error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "driver",
@@ -416,12 +341,6 @@ static DeviceState *qbus_find_dev(BusState *bus, char *elem)
 {
     BusChild *kid;
 
-    /*
-     * try to match in order:
-     *   (1) instance id, if present
-     *   (2) driver name
-     *   (3) driver alias, if present
-     */
     QTAILQ_FOREACH(kid, &bus->children, sibling) {
         DeviceState *dev = kid->child;
         if (dev->id  &&  strcmp(dev->id, elem) == 0) {
@@ -457,14 +376,6 @@ static inline bool qbus_is_full(BusState *bus)
     return bus_class->max_dev && bus->num_children >= bus_class->max_dev;
 }
 
-/*
- * Search the tree rooted at @bus for a bus.
- * If @name, search for a bus with that name.  Note that bus names
- * need not be unique.  Yes, that's screwed up.
- * Else search for a bus that is a subtype of @bus_typename.
- * If more than one exists, prefer one that can take another device.
- * Return the bus if found, else %NULL.
- */
 static BusState *qbus_find_recursive(BusState *bus, const char *name,
                                      const char *bus_typename)
 {
@@ -498,7 +409,6 @@ static BusState *qbus_find_recursive(BusState *bus, const char *name,
         }
     }
 
-    /* root or a descendant matches, but is full */
     return pick;
 }
 
@@ -509,7 +419,6 @@ static BusState *qbus_find(const char *path, Error **errp)
     char elem[128];
     int pos, len;
 
-    /* find start element */
     if (path[0] == '/') {
         bus = sysbus_get_default();
         pos = 0;
@@ -535,7 +444,6 @@ static BusState *qbus_find(const char *path, Error **errp)
             break;
         }
 
-        /* find device */
         if (sscanf(path+pos, "%127[^/]%n", elem, &len) != 1) {
             g_assert_not_reached();
             elem[0] = len = 0;
@@ -554,8 +462,6 @@ static BusState *qbus_find(const char *path, Error **errp)
             pos++;
         }
         if (path[pos] == '\0') {
-            /* last specified element is a device.  If it has exactly
-             * one child bus accept it nevertheless */
             if (dev->num_child_bus == 1) {
                 bus = QLIST_FIRST(&dev->child_bus);
                 break;
@@ -570,7 +476,6 @@ static BusState *qbus_find(const char *path, Error **errp)
             return NULL;
         }
 
-        /* find bus */
         if (sscanf(path+pos, "%127[^/]%n", elem, &len) != 1) {
             g_assert_not_reached();
             elem[0] = len = 0;
@@ -591,29 +496,21 @@ static BusState *qbus_find(const char *path, Error **errp)
     return bus;
 }
 
-/* Takes ownership of @id, will be freed when deleting the device */
 const char *qdev_set_id(DeviceState *dev, char *id, Error **errp)
 {
     ObjectProperty *prop;
 
     assert(!dev->id && !dev->realized);
 
-    /*
-     * object_property_[try_]add_child() below will assert the device
-     * has no parent
-     */
     if (id) {
-        if (!id_wellformed(id)) {
-            error_setg(errp, "Invalid qdev ID '%s'", id);
-            goto err;
-        }
         prop = object_property_try_add_child(qdev_get_peripheral(), id,
                                              OBJECT(dev), NULL);
         if (prop) {
             dev->id = id;
         } else {
             error_setg(errp, "Duplicate device ID '%s'", id);
-            goto err;
+            g_free(id);
+            return NULL;
         }
     } else {
         static int anon_count;
@@ -624,29 +521,6 @@ const char *qdev_set_id(DeviceState *dev, char *id, Error **errp)
     }
 
     return prop->name;
-
-err:
-    g_free(id);
-    return NULL;
-}
-
-BusState *qdev_find_default_bus(DeviceClass *dc, Error **errp)
-{
-    BusState *bus = NULL;
-
-    assert(dc->bus_type != NULL);
-    bus = qbus_find_recursive(sysbus_get_default(), NULL, dc->bus_type);
-    if (!bus) {
-        error_setg(errp, "No '%s' bus found for device '%s'",
-                   dc->bus_type, object_class_get_name(OBJECT_CLASS(dc)));
-        return NULL;
-    }
-    if (qbus_is_full(bus)) {
-        error_setg(errp, "A '%s' bus was found but is full", dc->bus_type);
-        return NULL;
-    }
-
-    return bus;
 }
 
 DeviceState *qdev_device_add_from_qdict(const QDict *opts,
@@ -656,7 +530,7 @@ DeviceState *qdev_device_add_from_qdict(const QDict *opts,
     DeviceClass *dc;
     const char *driver, *path;
     char *id;
-    DeviceState *dev;
+    DeviceState *dev = NULL;
     BusState *bus = NULL;
     QDict *properties;
 
@@ -666,13 +540,11 @@ DeviceState *qdev_device_add_from_qdict(const QDict *opts,
         return NULL;
     }
 
-    /* find driver */
     dc = qdev_get_device_class(&driver, errp);
     if (!dc) {
         return NULL;
     }
 
-    /* find bus */
     path = qdict_get_try_str(opts, "bus");
     if (path != NULL) {
         bus = qbus_find(path, errp);
@@ -685,8 +557,10 @@ DeviceState *qdev_device_add_from_qdict(const QDict *opts,
             return NULL;
         }
     } else if (dc->bus_type != NULL) {
-        bus = qdev_find_default_bus(dc, errp);
-        if (!bus) {
+        bus = qbus_find_recursive(sysbus_get_default(), NULL, dc->bus_type);
+        if (!bus || qbus_is_full(bus)) {
+            error_setg(errp, "No '%s' bus found for device '%s'",
+                       dc->bus_type, driver);
             return NULL;
         }
     }
@@ -701,37 +575,25 @@ DeviceState *qdev_device_add_from_qdict(const QDict *opts,
         return NULL;
     }
 
-    if (migration_is_running()) {
-        error_setg(errp, "device_add not allowed while migrating");
-        return NULL;
-    }
-
-    /* create device */
     dev = qdev_new(driver);
 
-    /* Check whether the hotplug is allowed by the machine */
     if (phase_check(PHASE_MACHINE_READY) &&
         !qdev_hotplug_allowed(dev, bus, errp)) {
         goto err_del_dev;
     }
 
-    /*
-     * set dev's parent and register its id.
-     * If it fails it means the id is already taken.
-     */
     id = g_strdup(qdict_get_try_str(opts, "id"));
     if (!qdev_set_id(dev, id, errp)) {
         goto err_del_dev;
     }
 
-    /* set properties */
     properties = qdict_clone_shallow(opts);
     qdict_del(properties, "driver");
     qdict_del(properties, "bus");
     qdict_del(properties, "id");
 
-    object_set_props_from_keyval(&dev->parent_obj, properties, from_json,
-                                 errp);
+    object_set_properties_from_keyval(&dev->parent_obj, properties, from_json,
+                                      errp);
     qobject_unref(properties);
     if (*errp) {
         goto err_del_dev;
@@ -743,13 +605,13 @@ DeviceState *qdev_device_add_from_qdict(const QDict *opts,
     return dev;
 
 err_del_dev:
-    object_unparent(OBJECT(dev));
-    object_unref(OBJECT(dev));
-
+    if (dev) {
+        object_unparent(OBJECT(dev));
+        object_unref(OBJECT(dev));
+    }
     return NULL;
 }
 
-/* Takes ownership of @opts on success */
 DeviceState *qdev_device_add(QemuOpts *opts, Error **errp)
 {
     QDict *qdict = qemu_opts_to_qdict(opts, NULL);
@@ -771,18 +633,19 @@ static void qdev_print_props(Monitor *mon, DeviceState *dev, DeviceClass *dc,
     for (int i = 0, n = dc->props_count_; i < n; ++i) {
         const Property *prop = &dc->props_[i];
         char *value;
+        char *legacy_name = g_strdup_printf("legacy-%s", prop->name);
 
-        if (prop->info->print) {
-            value = prop->info->print(OBJECT(dev), prop);
+        if (object_property_get_type(OBJECT(dev), legacy_name, NULL)) {
+            value = object_property_get_str(OBJECT(dev), legacy_name, NULL);
         } else {
             value = object_property_print(OBJECT(dev), prop->name, true,
                                           NULL);
         }
+        g_free(legacy_name);
 
         if (!value) {
             continue;
         }
-
         qdev_printf("%s = %s\n", prop->name,
                     *value ? value : "<null>");
         g_free(value);
@@ -871,24 +734,11 @@ void qmp_device_add(QDict *qdict, QObject **ret_data, Error **errp)
 
     dev = qdev_device_add_from_qdict(qdict, true, errp);
     if (!dev) {
-        /*
-         * Drain all pending RCU callbacks. This is done because
-         * some bus related operations can delay a device removal
-         * (in this case this can happen if device is added and then
-         * removed due to a configuration error)
-         * to a RCU callback, but user might expect that this interface
-         * will finish its job completely once qmp command returns result
-         * to the user
-         */
         drain_call_rcu();
     }
     object_unref(OBJECT(dev));
 }
 
-/*
- * Note that creating new APIs using error classes other than GenericError is
- * not recommended. Set use_generic_error=true for new interfaces.
- */
 static DeviceState *find_device_state(const char *id, bool use_generic_error,
                                       Error **errp)
 {
@@ -922,20 +772,11 @@ void qdev_unplug(DeviceState *dev, Error **errp)
         return;
     }
 
-    if (migration_is_running() && !dev->allow_unplug_during_migration) {
-        error_setg(errp, "device_del not allowed while migrating");
-        return;
-    }
-
     qdev_hot_removed = true;
 
     hotplug_ctrl = qdev_get_hotplug_handler(dev);
-    /* hotpluggable device MUST have HotplugHandler, if it doesn't
-     * then something is very wrong with it */
     g_assert(hotplug_ctrl);
 
-    /* If device supports async unplug just request it to be done,
-     * otherwise just remove it synchronously */
     hdc = HOTPLUG_HANDLER_GET_CLASS(hotplug_ctrl);
     if (hdc->unplug_request) {
         hotplug_handler_unplug_request(hotplug_ctrl, dev, &local_err);
@@ -981,18 +822,6 @@ void qmp_device_sync_config(const char *id, Error **errp)
 {
     DeviceState *dev;
 
-    /*
-     * During migration there is a race between syncing`configuration
-     * and migrating it (if migrate first, that target would get
-     * outdated version), so let's just not allow it.
-     */
-
-    if (migration_is_running()) {
-        error_setg(errp, "Config synchronization is not allowed "
-                   "during migration");
-        return;
-    }
-
     dev = find_device_state(id, true, errp);
     if (!dev) {
         return;
@@ -1017,15 +846,6 @@ void hmp_device_add(Monitor *mon, const QDict *qdict)
     }
     dev = qdev_device_add(opts, &err);
     if (!dev) {
-        /*
-         * Drain all pending RCU callbacks. This is done because
-         * some bus related operations can delay a device removal
-         * (in this case this can happen if device is added and then
-         * removed due to a configuration error)
-         * to a RCU callback, but user might expect that this interface
-         * will finish its job completely once qmp command returns result
-         * to the user
-         */
         drain_call_rcu();
 
         qemu_opts_del(opts);
@@ -1150,11 +970,6 @@ QemuOptsList qemu_device_opts = {
     .implied_opt_name = "driver",
     .head = QTAILQ_HEAD_INITIALIZER(qemu_device_opts.head),
     .desc = {
-        /*
-         * no elements => accept any
-         * sanity checking will happen later
-         * when setting device properties
-         */
         { /* end of list */ }
     },
 };
@@ -1205,15 +1020,4 @@ int qemu_global_option(const char *str)
     }
 
     return 0;
-}
-
-bool qmp_command_available(const QmpCommand *cmd, Error **errp)
-{
-    if (!phase_check(PHASE_MACHINE_READY) &&
-        !(cmd->options & QCO_ALLOW_PRECONFIG)) {
-        error_setg(errp, "The command '%s' is permitted only after machine initialization has completed",
-                   cmd->name);
-        return false;
-    }
-    return true;
 }

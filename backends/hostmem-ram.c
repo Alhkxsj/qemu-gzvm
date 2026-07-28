@@ -1,14 +1,3 @@
-/*
- * QEMU Host Memory Backend
- *
- * Copyright (C) 2013-2014 Red Hat Inc
- *
- * Authors:
- *   Igor Mammedov <imammedo@redhat.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include "system/hostmem.h"
@@ -37,7 +26,7 @@ ram_backend_memory_alloc(HostMemoryBackend *backend, Error **errp)
 }
 
 static void
-ram_backend_class_init(ObjectClass *oc, const void *data)
+ram_backend_class_init(ObjectClass *oc, void *data)
 {
     HostMemoryBackendClass *bc = MEMORY_BACKEND_CLASS(oc);
 

@@ -1,21 +1,3 @@
-/*
- * CPU thread main loop - common bits for user and system mode emulation
- *
- *  Copyright (c) 2003-2005 Fabrice Bellard
- *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
- *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see <http://www.gnu.org/licenses/>.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
@@ -29,15 +11,10 @@ static QemuCond exclusive_cond;
 static QemuCond exclusive_resume;
 static QemuCond qemu_work_cond;
 
-/* >= 1 if a thread is inside start_exclusive/end_exclusive.  Written
- * under qemu_cpu_list_lock, read with atomic operations.
- */
 static int pending_cpus;
 
 void qemu_init_cpu_list(void)
 {
-    /* This is needed because qemu_init_cpu_list is also called by the
-     * child process in a fork.  */
     pending_cpus = 0;
 
     qemu_mutex_init(&qemu_cpu_list_lock);
@@ -98,7 +75,6 @@ void cpu_list_remove(CPUState *cpu)
 {
     QEMU_LOCK_GUARD(&qemu_cpu_list_lock);
     if (!QTAILQ_IN_USE(cpu, node)) {
-        /* there is nothing to undo since cpu_exec_init() hasn't been called */
         return;
     }
 
@@ -120,8 +96,25 @@ CPUState *qemu_get_cpu(int index)
     return NULL;
 }
 
-/* current CPU in the current thread. It is only valid inside cpu_exec() */
+#ifdef __ANDROID__
+#include <pthread.h>
+static pthread_key_t current_cpu_key;
+static pthread_once_t current_cpu_once = PTHREAD_ONCE_INIT;
+static void current_cpu_key_init(void) {
+    pthread_key_create(&current_cpu_key, free);
+}
+CPUState **android_current_cpu_ptr(void) {
+    pthread_once(&current_cpu_once, current_cpu_key_init);
+    CPUState **p = (CPUState **)pthread_getspecific(current_cpu_key);
+    if (!p) {
+        p = (CPUState **)calloc(1, sizeof(CPUState *));
+        pthread_setspecific(current_cpu_key, p);
+    }
+    return p;
+}
+#else
 __thread CPUState *current_cpu;
+#endif
 
 struct qemu_work_item {
     QSIMPLEQ_ENTRY(qemu_work_item) node;
@@ -137,8 +130,7 @@ static void queue_work_on_cpu(CPUState *cpu, struct qemu_work_item *wi)
     wi->done = false;
     qemu_mutex_unlock(&cpu->work_mutex);
 
-    /* exit the inner loop and reach qemu_process_cpu_events_common().  */
-    cpu_exit(cpu);
+    qemu_cpu_kick(cpu);
 }
 
 void do_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data,
@@ -178,8 +170,6 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
     queue_work_on_cpu(cpu, wi);
 }
 
-/* Wait for pending exclusive operations to complete.  The CPU list lock
-   must be held.  */
 static inline void exclusive_idle(void)
 {
     while (pending_cpus) {
@@ -187,14 +177,11 @@ static inline void exclusive_idle(void)
     }
 }
 
-/* Start an exclusive operation.
-   Must only be called from outside cpu_exec.  */
 void start_exclusive(void)
 {
     CPUState *other_cpu;
     int running_cpus;
 
-    /* Ensure we are not running, or start_exclusive will be blocked. */
     g_assert(!current_cpu->running);
 
     if (current_cpu->exclusive_context_count) {
@@ -205,10 +192,8 @@ void start_exclusive(void)
     qemu_mutex_lock(&qemu_cpu_list_lock);
     exclusive_idle();
 
-    /* Make all other cpus stop executing.  */
     qatomic_set(&pending_cpus, 1);
 
-    /* Write pending_cpus before reading other_cpu->running.  */
     smp_mb();
     running_cpus = 0;
     CPU_FOREACH(other_cpu) {
@@ -224,15 +209,11 @@ void start_exclusive(void)
         qemu_cond_wait(&exclusive_cond, &qemu_cpu_list_lock);
     }
 
-    /* Can release mutex, no one will enter another exclusive
-     * section until end_exclusive resets pending_cpus to 0.
-     */
     qemu_mutex_unlock(&qemu_cpu_list_lock);
 
     current_cpu->exclusive_context_count = 1;
 }
 
-/* Finish an exclusive operation.  */
 void end_exclusive(void)
 {
     current_cpu->exclusive_context_count--;
@@ -246,71 +227,29 @@ void end_exclusive(void)
     qemu_mutex_unlock(&qemu_cpu_list_lock);
 }
 
-/* Wait for exclusive ops to finish, and begin cpu execution.  */
 void cpu_exec_start(CPUState *cpu)
 {
-    trace_cpu_exec_start(cpu->cpu_index);
-
     qatomic_set(&cpu->running, true);
 
-    /* Write cpu->running before reading pending_cpus.  */
     smp_mb();
 
-    /* 1. start_exclusive saw cpu->running == true and pending_cpus >= 1.
-     * After taking the lock we'll see cpu->has_waiter == true and run---not
-     * for long because start_exclusive kicked us.  cpu_exec_end will
-     * decrement pending_cpus and signal the waiter.
-     *
-     * 2. start_exclusive saw cpu->running == false but pending_cpus >= 1.
-     * This includes the case when an exclusive item is running now.
-     * Then we'll see cpu->has_waiter == false and wait for the item to
-     * complete.
-     *
-     * 3. pending_cpus == 0.  Then start_exclusive is definitely going to
-     * see cpu->running == true, and it will kick the CPU.
-     */
     if (unlikely(qatomic_read(&pending_cpus))) {
         QEMU_LOCK_GUARD(&qemu_cpu_list_lock);
         if (!cpu->has_waiter) {
-            /* Not counted in pending_cpus, let the exclusive item
-             * run.  Since we have the lock, just set cpu->running to true
-             * while holding it; no need to check pending_cpus again.
-             */
             qatomic_set(&cpu->running, false);
             exclusive_idle();
-            /* Now pending_cpus is zero.  */
             qatomic_set(&cpu->running, true);
         } else {
-            /* Counted in pending_cpus, go ahead and release the
-             * waiter at cpu_exec_end.
-             */
         }
     }
 }
 
-/* Mark cpu as not executing, and release pending exclusive ops.  */
 void cpu_exec_end(CPUState *cpu)
 {
     qatomic_set(&cpu->running, false);
 
-    /* Write cpu->running before reading pending_cpus.  */
     smp_mb();
 
-    /* 1. start_exclusive saw cpu->running == true.  Then it will increment
-     * pending_cpus and wait for exclusive_cond.  After taking the lock
-     * we'll see cpu->has_waiter == true.
-     *
-     * 2. start_exclusive saw cpu->running == false but here pending_cpus >= 1.
-     * This includes the case when an exclusive item started after setting
-     * cpu->running to false and before we read pending_cpus.  Then we'll see
-     * cpu->has_waiter == false and not touch pending_cpus.  The next call to
-     * cpu_exec_start will run exclusive_idle if still necessary, thus waiting
-     * for the item to complete.
-     *
-     * 3. pending_cpus == 0.  Then start_exclusive is definitely going to
-     * see cpu->running == false, and it can ignore this CPU until the
-     * next cpu_exec_start.
-     */
     if (unlikely(qatomic_read(&pending_cpus))) {
         QEMU_LOCK_GUARD(&qemu_cpu_list_lock);
         if (cpu->has_waiter) {
@@ -321,7 +260,6 @@ void cpu_exec_end(CPUState *cpu)
             }
         }
     }
-    trace_cpu_exec_end(cpu->cpu_index);
 }
 
 void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func,
@@ -363,12 +301,6 @@ void process_queued_cpu_work(CPUState *cpu)
         QSIMPLEQ_REMOVE_HEAD(&cpu->work_list, node);
         qemu_mutex_unlock(&cpu->work_mutex);
         if (wi->exclusive) {
-            /* Running work items outside the BQL avoids the following deadlock:
-             * 1) start_exclusive() is called with the BQL taken while another
-             * CPU is running; 2) cpu_exec in the other CPU tries to takes the
-             * BQL, so it goes to sleep; start_exclusive() is sleeping too, so
-             * neither CPU can proceed.
-             */
             bql_unlock();
             start_exclusive();
             wi->func(cpu, wi->data);
@@ -388,27 +320,17 @@ void process_queued_cpu_work(CPUState *cpu)
     qemu_cond_broadcast(&qemu_work_cond);
 }
 
-/* Add a breakpoint.  */
 int cpu_breakpoint_insert(CPUState *cpu, vaddr pc, int flags,
                           CPUBreakpoint **breakpoint)
 {
     CPUBreakpoint *bp;
-
-    if (cpu->cc->gdb_adjust_breakpoint) {
-        pc = cpu->cc->gdb_adjust_breakpoint(cpu, pc);
-    }
 
     bp = g_malloc(sizeof(*bp));
 
     bp->pc = pc;
     bp->flags = flags;
 
-    /* keep all GDB-injected breakpoints in front */
-    if (flags & BP_GDB) {
-        QTAILQ_INSERT_HEAD(&cpu->breakpoints, bp, entry);
-    } else {
-        QTAILQ_INSERT_TAIL(&cpu->breakpoints, bp, entry);
-    }
+    QTAILQ_INSERT_TAIL(&cpu->breakpoints, bp, entry);
 
     if (breakpoint) {
         *breakpoint = bp;
@@ -418,14 +340,9 @@ int cpu_breakpoint_insert(CPUState *cpu, vaddr pc, int flags,
     return 0;
 }
 
-/* Remove a specific breakpoint.  */
 int cpu_breakpoint_remove(CPUState *cpu, vaddr pc, int flags)
 {
     CPUBreakpoint *bp;
-
-    if (cpu->cc->gdb_adjust_breakpoint) {
-        pc = cpu->cc->gdb_adjust_breakpoint(cpu, pc);
-    }
 
     QTAILQ_FOREACH(bp, &cpu->breakpoints, entry) {
         if (bp->pc == pc && bp->flags == flags) {
@@ -436,7 +353,6 @@ int cpu_breakpoint_remove(CPUState *cpu, vaddr pc, int flags)
     return -ENOENT;
 }
 
-/* Remove a specific breakpoint by reference.  */
 void cpu_breakpoint_remove_by_ref(CPUState *cpu, CPUBreakpoint *bp)
 {
     QTAILQ_REMOVE(&cpu->breakpoints, bp, entry);
@@ -445,7 +361,6 @@ void cpu_breakpoint_remove_by_ref(CPUState *cpu, CPUBreakpoint *bp)
     g_free(bp);
 }
 
-/* Remove all matching breakpoints. */
 void cpu_breakpoint_remove_all(CPUState *cpu, int mask)
 {
     CPUBreakpoint *bp, *next;

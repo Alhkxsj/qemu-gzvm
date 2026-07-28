@@ -1,14 +1,3 @@
-/*
- * QEMU host SGX EPC memory backend
- *
- * Copyright (C) 2019 Intel Corporation
- *
- * Authors:
- *   Sean Christopherson <sean.j.christopherson@intel.com>
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
- */
 
 #include "qemu/osdep.h"
 #include <sys/ioctl.h>
@@ -50,7 +39,7 @@ static void sgx_epc_backend_instance_init(Object *obj)
     m->dump = false;
 }
 
-static void sgx_epc_backend_class_init(ObjectClass *oc, const void *data)
+static void sgx_epc_backend_class_init(ObjectClass *oc, void *data)
 {
     HostMemoryBackendClass *bc = MEMORY_BACKEND_CLASS(oc);
 

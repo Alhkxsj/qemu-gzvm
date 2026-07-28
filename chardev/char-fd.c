@@ -1,26 +1,3 @@
-/*
- * QEMU System Emulator
- *
- * Copyright (c) 2003-2008 Fabrice Bellard
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #include "qemu/osdep.h"
 #include "qemu/module.h"
@@ -33,7 +10,6 @@
 #include "chardev/char-fd.h"
 #include "chardev/char-io.h"
 
-/* Called with chr_write_lock held.  */
 static int fd_chr_write(Chardev *chr, const uint8_t *buf, int len)
 {
     FDChardev *s = FD_CHARDEV(chr);
@@ -50,7 +26,7 @@ static gboolean fd_chr_read(QIOChannel *chan, GIOCondition cond, void *opaque)
     Chardev *chr = CHARDEV(opaque);
     FDChardev *s = FD_CHARDEV(opaque);
     int len;
-    QEMU_UNINITIALIZED uint8_t buf[CHR_READ_BUF_LEN];
+    uint8_t buf[CHR_READ_BUF_LEN];
     ssize_t ret;
 
     len = sizeof(buf);
@@ -194,28 +170,14 @@ static void char_fd_finalize(Object *obj)
     qemu_chr_be_event(chr, CHR_EVENT_CLOSED);
 }
 
-int qmp_chardev_open_file_source(char *src, int flags, Error **errp)
-{
-    int fd = -1;
-
-    fd = RETRY_ON_EINTR(qemu_open_old(src, flags, 0666));
-    if (fd == -1) {
-        error_setg_file_open(errp, errno, src);
-    }
-    return fd;
-}
-
-/* open a character device to a unix fd */
-bool qemu_chr_open_fd(Chardev *chr,
-                      int fd_in, int fd_out, Error **errp)
+void qemu_chr_open_fd(Chardev *chr,
+                      int fd_in, int fd_out)
 {
     FDChardev *s = FD_CHARDEV(chr);
     g_autofree char *name = NULL;
 
-    if (fd_out >= 0) {
-        if (!qemu_set_blocking(fd_out, false, errp)) {
-            return false;
-        }
+    if (fd_out >= 0 && !g_unix_set_fd_nonblocking(fd_out, true, NULL)) {
+        assert(!"Failed to set FD nonblocking");
     }
 
     if (fd_out == fd_in && fd_in >= 0) {
@@ -223,7 +185,7 @@ bool qemu_chr_open_fd(Chardev *chr,
         name = g_strdup_printf("chardev-file-%s", chr->label);
         qio_channel_set_name(QIO_CHANNEL(s->ioc_in), name);
         s->ioc_out = QIO_CHANNEL(object_ref(s->ioc_in));
-        return true;
+        return;
     }
 
     if (fd_in >= 0) {
@@ -238,11 +200,9 @@ bool qemu_chr_open_fd(Chardev *chr,
         name = g_strdup_printf("chardev-file-out-%s", chr->label);
         qio_channel_set_name(QIO_CHANNEL(s->ioc_out), name);
     }
-
-    return true;
 }
 
-static void char_fd_class_init(ObjectClass *oc, const void *data)
+static void char_fd_class_init(ObjectClass *oc, void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 

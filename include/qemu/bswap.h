@@ -1,9 +1,6 @@
 #ifndef BSWAP_H
 #define BSWAP_H
 
-#include "qemu/target-info.h"
-#include "exec/memop.h"
-
 #undef  bswap16
 #define bswap16(_x) __builtin_bswap16(_x)
 #undef  bswap32
@@ -56,63 +53,6 @@ static inline void bswap64s(uint64_t *s)
             do { *p = glue(__builtin_bswap, size)(*p); } while (0)
 #endif
 
-/**
- * Endianness conversion functions between host cpu and specified endianness.
- * (We list the complete set of prototypes produced by the macros below
- * to assist people who search the headers to find their definitions.)
- *
- * uint16_t le16_to_cpu(uint16_t v);
- * uint32_t le32_to_cpu(uint32_t v);
- * uint64_t le64_to_cpu(uint64_t v);
- * uint16_t be16_to_cpu(uint16_t v);
- * uint32_t be32_to_cpu(uint32_t v);
- * uint64_t be64_to_cpu(uint64_t v);
- *
- * Convert the value @v from the specified format to the native
- * endianness of the host CPU by byteswapping if necessary, and
- * return the converted value.
- *
- * uint16_t cpu_to_le16(uint16_t v);
- * uint32_t cpu_to_le32(uint32_t v);
- * uint64_t cpu_to_le64(uint64_t v);
- * uint16_t cpu_to_be16(uint16_t v);
- * uint32_t cpu_to_be32(uint32_t v);
- * uint64_t cpu_to_be64(uint64_t v);
- *
- * Convert the value @v from the native endianness of the host CPU to
- * the specified format by byteswapping if necessary, and return
- * the converted value.
- *
- * void le16_to_cpus(uint16_t *v);
- * void le32_to_cpus(uint32_t *v);
- * void le64_to_cpus(uint64_t *v);
- * void be16_to_cpus(uint16_t *v);
- * void be32_to_cpus(uint32_t *v);
- * void be64_to_cpus(uint64_t *v);
- *
- * Do an in-place conversion of the value pointed to by @v from the
- * specified format to the native endianness of the host CPU.
- *
- * void cpu_to_le16s(uint16_t *v);
- * void cpu_to_le32s(uint32_t *v);
- * void cpu_to_le64s(uint64_t *v);
- * void cpu_to_be16s(uint16_t *v);
- * void cpu_to_be32s(uint32_t *v);
- * void cpu_to_be64s(uint64_t *v);
- *
- * Do an in-place conversion of the value pointed to by @v from the
- * native endianness of the host CPU to the specified format.
- *
- * Both X_to_cpu() and cpu_to_X() perform the same operation; you
- * should use whichever one is better documenting of the function your
- * code is performing.
- *
- * Do not use these functions for conversion of values which are in guest
- * memory, since the data may not be sufficiently aligned for the host CPU's
- * load and store instructions. Instead you should use the ld*_p() and
- * st*_p() functions, which perform loads and stores of data of any
- * required size and endianness and handle possible misalignment.
- */
 
 #define CPU_CONVERT(endian, size, type)\
 static inline type endian ## size ## _to_cpu(type v)\
@@ -145,11 +85,6 @@ CPU_CONVERT(le, 64, uint64_t)
 
 #undef CPU_CONVERT
 
-/*
- * Same as cpu_to_le{16,32,64}, except that gcc will figure the result is
- * a compile-time constant if you pass in a constant.  So this can be
- * used to initialize static variables.
- */
 #if HOST_BIG_ENDIAN
 # define const_le64(_x)                          \
     ((((_x) & 0x00000000000000ffULL) << 56) |    \
@@ -174,54 +109,7 @@ CPU_CONVERT(le, 64, uint64_t)
 # define const_le16(_x) (_x)
 #endif
 
-/* unaligned/endian-independent pointer access */
 
-/*
- * the generic syntax is:
- *
- * load: ld{type}{sign}{size}_{endian}_p(ptr)
- *
- * store: st{type}{size}_{endian}_p(ptr, val)
- *
- * Note there are small differences with the softmmu access API!
- *
- * type is:
- * (empty): integer access
- *   f    : float access
- *
- * sign is:
- * (empty): for 32 or 64 bit sizes (including floats and doubles)
- *   u    : unsigned
- *   s    : signed
- *
- * size is:
- *   b: 8 bits
- *   w: 16 bits
- *   24: 24 bits
- *   l: 32 bits
- *   q: 64 bits
- *
- * endian is:
- *   he   : host endian
- *   be   : big endian
- *   le   : little endian
- *   te   : target endian
- * (except for byte accesses, which have no endian infix).
- *
- * In all cases these functions take a host pointer.
- * For accessors that take a guest address rather than a
- * host address, see the cpu_{ld,st}_* accessors defined in
- * cpu_ldst.h.
- *
- * For cases where the size to be used is not fixed at compile time,
- * there are
- *  stn_{endian}_p(ptr, sz, val)
- * which stores @val to @ptr as an @endian-order number @sz bytes in size
- * and
- *  ldn_{endian}_p(ptr, sz)
- * which loads @sz bytes from @ptr as an unsigned @endian-order number
- * and returns it in a uint64_t.
- */
 
 static inline int ldub_p(const void *ptr)
 {
@@ -238,15 +126,6 @@ static inline void stb_p(void *ptr, uint8_t v)
     *(uint8_t *)ptr = v;
 }
 
-/*
- * Any compiler worth its salt will turn these memcpy into native unaligned
- * operations.  Thus we don't need to play games with packed attributes, or
- * inline byte-by-byte stores.
- * Some compilation environments (eg some fortify-source implementations)
- * may intercept memcpy() in a way that defeats the compiler optimization,
- * though, so we use __builtin_memcpy() to give ourselves the best chance
- * of good performance.
- */
 
 static inline int lduw_he_p(const void *ptr)
 {
@@ -376,78 +255,17 @@ static inline void stq_be_p(void *ptr, uint64_t v)
     stq_he_p(ptr, be_bswap(v, 64));
 }
 
-
-/**
- * ldm_p: Load value from host memory (byteswapping if necessary)
- *
- * @ptr: the host pointer to be accessed
- * @mop: #MemOp mask containing access size and optional byteswapping
- *
- * Convert the value stored at @ptr in host memory and byteswap if necessary.
- *
- * Returns: the converted value.
- */
-static inline uint64_t ldm_p(const void *ptr, MemOp mop)
+static inline unsigned long leul_to_cpu(unsigned long v)
 {
-    switch (mop & (MO_SIZE | MO_BSWAP)) {
-    case MO_8:
-        return ldub_p(ptr);
-    case MO_16 | MO_LE:
-        return lduw_le_p(ptr);
-    case MO_16 | MO_BE:
-        return lduw_be_p(ptr);
-    case MO_32 | MO_LE:
-        return ldl_le_p(ptr);
-    case MO_32 | MO_BE:
-        return ldl_be_p(ptr);
-    case MO_64 | MO_LE:
-        return ldq_le_p(ptr);
-    case MO_64 | MO_BE:
-        return ldq_be_p(ptr);
-    default:
-        g_assert_not_reached();
-    }
+#if HOST_LONG_BITS == 32
+    return le_bswap(v, 32);
+#elif HOST_LONG_BITS == 64
+    return le_bswap(v, 64);
+#else
+# error Unknown sizeof long
+#endif
 }
 
-/**
- * stm_p: Store value to host memory (byteswapping if necessary)
- *
- * @ptr: the host pointer to be accessed
- * @mop: #MemOp mask containing access size and optional byteswapping
- * @val: the value to store
- *
- * Convert the value (byteswap if necessary) and store at @ptr in host memory.
- */
-static inline void stm_p(void *ptr, MemOp mop, uint64_t val)
-{
-    switch (mop & (MO_SIZE | MO_BSWAP)) {
-    case MO_8:
-        stb_p(ptr, val);
-        break;
-    case MO_16 | MO_LE:
-        stw_le_p(ptr, val);
-        break;
-    case MO_16 | MO_BE:
-        stw_be_p(ptr, val);
-        break;
-    case MO_32 | MO_LE:
-        stl_le_p(ptr, val);
-        break;
-    case MO_32 | MO_BE:
-        stl_be_p(ptr, val);
-        break;
-    case MO_64 | MO_LE:
-        stq_le_p(ptr, val);
-        break;
-    case MO_64 | MO_BE:
-        stq_be_p(ptr, val);
-        break;
-    default:
-        g_assert_not_reached();
-    }
-}
-
-/* Store v to p as a sz byte value in host order */
 #define DO_STN_LDN_P(END) \
     static inline void stn_## END ## _p(void *ptr, int sz, uint64_t v)  \
     {                                                                   \
@@ -494,76 +312,5 @@ DO_STN_LDN_P(be)
 #undef be_bswap
 #undef le_bswaps
 #undef be_bswaps
-
-
-/* Return ld{word}_{le,be}_p following target endianness. */
-#define LOAD_IMPL(word, args...)                    \
-do {                                                \
-    if (target_big_endian()) {                      \
-        return glue(glue(ld, word), _be_p)(args);   \
-    } else {                                        \
-        return glue(glue(ld, word), _le_p)(args);   \
-    }                                               \
-} while (0)
-
-static inline int lduw_p(const void *ptr)
-{
-    LOAD_IMPL(uw, ptr);
-}
-
-static inline int ldsw_p(const void *ptr)
-{
-    LOAD_IMPL(sw, ptr);
-}
-
-static inline int ldl_p(const void *ptr)
-{
-    LOAD_IMPL(l, ptr);
-}
-
-static inline uint64_t ldq_p(const void *ptr)
-{
-    LOAD_IMPL(q, ptr);
-}
-
-static inline uint64_t ldn_p(const void *ptr, int sz)
-{
-    LOAD_IMPL(n, ptr, sz);
-}
-
-#undef LOAD_IMPL
-
-/* Call st{word}_{le,be}_p following target endianness. */
-#define STORE_IMPL(word, args...)           \
-do {                                        \
-    if (target_big_endian()) {              \
-        glue(glue(st, word), _be_p)(args);  \
-    } else {                                \
-        glue(glue(st, word), _le_p)(args);  \
-    }                                       \
-} while (0)
-
-
-static inline void stw_p(void *ptr, uint16_t v)
-{
-    STORE_IMPL(w, ptr, v);
-}
-
-static inline void stl_p(void *ptr, uint32_t v)
-{
-    STORE_IMPL(l, ptr, v);
-}
-
-static inline void stq_p(void *ptr, uint64_t v)
-{
-    STORE_IMPL(q, ptr, v);
-}
-
-static inline void stn_p(void *ptr, int sz, uint64_t v)
-{
-    STORE_IMPL(n, ptr, sz, v);
-}
-
-#undef STORE_IMPL
 
 #endif /* BSWAP_H */

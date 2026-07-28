@@ -1,26 +1,3 @@
-/*
- * QEMU Audio subsystem header
- *
- * Copyright (c) 2005 Vassili Karpov (malc)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
 
 #ifdef DAC
 #define NAME "playback"
@@ -36,42 +13,42 @@
 #define HWBUF hw->conv_buf
 #endif
 
-static void glue(audio_init_nb_voices_, TYPE)(AudioMixengBackend *s,
-                                              AudioMixengBackendClass *k,
-                                              int min_voices)
+static void glue(audio_init_nb_voices_, TYPE)(AudioState *s,
+                                              struct audio_driver *drv, int min_voices)
 {
-    const char *be_name = object_class_get_name(OBJECT_CLASS(k));
-    int max_voices = glue(k->max_voices_, TYPE);
-    size_t voice_size = glue(k->voice_size_, TYPE);
+    int max_voices = glue (drv->max_voices_, TYPE);
+    size_t voice_size = glue(drv->voice_size_, TYPE);
 
-    glue(s->nb_hw_voices_, TYPE) = glue(audio_get_pdo_, TYPE)(s->dev)->voices;
-    if (glue(s->nb_hw_voices_, TYPE) > max_voices) {
+    glue (s->nb_hw_voices_, TYPE) = glue(audio_get_pdo_, TYPE)(s->dev)->voices;
+    if (glue (s->nb_hw_voices_, TYPE) > max_voices) {
         if (!max_voices) {
 #ifdef DAC
-            warn_report("audio: '%s' backend does not support " NAME, be_name);
+            dolog ("Driver `%s' does not support " NAME "\n", drv->name);
 #endif
         } else {
-            warn_report("audio: '%s' backend does not support %d " NAME " voices, max %d",
-                        be_name, glue(s->nb_hw_voices_, TYPE), max_voices);
+            dolog ("Driver `%s' does not support %d " NAME " voices, max %d\n",
+                   drv->name,
+                   glue (s->nb_hw_voices_, TYPE),
+                   max_voices);
         }
-        glue(s->nb_hw_voices_, TYPE) = max_voices;
+        glue (s->nb_hw_voices_, TYPE) = max_voices;
     }
 
-    if (glue(s->nb_hw_voices_, TYPE) < min_voices) {
-        warn_report("audio: Bogus number of " NAME " voices %d, setting to %d",
-                    glue(s->nb_hw_voices_, TYPE),
-                    min_voices);
+    if (glue (s->nb_hw_voices_, TYPE) < min_voices) {
+        dolog ("Bogus number of " NAME " voices %d, setting to %d\n",
+               glue (s->nb_hw_voices_, TYPE),
+               min_voices);
     }
 
-    if (!voice_size && max_voices) {
-        audio_bug("backend=`%s' voice_size=0 max_voices=%d",
-                  be_name, max_voices);
-        glue(s->nb_hw_voices_, TYPE) = 0;
+    if (audio_bug(__func__, !voice_size && max_voices)) {
+        dolog ("drv=`%s' voice_size=0 max_voices=%d\n",
+               drv->name, max_voices);
+        glue (s->nb_hw_voices_, TYPE) = 0;
     }
 
-    if (voice_size && !max_voices) {
-        audio_bug("backend=`%s' voice_size=%zu max_voices=0",
-                  be_name, voice_size);
+    if (audio_bug(__func__, voice_size && !max_voices)) {
+        dolog("drv=`%s' voice_size=%zu max_voices=0\n",
+              drv->name, voice_size);
     }
 }
 
@@ -87,8 +64,8 @@ static void glue(audio_pcm_hw_alloc_resources_, TYPE)(HW *hw)
 {
     if (glue(audio_get_pdo_, TYPE)(hw->s->dev)->mixing_engine) {
         size_t samples = hw->samples;
-        if (samples == 0) {
-            audio_bug("Attempted to allocate empty buffer");
+        if (audio_bug(__func__, samples == 0)) {
+            dolog("Attempted to allocate empty buffer\n");
         }
 
         HWBUF.buffer = g_new0(st_sample, samples);
@@ -126,21 +103,15 @@ static int glue (audio_pcm_sw_alloc_resources_, TYPE) (SW *sw)
         uint64_t f_fe_min;
         uint64_t f_be = (uint32_t)hw->info.freq;
 
-        /* f_fe_min = ceil(1 [frames] * f_be [Hz] / size_be [frames]) */
         f_fe_min = (f_be + HWBUF.size - 1) / HWBUF.size;
         qemu_log_mask(LOG_UNIMP,
-                      "audio: The guest selected a " NAME " sample rate"
+                      AUDIO_CAP ": The guest selected a " NAME " sample rate"
                       " of %d Hz for %s. Only sample rates >= %" PRIu64 " Hz"
                       " are supported.\n",
                       sw->info.freq, sw->name, f_fe_min);
         return -1;
     }
 
-    /*
-     * Allocate one additional audio frame that is needed for upsampling
-     * if the resample buffer size is small. For large buffer sizes take
-     * care of overflows and truncation.
-     */
     samples = samples < SIZE_MAX ? samples + 1 : SIZE_MAX;
     sw->resample_buf.buffer = g_new0(st_sample, samples);
     sw->resample_buf.size = samples;
@@ -159,26 +130,24 @@ static int glue (audio_pcm_sw_init_, TYPE) (
     SW *sw,
     HW *hw,
     const char *name,
-    const struct audsettings *as
+    struct audsettings *as
     )
 {
     int err;
 
     audio_pcm_init_info (&sw->info, as);
     sw->hw = hw;
-    sw->active = false;
+    sw->active = 0;
 #ifdef DAC
     sw->total_hw_samples_mixed = 0;
-    sw->empty = true;
+    sw->empty = 1;
 #endif
 
-    if (audio_format_is_float(sw->info.af)) {
+    if (sw->info.is_float) {
 #ifdef DAC
-        sw->conv = mixeng_conv_float[sw->info.nchannels == 2]
-            [sw->info.swap_endianness];
+        sw->conv = mixeng_conv_float[sw->info.nchannels == 2];
 #else
-        sw->clip = mixeng_clip_float[sw->info.nchannels == 2]
-            [sw->info.swap_endianness];
+        sw->clip = mixeng_clip_float[sw->info.nchannels == 2];
 #endif
     } else {
 #ifdef DAC
@@ -187,9 +156,9 @@ static int glue (audio_pcm_sw_init_, TYPE) (
         sw->clip = mixeng_clip
 #endif
             [sw->info.nchannels == 2]
-            [audio_format_is_signed(sw->info.af)]
+            [sw->info.is_signed]
             [sw->info.swap_endianness]
-            [audio_format_to_index(sw->info.af)];
+            [audio_bits_to_index(sw->info.bits)];
     }
 
     sw->name = g_strdup (name);
@@ -221,29 +190,27 @@ static void glue (audio_pcm_hw_del_sw_, TYPE) (SW *sw)
 static void glue (audio_pcm_hw_gc_, TYPE) (HW **hwp)
 {
     HW *hw = *hwp;
-    AudioMixengBackend *s = hw->s;
-    AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_GET_CLASS(s);
+    AudioState *s = hw->s;
 
     if (!hw->sw_head.lh_first) {
 #ifdef DAC
         audio_detach_capture(hw);
 #endif
         QLIST_REMOVE(hw, entries);
-        glue(k->fini_, TYPE)(hw);
+        glue(hw->pcm_ops->fini_, TYPE) (hw);
         glue(s->nb_hw_voices_, TYPE) += 1;
         glue(audio_pcm_hw_free_resources_ , TYPE) (hw);
-        object_unref(hw->s);
         g_free(hw);
         *hwp = NULL;
     }
 }
 
-static HW *glue(audio_pcm_hw_find_any_, TYPE)(AudioMixengBackend *s, HW *hw)
+static HW *glue(audio_pcm_hw_find_any_, TYPE)(AudioState *s, HW *hw)
 {
     return hw ? hw->entries.le_next : glue (s->hw_head_, TYPE).lh_first;
 }
 
-static HW *glue(audio_pcm_hw_find_any_enabled_, TYPE)(AudioMixengBackend *s, HW *hw)
+static HW *glue(audio_pcm_hw_find_any_enabled_, TYPE)(AudioState *s, HW *hw)
 {
     while ((hw = glue(audio_pcm_hw_find_any_, TYPE)(s, hw))) {
         if (hw->enabled) {
@@ -253,7 +220,7 @@ static HW *glue(audio_pcm_hw_find_any_enabled_, TYPE)(AudioMixengBackend *s, HW 
     return NULL;
 }
 
-static HW *glue(audio_pcm_hw_find_specific_, TYPE)(AudioMixengBackend *s, HW *hw,
+static HW *glue(audio_pcm_hw_find_specific_, TYPE)(AudioState *s, HW *hw,
                                                    struct audsettings *as)
 {
     while ((hw = glue(audio_pcm_hw_find_any_, TYPE)(s, hw))) {
@@ -264,48 +231,48 @@ static HW *glue(audio_pcm_hw_find_specific_, TYPE)(AudioMixengBackend *s, HW *hw
     return NULL;
 }
 
-static HW *glue(audio_pcm_hw_add_new_, TYPE)(AudioMixengBackend *s,
+static HW *glue(audio_pcm_hw_add_new_, TYPE)(AudioState *s,
                                              struct audsettings *as)
 {
     HW *hw;
-    AudioMixengBackendClass *k = AUDIO_MIXENG_BACKEND_GET_CLASS(s);
+    struct audio_driver *drv = s->drv;
 
-    if (!glue(s->nb_hw_voices_, TYPE)) {
+    if (!glue (s->nb_hw_voices_, TYPE)) {
         return NULL;
     }
 
-    if (!glue(k->init_, TYPE)) {
-        audio_bug("No host audio driver or missing init_%s", NAME);
+    if (audio_bug(__func__, !drv)) {
+        dolog ("No host audio driver\n");
         return NULL;
     }
 
-    /*
-     * Since glue(s->nb_hw_voices_, TYPE) is != 0, glue(k->voice_size_, TYPE)
-     * is guaranteed to be != 0. See the audio_init_nb_voices_* functions.
-     */
-    hw = g_malloc0(glue(k->voice_size_, TYPE));
-    hw->s = AUDIO_MIXENG_BACKEND(object_ref(s));
+    if (audio_bug(__func__, !drv->pcm_ops)) {
+        dolog ("Host audio driver without pcm_ops\n");
+        return NULL;
+    }
+
+    hw = g_malloc0(glue(drv->voice_size_, TYPE));
+    hw->s = s;
+    hw->pcm_ops = drv->pcm_ops;
 
     QLIST_INIT (&hw->sw_head);
 #ifdef DAC
     QLIST_INIT (&hw->cap_head);
 #endif
-    if (glue(k->init_, TYPE)(hw, as)) {
+    if (glue (hw->pcm_ops->init_, TYPE) (hw, as, s->drv_opaque)) {
         goto err0;
     }
 
-    if (hw->samples <= 0) {
-        audio_bug("hw->samples=%zd", hw->samples);
+    if (audio_bug(__func__, hw->samples <= 0)) {
+        dolog("hw->samples=%zd\n", hw->samples);
         goto err1;
     }
 
-    if (audio_format_is_float(hw->info.af)) {
+    if (hw->info.is_float) {
 #ifdef DAC
-        hw->clip = mixeng_clip_float[hw->info.nchannels == 2]
-            [hw->info.swap_endianness];
+        hw->clip = mixeng_clip_float[hw->info.nchannels == 2];
 #else
-        hw->conv = mixeng_conv_float[hw->info.nchannels == 2]
-            [hw->info.swap_endianness];
+        hw->conv = mixeng_conv_float[hw->info.nchannels == 2];
 #endif
     } else {
 #ifdef DAC
@@ -314,9 +281,9 @@ static HW *glue(audio_pcm_hw_add_new_, TYPE)(AudioMixengBackend *s,
         hw->conv = mixeng_conv
 #endif
             [hw->info.nchannels == 2]
-            [audio_format_is_signed(hw->info.af)]
+            [hw->info.is_signed]
             [hw->info.swap_endianness]
-            [audio_format_to_index(hw->info.af)];
+            [audio_bits_to_index(hw->info.bits)];
     }
 
     glue(audio_pcm_hw_alloc_resources_, TYPE)(hw);
@@ -329,9 +296,8 @@ static HW *glue(audio_pcm_hw_add_new_, TYPE)(AudioMixengBackend *s,
     return hw;
 
  err1:
-    glue(k->fini_, TYPE)(hw);
+    glue (hw->pcm_ops->fini_, TYPE) (hw);
  err0:
-    object_unref(hw->s);
     g_free (hw);
     return NULL;
 }
@@ -339,8 +305,6 @@ static HW *glue(audio_pcm_hw_add_new_, TYPE)(AudioMixengBackend *s,
 AudiodevPerDirectionOptions *glue(audio_get_pdo_, TYPE)(Audiodev *dev)
 {
     switch (dev->driver) {
-    case AUDIODEV_DRIVER_NONE:
-        return dev->u.none.TYPE;
 #ifdef CONFIG_AUDIO_ALSA
     case AUDIODEV_DRIVER_ALSA:
         return qapi_AudiodevAlsaPerDirectionOptions_base(dev->u.alsa.TYPE);
@@ -386,8 +350,10 @@ AudiodevPerDirectionOptions *glue(audio_get_pdo_, TYPE)(Audiodev *dev)
     case AUDIODEV_DRIVER_SPICE:
         return dev->u.spice.TYPE;
 #endif
-    case AUDIODEV_DRIVER_WAV:
-        return dev->u.wav.TYPE;
+#ifdef CONFIG_AUDIO_AAUDIO
+    case AUDIODEV_DRIVER_AAUDIO:
+        return dev->u.aaudio.TYPE;
+#endif
 
     case AUDIODEV_DRIVER__MAX:
         break;
@@ -395,7 +361,7 @@ AudiodevPerDirectionOptions *glue(audio_get_pdo_, TYPE)(Audiodev *dev)
     abort();
 }
 
-static HW *glue(audio_pcm_hw_add_, TYPE)(AudioMixengBackend *s, struct audsettings *as)
+static HW *glue(audio_pcm_hw_add_, TYPE)(AudioState *s, struct audsettings *as)
 {
     HW *hw;
     AudiodevPerDirectionOptions *pdo = glue(audio_get_pdo_, TYPE)(s->dev);
@@ -421,9 +387,9 @@ static HW *glue(audio_pcm_hw_add_, TYPE)(AudioMixengBackend *s, struct audsettin
 }
 
 static SW *glue(audio_pcm_create_voice_pair_, TYPE)(
-    AudioMixengBackend *s,
+    AudioState *s,
     const char *sw_name,
-    const struct audsettings *as
+    struct audsettings *as
     )
 {
     SW *sw;
@@ -438,11 +404,11 @@ static SW *glue(audio_pcm_create_voice_pair_, TYPE)(
     }
 
     sw = g_new0(SW, 1);
-    sw->s = AUDIO_MIXENG_BACKEND(object_ref(s));
+    sw->s = s;
 
     hw = glue(audio_pcm_hw_add_, TYPE)(s, &hw_as);
     if (!hw) {
-        error_report("audio: Could not create a backend for voice '%s'", sw_name);
+        dolog("Could not create a backend for voice `%s'\n", sw_name);
         goto err1;
     }
 
@@ -458,7 +424,6 @@ err2:
     glue (audio_pcm_hw_del_sw_, TYPE) (sw);
     glue (audio_pcm_hw_gc_, TYPE) (&hw);
 err1:
-    object_unref(sw->s);
     g_free(sw);
     return NULL;
 }
@@ -468,16 +433,14 @@ static void glue (audio_close_, TYPE) (SW *sw)
     glue (audio_pcm_sw_fini_, TYPE) (sw);
     glue (audio_pcm_hw_del_sw_, TYPE) (sw);
     glue (audio_pcm_hw_gc_, TYPE) (&sw->hw);
-
-    object_unref(sw->s);
     g_free (sw);
 }
 
-static void glue(audio_mixeng_backend_close_, TYPE)(AudioBackend *be, SW *sw)
+void glue (AUD_close_, TYPE) (QEMUSoundCard *card, SW *sw)
 {
     if (sw) {
-        if (!be) {
-            audio_bug("backend=%p", be);
+        if (audio_bug(__func__, !card)) {
+            dolog ("card=%p\n", card);
             return;
         }
 
@@ -485,35 +448,37 @@ static void glue(audio_mixeng_backend_close_, TYPE)(AudioBackend *be, SW *sw)
     }
 }
 
-static SW *glue(audio_mixeng_backend_open_, TYPE) (
-    AudioBackend *be,
+SW *glue (AUD_open_, TYPE) (
+    QEMUSoundCard *card,
     SW *sw,
     const char *name,
     void *callback_opaque ,
     audio_callback_fn callback_fn,
-    const struct audsettings *as)
+    struct audsettings *as
+    )
 {
-    AudioMixengBackend *s = AUDIO_MIXENG_BACKEND(be);
-    AudioMixengBackendClass *k;
+    AudioState *s;
     AudiodevPerDirectionOptions *pdo;
 
-    k = AUDIO_MIXENG_BACKEND_GET_CLASS(s);
-    pdo = glue(audio_get_pdo_, TYPE)(s->dev);
-
-#ifdef DAC
-    trace_audio_open_out(name, as->freq, as->nchannels, as->fmt);
-#else
-    trace_audio_open_in(name, as->freq, as->nchannels, as->fmt);
-#endif
-
-    if (audio_validate_settings(as)) {
-        g_autofree char *str = audsettings_to_string(as);
-        error_report("audio: Invalid audio settings: %s", str);
+    if (audio_bug(__func__, !card || !name || !callback_fn || !as)) {
+        dolog ("card=%p name=%p callback_fn=%p as=%p\n",
+               card, name, callback_fn, as);
         goto fail;
     }
 
-    if (!glue(k->init_, TYPE)) {
-        error_report("audio: Can not open `%s' (no host audio driver)", name);
+    s = card->state;
+    pdo = glue(audio_get_pdo_, TYPE)(s->dev);
+
+    ldebug ("open %s, freq %d, nchannels %d, fmt %d\n",
+            name, as->freq, as->nchannels, as->fmt);
+
+    if (audio_bug(__func__, audio_validate_settings(as))) {
+        audio_print_settings (as);
+        goto fail;
+    }
+
+    if (audio_bug(__func__, !s->drv)) {
+        dolog ("Can not open `%s' (no host audio driver)\n", name);
         goto fail;
     }
 
@@ -522,7 +487,7 @@ static SW *glue(audio_mixeng_backend_open_, TYPE) (
     }
 
     if (!pdo->fixed_settings && sw) {
-        glue(audio_be_close_, TYPE)(be, sw);
+        glue (AUD_close_, TYPE) (card, sw);
         sw = NULL;
     }
 
@@ -530,7 +495,8 @@ static SW *glue(audio_mixeng_backend_open_, TYPE) (
         HW *hw = sw->hw;
 
         if (!hw) {
-            audio_bug("Internal logic error: voice '%s' has no backend", SW_NAME(sw));
+            dolog("Internal logic error: voice `%s' has no backend\n",
+                  SW_NAME(sw));
             goto fail;
         }
 
@@ -545,26 +511,60 @@ static SW *glue(audio_mixeng_backend_open_, TYPE) (
         }
     }
 
+    sw->card = card;
     sw->vol = nominal_volume;
     sw->callback.fn = callback_fn;
     sw->callback.opaque = callback_opaque;
 
-    trace_audio_voice_pair(G_STRINGIFY(TYPE), name,
-                           AudioFormat_str(sw->hw->info.af),
-                           sw->hw->info.freq, sw->hw->info.nchannels,
-                           AudioFormat_str(sw->info.af),
-                           sw->info.freq, sw->info.nchannels);
+#ifdef DEBUG_AUDIO
+    dolog ("%s\n", name);
+    audio_pcm_print_info ("hw", &sw->hw->info);
+    audio_pcm_print_info ("sw", &sw->info);
+#endif
 
     return sw;
 
  fail:
-    glue(audio_be_close_, TYPE)(be, sw);
+    glue (AUD_close_, TYPE) (card, sw);
     return NULL;
 }
 
-static bool glue(audio_mixeng_backend_is_active_, TYPE)(AudioBackend *be, SW *sw)
+int glue (AUD_is_active_, TYPE) (SW *sw)
 {
     return sw ? sw->active : 0;
+}
+
+void glue (AUD_init_time_stamp_, TYPE) (SW *sw, QEMUAudioTimeStamp *ts)
+{
+    if (!sw) {
+        return;
+    }
+
+    ts->old_ts = sw->hw->ts_helper;
+}
+
+uint64_t glue (AUD_get_elapsed_usec_, TYPE) (SW *sw, QEMUAudioTimeStamp *ts)
+{
+    uint64_t delta, cur_ts, old_ts;
+
+    if (!sw) {
+        return 0;
+    }
+
+    cur_ts = sw->hw->ts_helper;
+    old_ts = ts->old_ts;
+
+    if (cur_ts >= old_ts) {
+        delta = cur_ts - old_ts;
+    } else {
+        delta = UINT64_MAX - old_ts + cur_ts;
+    }
+
+    if (!delta) {
+        return 0;
+    }
+
+    return muldiv64 (delta, sw->hw->info.freq, 1000000);
 }
 
 #undef TYPE
