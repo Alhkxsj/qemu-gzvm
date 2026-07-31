@@ -14,7 +14,6 @@
 #include "system/runstate.h"
 #include "qemu/guest-random.h"
 #include "gzvm-internal.h"
-#include "trace.h"
 
 static int gzvm_init_vcpu(CPUState *cpu)
 {
@@ -76,7 +75,6 @@ static int gzvm_cpu_exec(CPUState *cpu)
     case GZVM_EXIT_GZ:
         return EXCP_INTERRUPT;
     case GZVM_EXIT_IPI:
-        trace_gzvm_exit_ipi(cpu->cpu_index);
         return EXCP_INTERRUPT;
     case GZVM_EXIT_DEBUG:
         return EXCP_DEBUG;

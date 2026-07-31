@@ -12,8 +12,6 @@ hwcore_ss.add(files(
 
 common_ss.add(files('cpu-common.c'))
 common_ss.add(files('machine-smp.c'))
-system_ss.add(when: 'CONFIG_PLATFORM_BUS', if_true: files('platform-bus.c'))
-system_ss.add(when: 'CONFIG_PLATFORM_BUS', if_true: files('sysbus-fdt.c'))
 
 system_ss.add(files(
   'cpu-system.c',
@@ -32,8 +30,4 @@ system_ss.add(files(
   'sysbus.c',
   'vm-change-state-handler.c',
   'clock-vmstate.c',
-))
-user_ss.add(files(
-  'cpu-user.c',
-  'qdev-user.c',
 ))

@@ -9,7 +9,6 @@
 #include "system/gzvm_int.h"
 #include "linux-headers/linux/gzvm.h"
 #include "gzvm-internal.h"
-#include "trace.h"
 
 static MemTxAttrs gzvm_mmio_attrs(hwaddr addr)
 {
@@ -77,8 +76,6 @@ int gzvm_handle_mmio_exit(CPUState *cpu, struct gzvm_vcpu_run *run)
                 if (offset < slot->size) {
                     size_t xlen = MIN((uint64_t)run->mmio.size,
                                       slot->size - offset);
-                    trace_gzvm_mmio_fallback(addr, run->mmio.size,
-                                             run->mmio.is_write);
                     if (run->mmio.is_write) {
                         memcpy(slot->mem + offset, run->mmio.data, xlen);
                     } else {
@@ -102,7 +99,6 @@ int gzvm_handle_mmio_exit(CPUState *cpu, struct gzvm_vcpu_run *run)
 
 int gzvm_handle_system_event(CPUState *cpu, struct gzvm_vcpu_run *run)
 {
-    trace_gzvm_handle_system_event(run->system_event.type);
     switch (run->system_event.type) {
     case GZVM_SYSTEM_EVENT_SHUTDOWN:
         qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);

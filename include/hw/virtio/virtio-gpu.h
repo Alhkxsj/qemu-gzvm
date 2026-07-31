@@ -18,6 +18,7 @@ OBJECT_DECLARE_TYPE(VirtIOGPUBase, VirtIOGPUBaseClass,
 
 #define TYPE_VIRTIO_GPU "virtio-gpu-device"
 OBJECT_DECLARE_TYPE(VirtIOGPU, VirtIOGPUClass, VIRTIO_GPU)
+#define TYPE_VIRTIO_GPU_GL "virtio-gpu-gl-device"
 
 struct virtio_gpu_simple_resource {
     uint32_t resource_id;

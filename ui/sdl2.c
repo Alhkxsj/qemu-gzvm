@@ -579,26 +579,6 @@ static void handle_keydown(SDL_Event *ev)
             }
             scon->gui_keysym = true;
             break;
-#if 0
-        case SDL_SCANCODE_KP_PLUS:
-        case SDL_SCANCODE_KP_MINUS:
-            if (!gui_fullscreen) {
-                int scr_w, scr_h;
-                int width, height;
-                SDL_GetWindowSize(scon->real_window, &scr_w, &scr_h);
-
-                width = MAX(scr_w + (ev->key.keysym.scancode ==
-                                     SDL_SCANCODE_KP_PLUS ? 50 : -50),
-                            160);
-                height = (surface_height(scon->surface) * width) /
-                    surface_width(scon->surface);
-                fprintf(stderr, "%s: scale to %dx%d\n",
-                        __func__, width, height);
-                sdl_scale(scon, width, height);
-                sdl2_redraw(scon);
-                scon->gui_keysym = true;
-            }
-#endif
         default:
             break;
         }

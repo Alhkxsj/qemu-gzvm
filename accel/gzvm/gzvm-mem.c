@@ -9,7 +9,6 @@
 #include "system/gzvm_int.h"
 #include "linux-headers/linux/gzvm.h"
 #include "gzvm-internal.h"
-#include "trace.h"
 
 static void gzvm_assert_mutex_locked(QemuMutex *m)
 {
@@ -184,7 +183,6 @@ static int gzvm_remove_mem_slot_locked(GZVMState *s, gzvm_slot *slot)
                      slot->id, strerror(errno), errno);
         return ret;
     }
-    trace_gzvm_del_mem_slot(slot->id, slot->start, slot->size);
 
     gzvm_mem_slot_deactivate_locked(s, slot);
     return 0;
@@ -220,7 +218,6 @@ static int gzvm_add_mem_slot(GZVMState *s, uint8_t *hva, uint64_t gpa,
 
     ret = gzvm_set_memory_region_locked(s, slot->id, flags,
                                         gpa, size, hva);
-    trace_gzvm_add_mem_slot(slot->id, gpa, size, hva, flags);
     if (ret) {
         error_report("gzvm: GZVM_SET_USER_MEMORY_REGION failed: %s (errno=%d)",
                      strerror(errno), errno);
@@ -333,7 +330,6 @@ static void gzvm_set_phys_mem(GZVMState *s, MemoryRegionSection *section, bool a
 
     if (section_start < s->ram_base &&
         !memory_region_is_rom(area) && !memory_region_is_romd(area)) {
-        trace_gzvm_skip_region(section_start, section_size, s->ram_base);
         return;
     }
 
@@ -444,7 +440,6 @@ static int gzvm_open_device(GZVMState *s)
         return -1;
     }
     s->vmfd = ret;
-    trace_gzvm_create_vm(s->vmfd);
     return 0;
 }
 
@@ -454,7 +449,6 @@ static void gzvm_probe_caps(GZVMState *s)
         uint64_t cap = GZVM_CAP_ARM_VM_IPA_SIZE;
         int r = gzvm_vm_ioctl(GZVM_CHECK_EXTENSION, &cap);
         if (r == 0) {
-            trace_gzvm_ipa_size(cap);
             info_report("gzvm: IPA size: %d bits", (int)cap);
         } else {
             warn_report("gzvm: IPA size probe failed (r=%d), "
@@ -474,7 +468,6 @@ static void gzvm_probe_caps(GZVMState *s)
             uint64_t c = cap_list[i].cap;
             int r = gzvm_vm_ioctl(GZVM_CHECK_EXTENSION, &c);
             if (r == 0) {
-                trace_gzvm_capability(cap_list[i].name, c);
                 info_report("gzvm: cap %s = %" PRIu64, cap_list[i].name, c);
             }
         }
@@ -495,7 +488,6 @@ static int gzvm_create_vgic_devices(GZVMState *s)
         s->fd = -1;
         return -1;
     }
-    trace_gzvm_vgic_dist_created(s->gic_dist_base);
 
     ret = gzvm_create_vgic_device(s, GZVM_DEV_TYPE_ARM_VGIC_V3_REDIST,
                                   0x080A0000ULL, 0x20000ULL,
@@ -507,7 +499,6 @@ static int gzvm_create_vgic_devices(GZVMState *s)
         s->fd = -1;
         return -1;
     }
-    trace_gzvm_vgic_redist_created(s->gic_redist_base);
 
     return 0;
 }
@@ -537,7 +528,6 @@ int gzvm_create_vm(void)
     }
 
     gzvm_install_sigsegv_handler();
-    trace_gzvm_sigsegv_handler_installed();
     memory_listener_register(&gzvm_memory_listener, &address_space_memory);
     memory_listener_register(&gzvm_ioeventfd_listener, &address_space_memory);
 

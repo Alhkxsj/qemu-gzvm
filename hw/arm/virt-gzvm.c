@@ -4,7 +4,6 @@
 #include "hw/arm/virt-gzvm.h"
 #include "hw/loader.h"
 #include "hw/nvram/fw_cfg.h"
-#include "hw/pci/pci.h"
 #include "qemu/error-report.h"
 #include "system/gzvm.h"
 #include "system/gzvm_int.h"
@@ -59,15 +58,6 @@ void virt_gzvm_post_dtb(VirtMachineState *vms, hwaddr dtb_start, int dtb_size,
     } else {
         warn_report("GZVM: cannot find DTB in ROM -- fw_cfg 'etc/fdt' not added");
     }
-}
-
-void virt_gzvm_create_virtio_gpu(VirtMachineState *vms)
-{
-    if (!gzvm_enabled() || !vms->bus || !MACHINE(vms)->enable_graphics) {
-        return;
-    }
-
-    pci_create_simple(vms->bus, -1, "virtio-gpu-pci");
 }
 
 void virt_gzvm_set_bootinfo(VirtMachineState *vms, bool firmware_loaded)

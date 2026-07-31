@@ -16,8 +16,6 @@
 
 #define PVTIME_SIZE_PER_CPU 64
 
-#define GPIO_PIN_POWER_BUTTON  3
-
 enum {
     VIRT_FLASH,
     VIRT_MEM,
@@ -38,11 +36,8 @@ enum {
     VIRT_PCIE_MMIO,
     VIRT_PCIE_PIO,
     VIRT_PCIE_ECAM,
-    VIRT_PLATFORM_BUS,
-    VIRT_GPIO,
     VIRT_UART1,
     VIRT_SECURE_MEM,
-    VIRT_SECURE_GPIO,
     VIRT_PVTIME,
     VIRT_LOWMEMMAP_LAST,
 };
@@ -85,9 +80,7 @@ struct VirtMachineClass {
     bool no_highmem_ecam;
     bool kvm_no_adjvtime;
     bool no_kvm_steal_time;
-    bool no_secure_gpio;
     bool no_cpu_topology;
-    bool no_tcg_lpa2;
     bool no_ns_el2_virt_timer_irq;
     bool no_nested_smmu;
 };
@@ -95,8 +88,6 @@ struct VirtMachineClass {
 struct VirtMachineState {
     MachineState parent;
     Notifier machine_done;
-    DeviceState *platform_bus_dev;
-
     FWCfgState *fw_cfg;
     bool secure;
     bool highmem;
@@ -106,7 +97,6 @@ struct VirtMachineState {
     bool highmem_redists;
     bool virt;
     bool ras;
-    bool mte;
     bool dtb_randomness;
     bool second_ns_uart_present;
     OnOffAuto acpi;
@@ -128,7 +118,6 @@ struct VirtMachineState {
     int psci_conduit;
     hwaddr highest_gpa;
     DeviceState *gic;
-    Notifier powerdown_notifier;
     PCIBus *bus;
     bool ns_el2_virt_timer_irq;
 };

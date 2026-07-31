@@ -70,16 +70,6 @@ option('xen', type: 'feature', value: 'auto',
        description: 'Xen backend support')
 option('xen_pci_passthrough', type: 'feature', value: 'auto',
        description: 'Xen PCI passthrough support')
-option('tcg', type: 'feature', value: 'enabled',
-       description: 'TCG support')
-option('plugins', type: 'boolean', value: false,
-       description: 'TCG plugins via shared library loading')
-option('debug_tcg', type: 'boolean', value: false,
-       description: 'TCG debugging')
-option('debug_remap', type: 'boolean', value: false,
-       description: 'syscall buffer debugging support')
-option('tcg_interpreter', type: 'boolean', value: false,
-       description: 'TCG with bytecode interpreter (slow)')
 option('safe_stack', type: 'boolean', value: false,
        description: 'SafeStack Stack Smash Protection (requires clang/llvm and coroutine backend ucontext)')
 option('asan', type: 'boolean', value: false,
@@ -136,8 +126,6 @@ option('glusterfs', type : 'feature', value : 'auto',
        description: 'Glusterfs block device driver')
 option('libdw', type : 'feature', value : 'auto',
        description: 'debuginfo support')
-option('libiscsi', type : 'feature', value : 'auto',
-       description: 'libiscsi userspace initiator')
 option('libnfs', type : 'feature', value : 'auto',
        description: 'libnfs block device driver')
 option('mpath', type : 'feature', value : 'auto',
@@ -178,12 +166,12 @@ option('pvg', type: 'feature', value: 'auto',
        description: 'macOS paravirtualized graphics support')
 option('rbd', type : 'feature', value : 'auto',
        description: 'Ceph block device driver')
+option('opengl', type : 'feature', value : 'auto',
+       description: 'OpenGL support')
 option('rdma', type : 'feature', value : 'auto',
        description: 'Enable RDMA-based migration')
 option('sdl', type : 'feature', value : 'auto',
        description: 'SDL user interface')
-option('seccomp', type : 'feature', value : 'auto',
-       description: 'seccomp support')
 option('smartcard', type : 'feature', value : 'auto',
        description: 'CA smartcard emulation support')
 option('snappy', type : 'feature', value : 'auto',
@@ -208,6 +196,8 @@ option('vde', type : 'feature', value : 'auto',
        description: 'vde network backend support')
 option('vmnet', type : 'feature', value : 'auto',
        description: 'vmnet.framework network backend support')
+option('virglrenderer', type : 'feature', value : 'auto',
+       description: 'virgl rendering support')
 option('png', type : 'feature', value : 'auto',
        description: 'PNG support with libpng')
 option('xkbcommon', type : 'feature', value : 'auto',
@@ -221,7 +211,7 @@ option('uadk', type : 'feature', value : 'auto',
 option('qatzip', type: 'feature', value: 'auto',
        description: 'QATzip compression support')
 option('trace_backends', type: 'array', value: ['log'],
-       choices: ['dtrace', 'ftrace', 'log', 'nop', 'simple', 'syslog', 'ust'],
+       choices: ['log'],
        description: 'Set available tracing backends')
 
 option('alsa', type: 'feature', value: 'auto',
@@ -311,9 +301,6 @@ option('qemu_ga_distro', type: 'string', value: 'Linux',
        description: 'second path element in qemu-ga registry entries')
 option('qemu_ga_version', type: 'string', value: '',
        description: 'version number for qemu-ga installer')
-
-option('hexagon_idef_parser', type : 'boolean', value : true,
-       description: 'use idef-parser to automatically generate TCG code for the Hexagon frontend')
 
 option('x86_version', type : 'combo', choices : ['0', '1', '2', '3', '4'], value: '1',
        description: 'tweak required x86_64 architecture version beyond compiler default')

@@ -8,7 +8,6 @@
 #include "system/gzvm_int.h"
 #include "linux-headers/linux/gzvm.h"
 #include "gzvm-internal.h"
-#include "trace/trace-accel_gzvm.h"
 
 static int
 gzvm_set_ioeventfd_mmio(int fd, hwaddr addr, uint32_t size, uint64_t data,
@@ -42,8 +41,6 @@ gzvm_mem_ioeventfd_add(MemoryListener *listener, MemoryRegionSection *section,
                                  int128_get64(section->size), data,
                                  match_data, true);
     if (r < 0 && errno == EEXIST) {
-        trace_gzvm_ioeventfd_add(fd,
-                                 section->offset_within_address_space);
         return;
     }
     if (r < 0) {
@@ -83,7 +80,6 @@ int gzvm_add_irqfd(EventNotifier *n, EventNotifier *rn, int gsi)
         irqfd.resamplefd = event_notifier_get_fd(rn);
     }
 
-    trace_gzvm_add_irqfd(irqfd.fd, gsi);
     return gzvm_vm_ioctl(GZVM_IRQFD, &irqfd);
 }
 
@@ -95,7 +91,6 @@ int gzvm_remove_irqfd(EventNotifier *n, int gsi)
         .flags = GZVM_IRQFD_FLAG_DEASSIGN,
     };
 
-    trace_gzvm_remove_irqfd(irqfd.fd, gsi);
     return gzvm_vm_ioctl(GZVM_IRQFD, &irqfd);
 }
 

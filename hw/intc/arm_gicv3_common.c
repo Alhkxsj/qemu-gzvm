@@ -554,9 +554,7 @@ type_init(register_types)
 
 const char *gicv3_class_name(void)
 {
-    if (false) {
-        return "kvm-arm-gicv3";
-    } else if (gzvm_enabled()) {
+    if (gzvm_enabled()) {
         return "gzvm-arm-gicv3";
     } else {
         

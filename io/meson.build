@@ -10,5 +10,4 @@ io_ss.add(files(
   'channel.c',
   'dns-resolver.c',
   'net-listener.c',
-  'task.c',
 ))

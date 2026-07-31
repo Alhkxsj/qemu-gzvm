@@ -10,7 +10,6 @@
 #include "hw/arm/boot.h"
 #include "hw/arm/primecell.h"
 #include "hw/arm/virt.h"
-#include "hw/char/serial-mm.h"
 #include "net/net.h"
 #include "system/device_tree.h"
 #include "system/blockdev.h"
@@ -18,7 +17,6 @@
 #include "system/numa.h"
 #include "system/runstate.h"
 #include "system/system.h"
-#include "system/tcg.h"
 #include "system/hvf.h"
 #include "system/gzvm.h"
 #include "hw/arm/virt-gzvm.h"
@@ -33,8 +31,6 @@
 #include "qemu/module.h"
 #include "hw/pci-host/gpex.h"
 #include "hw/virtio/virtio-pci.h"
-#include "hw/core/sysbus-fdt.h"
-#include "hw/platform-bus.h"
 #include "hw/qdev-properties.h"
 #include "hw/arm/fdt.h"
 #include "hw/intc/arm_gic.h"
@@ -44,7 +40,6 @@
 #include "qapi/visitor.h"
 #include "qapi/qapi-visit-common.h"
 #include "qobject/qlist.h"
-#include "standard-headers/linux/input.h"
 #include "target/arm/cpu-qom.h"
 #include "target/arm/internals.h"
 #include "target/arm/multiprocessing.h"
@@ -98,8 +93,6 @@ static void arm_virt_compat_set(MachineClass *mc)
 
 #define NUM_IRQS 256
 
-#define PLATFORM_BUS_NUM_IRQS 64
-
 #define LEGACY_RAMLIMIT_GB 255
 #define LEGACY_RAMLIMIT_BYTES (LEGACY_RAMLIMIT_GB * GiB)
 
@@ -119,14 +112,11 @@ static const MemMapEntry base_memmap[] = {
  [VIRT_UART0] = { 0x09000000, 0x00001000 },
  [VIRT_RTC] = { 0x09010000, 0x00001000 },
  [VIRT_FW_CFG] = { 0x09020000, 0x00000018 },
- [VIRT_GPIO] = { 0x09030000, 0x00001000 },
  [VIRT_UART1] = { 0x09040000, 0x00001000 },
  [VIRT_SMMU] = { 0x09050000, 0x00020000 },
  [VIRT_PVTIME] = { 0x090a0000, 0x00010000 },
- [VIRT_SECURE_GPIO] = { 0x090b0000, 0x00001000 },
  [VIRT_MMIO] = { 0x0a000000, 0x00000200 },
 
- [VIRT_PLATFORM_BUS] = { 0x0c000000, 0x02000000 },
  [VIRT_SECURE_MEM] = { 0x0e000000, 0x01000000 },
  [VIRT_PCIE_MMIO] = { 0x10000000, 0x2eff0000 },
  [VIRT_PCIE_PIO] = { 0x3eff0000, 0x00010000 },
@@ -150,11 +140,9 @@ static const int a15irqmap[] = {
  [VIRT_UART0] = 1,
  [VIRT_RTC] = 2,
  [VIRT_PCIE] = 3,
- [VIRT_GPIO] = 7,
  [VIRT_UART1] = 8,
  [VIRT_MMIO] = 16,
  [VIRT_SMMU] = 74,
- [VIRT_PLATFORM_BUS] = 112,
 };
 
 static void create_randomness(MachineState *ms, const char *node)
@@ -183,7 +171,7 @@ static bool ns_el2_virt_timer_present(void)
 static void create_gzvm_restricted_dma_pool(VirtMachineState *vms)
 {
  MachineState *ms = MACHINE(vms);
- hwaddr size = 128 * MiB;
+ hwaddr size = 256 * MiB;
  hwaddr base;
  char *nodename;
 
@@ -529,14 +517,6 @@ static void fdt_add_pmu_nodes(const VirtMachineState *vms)
 
 
 
- static bool gicv3_nmi_present(VirtMachineState *vms)
-{
- ARMCPU *cpu = ARM_CPU(qemu_get_cpu(0));
-
- return tcg_enabled() && cpu_isar_feature(aa64_nmi, cpu) &&
- (vms->gic_version != VIRT_GIC_VERSION_2);
-}
-
 static void create_gic(VirtMachineState *vms, MemoryRegion *mem)
 {
  MachineState *ms = MACHINE(vms);
@@ -603,10 +583,6 @@ static void create_gic(VirtMachineState *vms, MemoryRegion *mem)
  qdev_prop_set_bit(vms->gic, "has-virtualization-extensions",
  vms->virt);
  }
- }
-
- if (gicv3_nmi_present(vms)) {
- qdev_prop_set_bit(vms->gic, "has-nmi", true);
  }
 
  gicbusdev = SYS_BUS_DEVICE(vms->gic);
@@ -754,115 +730,6 @@ static void create_rtc(const VirtMachineState *vms)
  qemu_fdt_setprop_cell(ms->fdt, nodename, "clocks", vms->clock_phandle);
  qemu_fdt_setprop_string(ms->fdt, nodename, "clock-names", "apb_pclk");
  g_free(nodename);
-}
-
-static DeviceState *gpio_key_dev;
-static void virt_powerdown_req(Notifier *n, void *opaque)
-{
- qemu_set_irq(qdev_get_gpio_in(gpio_key_dev, 0), 1);
-}
-
-static void create_gpio_keys(char *fdt, DeviceState *pl061_dev,
- uint32_t phandle)
-{
- gpio_key_dev = sysbus_create_simple("gpio-key", -1,
- qdev_get_gpio_in(pl061_dev,
- GPIO_PIN_POWER_BUTTON));
-
- qemu_fdt_add_subnode(fdt, "/gpio-keys");
- qemu_fdt_setprop_string(fdt, "/gpio-keys", "compatible", "gpio-keys");
-
- qemu_fdt_add_subnode(fdt, "/gpio-keys/poweroff");
- qemu_fdt_setprop_string(fdt, "/gpio-keys/poweroff",
- "label", "GPIO Key Poweroff");
- qemu_fdt_setprop_cell(fdt, "/gpio-keys/poweroff", "linux,code",
- KEY_POWER);
- qemu_fdt_setprop_cells(fdt, "/gpio-keys/poweroff",
- "gpios", phandle, GPIO_PIN_POWER_BUTTON, 0);
-}
-
-#define SECURE_GPIO_POWEROFF 0
-#define SECURE_GPIO_RESET 1
-
-static void create_secure_gpio_pwr(char *fdt, DeviceState *pl061_dev,
- uint32_t phandle)
-{
- DeviceState *gpio_pwr_dev;
-
- gpio_pwr_dev = sysbus_create_simple("gpio-pwr", -1, NULL);
-
- qdev_connect_gpio_out(pl061_dev, SECURE_GPIO_RESET,
- qdev_get_gpio_in_named(gpio_pwr_dev, "reset", 0));
- qdev_connect_gpio_out(pl061_dev, SECURE_GPIO_POWEROFF,
- qdev_get_gpio_in_named(gpio_pwr_dev, "shutdown", 0));
-
- qemu_fdt_add_subnode(fdt, "/gpio-poweroff");
- qemu_fdt_setprop_string(fdt, "/gpio-poweroff", "compatible",
- "gpio-poweroff");
- qemu_fdt_setprop_cells(fdt, "/gpio-poweroff",
- "gpios", phandle, SECURE_GPIO_POWEROFF, 0);
- qemu_fdt_setprop_string(fdt, "/gpio-poweroff", "status", "disabled");
- qemu_fdt_setprop_string(fdt, "/gpio-poweroff", "secure-status",
- "okay");
-
- qemu_fdt_add_subnode(fdt, "/gpio-restart");
- qemu_fdt_setprop_string(fdt, "/gpio-restart", "compatible",
- "gpio-restart");
- qemu_fdt_setprop_cells(fdt, "/gpio-restart",
- "gpios", phandle, SECURE_GPIO_RESET, 0);
- qemu_fdt_setprop_string(fdt, "/gpio-restart", "status", "disabled");
- qemu_fdt_setprop_string(fdt, "/gpio-restart", "secure-status",
- "okay");
-}
-
-static void create_gpio_devices(const VirtMachineState *vms, int gpio,
- MemoryRegion *mem)
-{
- char *nodename;
- DeviceState *pl061_dev;
- hwaddr base = vms->memmap[gpio].base;
- hwaddr size = vms->memmap[gpio].size;
- int irq = vms->irqmap[gpio];
- const char compat[] = "arm,pl061\0arm,primecell";
- SysBusDevice *s;
- MachineState *ms = MACHINE(vms);
-
- pl061_dev = qdev_new("pl061");
-
- qdev_prop_set_uint32(pl061_dev, "pullups", 0);
- qdev_prop_set_uint32(pl061_dev, "pulldowns", 0xff);
- s = SYS_BUS_DEVICE(pl061_dev);
- sysbus_realize_and_unref(s, &error_fatal);
- memory_region_add_subregion(mem, base, sysbus_mmio_get_region(s, 0));
- sysbus_connect_irq(s, 0, qdev_get_gpio_in(vms->gic, irq));
-
- uint32_t phandle = qemu_fdt_alloc_phandle(ms->fdt);
- nodename = g_strdup_printf("/pl061@%" PRIx64, base);
- qemu_fdt_add_subnode(ms->fdt, nodename);
- qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg",
- 2, base, 2, size);
- qemu_fdt_setprop(ms->fdt, nodename, "compatible", compat, sizeof(compat));
- qemu_fdt_setprop_cell(ms->fdt, nodename, "#gpio-cells", 2);
- qemu_fdt_setprop(ms->fdt, nodename, "gpio-controller", NULL, 0);
- qemu_fdt_setprop_cells(ms->fdt, nodename, "interrupts",
- GIC_FDT_IRQ_TYPE_SPI, irq,
- GIC_FDT_IRQ_FLAGS_LEVEL_HI);
- qemu_fdt_setprop_cell(ms->fdt, nodename, "clocks", vms->clock_phandle);
- qemu_fdt_setprop_string(ms->fdt, nodename, "clock-names", "apb_pclk");
- qemu_fdt_setprop_cell(ms->fdt, nodename, "phandle", phandle);
-
- if (gpio != VIRT_GPIO) {
-
- qemu_fdt_setprop_string(ms->fdt, nodename, "status", "disabled");
- qemu_fdt_setprop_string(ms->fdt, nodename, "secure-status", "okay");
- }
- g_free(nodename);
-
- if (gpio == VIRT_GPIO) {
- create_gpio_keys(ms->fdt, pl061_dev, phandle);
- } else {
- create_secure_gpio_pwr(ms->fdt, pl061_dev, phandle);
- }
 }
 
 static bool virt_firmware_init(VirtMachineState *vms,
@@ -1105,44 +972,8 @@ static void create_pcie(VirtMachineState *vms)
 
 }
 
-static void create_platform_bus(VirtMachineState *vms)
-{
- DeviceState *dev;
- SysBusDevice *s;
- int i;
- MemoryRegion *sysmem = get_system_memory();
-
- dev = qdev_new(TYPE_PLATFORM_BUS_DEVICE);
- dev->id = g_strdup(TYPE_PLATFORM_BUS_DEVICE);
- qdev_prop_set_uint32(dev, "num_irqs", PLATFORM_BUS_NUM_IRQS);
- qdev_prop_set_uint32(dev, "mmio_size", vms->memmap[VIRT_PLATFORM_BUS].size);
- sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
- vms->platform_bus_dev = dev;
-
- s = SYS_BUS_DEVICE(dev);
- for (i = 0; i < PLATFORM_BUS_NUM_IRQS; i++) {
- int irq = vms->irqmap[VIRT_PLATFORM_BUS] + i;
- sysbus_connect_irq(s, i, qdev_get_gpio_in(vms->gic, irq));
- }
-
- memory_region_add_subregion(sysmem,
- vms->memmap[VIRT_PLATFORM_BUS].base,
- sysbus_mmio_get_region(s, 0));
-}
-
-static void create_tag_ram(MemoryRegion *tag_sysmem,
- hwaddr base, hwaddr size,
- const char *name)
-{
- MemoryRegion *tagram = g_new(MemoryRegion, 1);
-
- memory_region_init_ram(tagram, NULL, name, size / 32, &error_fatal);
- memory_region_add_subregion(tag_sysmem, base / 32, tagram);
-}
-
 static void create_secure_ram(VirtMachineState *vms,
- MemoryRegion *secure_sysmem,
- MemoryRegion *secure_tag_sysmem)
+ MemoryRegion *secure_sysmem)
 {
  MemoryRegion *secram = g_new(MemoryRegion, 1);
  char *nodename;
@@ -1160,10 +991,6 @@ static void create_secure_ram(VirtMachineState *vms,
  qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
  qemu_fdt_setprop_string(ms->fdt, nodename, "status", "disabled");
  qemu_fdt_setprop_string(ms->fdt, nodename, "secure-status", "okay");
-
- if (secure_tag_sysmem) {
- create_tag_ram(secure_tag_sysmem, base, size, "mach-virt.secure-tag");
- }
 
  g_free(nodename);
 }
@@ -1188,13 +1015,6 @@ void virt_machine_done(Notifier *notifier, void *data)
  struct arm_boot_info *info = &vms->bootinfo;
  AddressSpace *as = arm_boot_address_space(cpu, info);
  int dtb_size;
-
- if (info->dtb_filename == NULL) {
- platform_bus_add_all_fdt_nodes(ms->fdt, "/intc",
- vms->memmap[VIRT_PLATFORM_BUS].base,
- vms->memmap[VIRT_PLATFORM_BUS].size,
- vms->irqmap[VIRT_PLATFORM_BUS]);
- }
 
  dtb_size = arm_load_dtb(info->dtb_start, info, info->dtb_limit, as, ms,
  cpu);
@@ -1390,15 +1210,6 @@ static void finalize_gic_version(VirtMachineState *vms)
  if (gzvm_enabled()) {
 
  gics_supported |= VIRT_GIC_VERSION_3_MASK;
- } else if (tcg_enabled()) {
- gics_supported |= VIRT_GIC_VERSION_2_MASK;
- if (module_object_class_by_name("arm-gicv3")) {
- gics_supported |= VIRT_GIC_VERSION_3_MASK;
- if (vms->virt) {
-
- gics_supported |= VIRT_GIC_VERSION_4_MASK;
- }
- }
  } else {
  error_report("Unsupported accelerator, can not determine GIC support");
  exit(1);
@@ -1443,8 +1254,6 @@ static void machvirt_init(MachineState *machine)
  const CPUArchIdList *possible_cpus;
  MemoryRegion *sysmem = get_system_memory();
  MemoryRegion *secure_sysmem = NULL;
- MemoryRegion *tag_sysmem = NULL;
- MemoryRegion *secure_tag_sysmem = NULL;
  int n, virt_max_cpus;
  bool firmware_loaded;
  bool aarch64 = true;
@@ -1557,10 +1366,6 @@ static void machvirt_init(MachineState *machine)
  object_property_set_bool(cpuobj, "pmu", false, NULL);
  }
 
- if (vmc->no_tcg_lpa2 && object_property_find(cpuobj, "lpa2")) {
- object_property_set_bool(cpuobj, "lpa2", false, NULL);
- }
-
  if (object_property_find(cpuobj, "reset-cbar")) {
  object_property_set_int(cpuobj, "reset-cbar",
  vms->memmap[VIRT_CPUPERIPHS].base,
@@ -1572,45 +1377,6 @@ static void machvirt_init(MachineState *machine)
  if (vms->secure) {
  object_property_set_link(cpuobj, "secure-memory",
  OBJECT(secure_sysmem), &error_abort);
- }
-
- if (vms->mte) {
- if (tcg_enabled()) {
-
- if (!tag_sysmem) {
-
- if (!object_property_find(cpuobj, "tag-memory")) {
- error_report("MTE requested, but not supported "
- "by the guest CPU");
- exit(1);
- }
-
- tag_sysmem = g_new(MemoryRegion, 1);
- memory_region_init(tag_sysmem, OBJECT(machine),
- "tag-memory", UINT64_MAX / 32);
-
- if (vms->secure) {
- secure_tag_sysmem = g_new(MemoryRegion, 1);
- memory_region_init(secure_tag_sysmem, OBJECT(machine),
- "secure-tag-memory",
- UINT64_MAX / 32);
-
- memory_region_add_subregion_overlap(secure_tag_sysmem,
- 0, tag_sysmem, -1);
- }
- }
-
- object_property_set_link(cpuobj, "tag-memory",
- OBJECT(tag_sysmem), &error_abort);
- if (vms->secure) {
- object_property_set_link(cpuobj, "secure-tag-memory",
- OBJECT(secure_tag_sysmem),
- &error_abort);
- }
- } else {
- error_report("MTE requested, but not supported ");
- exit(1);
- }
  }
 
  qdev_realize(DEVICE(cpuobj), NULL, &error_fatal);
@@ -1647,12 +1413,7 @@ static void machvirt_init(MachineState *machine)
  }
 
  if (vms->secure) {
- create_secure_ram(vms, secure_sysmem, secure_tag_sysmem);
- }
-
- if (tag_sysmem) {
- create_tag_ram(tag_sysmem, vms->memmap[VIRT_MEM].base,
- machine->ram_size, "mach-virt.tag");
+ create_secure_ram(vms, secure_sysmem);
  }
 
  vms->highmem_ecam &= (!firmware_loaded || aarch64);
@@ -1661,25 +1422,8 @@ static void machvirt_init(MachineState *machine)
 
  create_pcie(vms);
 
- virt_gzvm_create_virtio_gpu(vms);
-
- if (false) {
- create_gpio_devices(vms, VIRT_GPIO, sysmem);
- }
-
- if (vms->secure && !vmc->no_secure_gpio) {
- if (false) {
- create_gpio_devices(vms, VIRT_SECURE_GPIO, secure_sysmem);
- }
- }
-
- vms->powerdown_notifier.notify = virt_powerdown_req;
- qemu_register_powerdown_notifier(&vms->powerdown_notifier);
-
  vms->fw_cfg = create_fw_cfg(vms, &address_space_memory);
  rom_set_fw(vms->fw_cfg);
-
- create_platform_bus(vms);
 
  vms->bootinfo.ram_size = machine->ram_size;
  vms->bootinfo.board_id = -1;
@@ -1873,20 +1617,6 @@ static void virt_set_ras(Object *obj, bool value, Error **errp)
  vms->ras = value;
 }
 
-static bool virt_get_mte(Object *obj, Error **errp)
-{
- VirtMachineState *vms = VIRT_MACHINE(obj);
-
- return vms->mte;
-}
-
-static void virt_set_mte(Object *obj, bool value, Error **errp)
-{
- VirtMachineState *vms = VIRT_MACHINE(obj);
-
- vms->mte = value;
-}
-
 static char *virt_get_gic_version(Object *obj, Error **errp)
 {
  VirtMachineState *vms = VIRT_MACHINE(obj);
@@ -2060,15 +1790,6 @@ static void virt_machine_device_plug_cb(HotplugHandler *hotplug_dev,
 {
  VirtMachineState *vms = VIRT_MACHINE(hotplug_dev);
 
- if (vms->platform_bus_dev) {
- MachineClass *mc = MACHINE_GET_CLASS(vms);
-
- if (device_is_dynamic_sysbus(mc, dev)) {
- platform_bus_link_device(PLATFORM_BUS_DEVICE(vms->platform_bus_dev),
- SYS_BUS_DEVICE(dev));
- }
- }
-
  if (object_dynamic_cast(OBJECT(dev), TYPE_VIRTIO_IOMMU_PCI)) {
  PCIDevice *pdev = PCI_DEVICE(dev);
 
@@ -2135,29 +1856,11 @@ static void virt_machine_class_init(ObjectClass *oc, void *data)
  MachineClass *mc = MACHINE_CLASS(oc);
  HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
  static const char * const valid_cpu_types[] = {
-#ifdef CONFIG_TCG
- ARM_CPU_TYPE_NAME("cortex-a7"),
- ARM_CPU_TYPE_NAME("cortex-a15"),
 #ifdef TARGET_AARCH64
- ARM_CPU_TYPE_NAME("cortex-a35"),
- ARM_CPU_TYPE_NAME("cortex-a55"),
- ARM_CPU_TYPE_NAME("cortex-a72"),
- ARM_CPU_TYPE_NAME("cortex-a76"),
- ARM_CPU_TYPE_NAME("cortex-a710"),
- ARM_CPU_TYPE_NAME("a64fx"),
- ARM_CPU_TYPE_NAME("neoverse-n1"),
- ARM_CPU_TYPE_NAME("neoverse-v1"),
- ARM_CPU_TYPE_NAME("neoverse-n2"),
-#endif
-#endif
-#ifdef TARGET_AARCH64
- ARM_CPU_TYPE_NAME("cortex-a53"),
- ARM_CPU_TYPE_NAME("cortex-a57"),
 #if defined(CONFIG_GZVM)
  ARM_CPU_TYPE_NAME("host"),
 #endif
 #endif
- ARM_CPU_TYPE_NAME("max"),
  NULL
  };
 
@@ -2174,11 +1877,7 @@ static void virt_machine_class_init(ObjectClass *oc, void *data)
  mc->minimum_page_bits = 12;
  mc->possible_cpu_arch_ids = virt_possible_cpu_arch_ids;
  mc->cpu_index_to_instance_props = virt_cpu_index_to_props;
-#ifdef CONFIG_TCG
- mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a15");
-#else
- mc->default_cpu_type = ARM_CPU_TYPE_NAME("max");
-#endif
+ mc->default_cpu_type = ARM_CPU_TYPE_NAME("host");
  mc->valid_cpu_types = valid_cpu_types;
  mc->get_default_cpu_node_id = virt_get_default_cpu_node_id;
 
@@ -2281,12 +1980,6 @@ static void virt_machine_class_init(ObjectClass *oc, void *data)
  "Set on/off to enable/disable reporting host memory errors "
  "to a KVM guest using ACPI and guest external abort exceptions");
 
- object_class_property_add_bool(oc, "mte", virt_get_mte, virt_set_mte);
-  object_class_property_set_description(oc, "mte",
-  "Set on/off to enable/disable emulating a "
-  "guest CPU which implements the ARM "
-  "Memory Tagging Extension");
-
   object_class_property_add_bool(oc, "dtb-randomness",
  virt_get_dtb_randomness,
  virt_set_dtb_randomness);
@@ -2325,8 +2018,6 @@ static void virt_instance_init(Object *obj)
  vms->default_bus_bypass_iommu = false;
 
  vms->ras = false;
-
- vms->mte = false;
 
  vms->dtb_randomness = true;
 

@@ -7,7 +7,6 @@
 #include "system/gzvm.h"
 #include "system/gzvm_int.h"
 #include "linux-headers/linux/gzvm.h"
-#include "trace/trace-accel_gzvm.h"
 
 #ifdef CONFIG_LINUX
 #include <sys/auxv.h>
@@ -181,7 +180,6 @@ static int gzvm_get_one_reg_sw(CPUState *cs, uint64_t id, void *target)
 
 int gzvm_arch_get_registers(CPUState *cs, int level)
 {
-    trace_gzvm_get_registers_stub();
     ARMCPU *cpu = ARM_CPU(cs);
     CPUARMState *env = &cpu->env;
     uint64_t val;

@@ -16,10 +16,6 @@ gic_dist_write(int addr, unsigned int size, uint32_t val) "dist write at 0x%08x 
 gic_lr_entry(int cpu, int entry, uint32_t val) "cpu %d: new lr entry %d: 0x%08" PRIx32
 gic_update_maintenance_irq(int cpu, int val) "cpu %d: maintenance = %d"
 
-# arm_gicv3_gzvm.c
-gzvm_gicv3_dist_read(uint64_t offset, unsigned size) "GZVM dist read (bypass): offset 0x%"PRIx64" size %u"
-gzvm_gicv3_dist_write(uint64_t offset, uint64_t data, unsigned size) "GZVM dist write (bypass): offset 0x%"PRIx64" data 0x%"PRIx64" size %u"
-
 # arm_gicv3_dist.c
 gicv3_dist_read(uint64_t offset, uint64_t data, unsigned size, bool secure) "GICv3 distributor read: offset 0x%" PRIx64 " data 0x%" PRIx64 " size %u secure %d"
 gicv3_dist_badread(uint64_t offset, unsigned size, bool secure) "GICv3 distributor read: offset 0x%" PRIx64 " size %u secure %d: error"

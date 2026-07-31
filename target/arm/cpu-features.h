@@ -943,40 +943,6 @@ static inline bool isar_feature_any_evt(const ARMISARegisters *id)
     return isar_feature_aa64_evt(id) || isar_feature_aa32_evt(id);
 }
 
-typedef enum {
-    CCSIDR_FORMAT_LEGACY,
-    CCSIDR_FORMAT_CCIDX,
-} CCSIDRFormat;
-
-static inline uint64_t make_ccsidr(CCSIDRFormat format, unsigned assoc,
-                                   unsigned linesize, unsigned cachesize,
-                                   uint8_t flags)
-{
-    unsigned lg_linesize = ctz32(linesize);
-    unsigned sets;
-    uint64_t ccsidr = 0;
-
-    assert(assoc != 0);
-    assert(is_power_of_2(linesize));
-    assert(lg_linesize >= 4 && lg_linesize <= 7 + 4);
-
-    sets = cachesize / (assoc * linesize);
-    assert(cachesize % (assoc * linesize) == 0);
-
-    if (format == CCSIDR_FORMAT_LEGACY) {
-        ccsidr = deposit32(ccsidr, 28,  4, flags);
-        ccsidr = deposit32(ccsidr, 13, 15, sets - 1);
-        ccsidr = deposit32(ccsidr,  3, 10, assoc - 1);
-        ccsidr = deposit32(ccsidr,  0,  3, lg_linesize - 4);
-    } else {
-        ccsidr = deposit64(ccsidr, 32, 24, sets - 1);
-        ccsidr = deposit64(ccsidr,  3, 21, assoc - 1);
-        ccsidr = deposit64(ccsidr,  0,  3, lg_linesize - 4);
-    }
-
-    return ccsidr;
-}
-
 #define cpu_isar_feature(name, cpu) \
     ({ ARMCPU *cpu_ = (cpu); isar_feature_##name(&cpu_->isar); })
 

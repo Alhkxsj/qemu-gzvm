@@ -38,9 +38,6 @@ static const char *const if_name[IF_COUNT] = {
     [IF_NONE] = "none",
     [IF_IDE] = "ide",
     [IF_SCSI] = "scsi",
-    [IF_FLOPPY] = "floppy",
-    [IF_MTD] = "mtd",
-    [IF_SD] = "sd",
     [IF_VIRTIO] = "virtio",
     [IF_XEN] = "xen",
 };

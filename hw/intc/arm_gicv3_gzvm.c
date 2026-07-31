@@ -10,7 +10,6 @@
 #include "system/gzvm_int.h"
 #include "system/runstate.h"
 #include "gicv3_internal.h"
-#include "trace.h"
 #include "qom/object.h"
 #include "target/arm/cpregs.h"
 #include "qemu/event_notifier.h"
@@ -83,7 +82,6 @@ static MemTxResult gzvm_gicv3_dist_read(void *opaque, hwaddr offset,
                                          uint64_t *data, unsigned size,
                                          MemTxAttrs attrs)
 {
-    trace_gzvm_gicv3_dist_read(offset, size);
     *data = 0;
     return MEMTX_OK;
 }
@@ -92,7 +90,6 @@ static MemTxResult gzvm_gicv3_dist_write(void *opaque, hwaddr offset,
                                           uint64_t data, unsigned size,
                                           MemTxAttrs attrs)
 {
-    trace_gzvm_gicv3_dist_write(offset, data, size);
     return MEMTX_OK;
 }
 

@@ -7,12 +7,9 @@ system_ss.add(files(
   'cursor.c',
   'dmabuf.c',
   'input-keymap.c',
-  'input-legacy.c',
   'input.c',
   'kbd-state.c',
-  'keymaps.c',
   'qemu-pixman.c',
-  'util.c',
 ))
 system_ss.add(files('console-vc-stubs.c'))
 if dbus_display
@@ -43,23 +40,9 @@ if sdl.found()
 endif
 
 keymaps = [
-  ['atset1', 'qcode'],
-  ['linux', 'qcode'],
-  ['qcode', 'atset1'],
-  ['qcode', 'atset2'],
-  ['qcode', 'atset3'],
   ['qcode', 'linux'],
-  ['qcode', 'qnum'],
-  ['qcode', 'sun'],
   ['qnum', 'qcode'],
   ['usb', 'qcode'],
-  ['win32', 'qcode'],
-  ['x11', 'qcode'],
-  ['xorgevdev', 'qcode'],
-  ['xorgkbd', 'qcode'],
-  ['xorgxquartz', 'qcode'],
-  ['xorgxwin', 'qcode'],
-  ['osx', 'qcode'],
 ]
 
 if have_system or xkbcommon.found()

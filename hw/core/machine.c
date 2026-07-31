@@ -154,8 +154,6 @@ GlobalProperty hw_compat_4_2[] = {
     { "vhost-blk-device", "seg_max_adjust", "off"},
     { "usb-host", "suppress-remote-wake", "off" },
     { "usb-redir", "suppress-remote-wake", "off" },
-    { "qxl", "revision", "4" },
-    { "qxl-vga", "revision", "4" },
     { "fw_cfg", "acpi-mr-restore", "false" },
     { "virtio-device", "use-disabled-flag", "false" },
 };
@@ -167,11 +165,6 @@ GlobalProperty hw_compat_4_1[] = {
 const size_t hw_compat_4_1_len = G_N_ELEMENTS(hw_compat_4_1);
 
 GlobalProperty hw_compat_4_0[] = {
-    { "VGA",            "edid", "false" },
-    { "secondary-vga",  "edid", "false" },
-    { "bochs-display",  "edid", "false" },
-    { "virtio-vga",     "edid", "false" },
-    { "virtio-gpu-device", "edid", "false" },
     { "virtio-device", "use-started", "false" },
     { "virtio-balloon-device", "qemu-4-0-config-size", "true" },
     { "pl031", "migrate-tick-offset", "false" },
@@ -181,7 +174,6 @@ const size_t hw_compat_4_0_len = G_N_ELEMENTS(hw_compat_4_0);
 GlobalProperty hw_compat_3_1[] = {
     { "pcie-root-port", "x-speed", "2_5" },
     { "pcie-root-port", "x-width", "1" },
-    { "memory-backend-file", "x-use-canonical-path-for-ramblock-id", "true" },
     { "memory-backend-memfd", "x-use-canonical-path-for-ramblock-id", "true" },
     { "tpm-crb", "ppi", "false" },
     { "tpm-tis", "ppi", "false" },
@@ -199,10 +191,6 @@ GlobalProperty hw_compat_3_0[] = {};
 const size_t hw_compat_3_0_len = G_N_ELEMENTS(hw_compat_3_0);
 
 GlobalProperty hw_compat_2_12[] = {
-    { "cirrus-vga", "global-vmstate", "true" },
-    { "VGA", "global-vmstate", "true" },
-    { "vmware-svga", "global-vmstate", "true" },
-    { "qxl-vga", "global-vmstate", "true" },
 };
 const size_t hw_compat_2_12_len = G_N_ELEMENTS(hw_compat_2_12);
 
@@ -236,8 +224,6 @@ GlobalProperty hw_compat_2_8[] = {
     { "virtio-pci", "x-pcie-deverr-init", "off" },
     { "virtio-pci", "x-pcie-lnkctl-init", "off" },
     { "virtio-pci", "x-pcie-pm-init", "off" },
-    { "cirrus-vga", "vgamem_mb", "8" },
-    { "isa-cirrus-vga", "vgamem_mb", "8" },
 };
 const size_t hw_compat_2_8_len = G_N_ELEMENTS(hw_compat_2_8);
 
@@ -290,21 +276,6 @@ static void machine_set_kernel(Object *obj, const char *value, Error **errp)
 
     g_free(ms->kernel_filename);
     ms->kernel_filename = g_strdup(value);
-}
-
-static char *machine_get_shim(Object *obj, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    return g_strdup(ms->shim_filename);
-}
-
-static void machine_set_shim(Object *obj, const char *value, Error **errp)
-{
-    MachineState *ms = MACHINE(obj);
-
-    g_free(ms->shim_filename);
-    ms->shim_filename = g_strdup(value);
 }
 
 static char *machine_get_initrd(Object *obj, Error **errp)
@@ -960,19 +931,13 @@ void machine_add_audiodev_property(MachineClass *mc)
                                           "Audiodev to use for default machine devices");
 }
 
-static bool create_default_memdev(MachineState *ms, const char *path,
-                                  Error **errp)
+static bool create_default_memdev(MachineState *ms, Error **errp)
 {
     Object *obj;
     MachineClass *mc = MACHINE_GET_CLASS(ms);
     bool r = false;
 
-    obj = object_new(path ? TYPE_MEMORY_BACKEND_FILE : TYPE_MEMORY_BACKEND_RAM);
-    if (path) {
-        if (!object_property_set_str(obj, "mem-path", path, errp)) {
-            goto out;
-        }
-    }
+    obj = object_new(TYPE_MEMORY_BACKEND_RAM);
     if (!object_property_set_int(obj, "size", ms->ram_size, errp)) {
         goto out;
     }
@@ -998,8 +963,6 @@ static void machine_class_init(ObjectClass *oc, void *data)
 
     mc->default_ram_size = 128 * MiB;
     mc->rom_file_has_mr = true;
-    mc->smbios_memory_device_size = 2047 * TiB;
-
     mc->numa_mem_align_shift = 23;
 
     mc->create_default_memdev = create_default_memdev;
@@ -1008,11 +971,6 @@ static void machine_class_init(ObjectClass *oc, void *data)
         machine_get_kernel, machine_set_kernel);
     object_class_property_set_description(oc, "kernel",
         "Linux kernel image file");
-
-    object_class_property_add_str(oc, "shim",
-        machine_get_shim, machine_set_shim);
-    object_class_property_set_description(oc, "shim",
-        "shim.efi file");
 
     object_class_property_add_str(oc, "initrd",
         machine_get_initrd, machine_set_initrd);
@@ -1444,7 +1402,7 @@ static bool is_cpu_type_supported(const MachineState *machine, Error **errp)
     return true;
 }
 
-void machine_run_board_init(MachineState *machine, const char *mem_path, Error **errp)
+void machine_run_board_init(MachineState *machine, Error **errp)
 {
     ERRP_GUARD();
     MachineClass *machine_class = MACHINE_GET_CLASS(machine);
@@ -1476,8 +1434,7 @@ void machine_run_board_init(MachineState *machine, const char *mem_path, Error *
             return;
         }
 
-        if (!machine_class->create_default_memdev(current_machine, mem_path,
-                                                  errp)) {
+        if (!machine_class->create_default_memdev(current_machine, errp)) {
             return;
         }
     }

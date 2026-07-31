@@ -24,7 +24,7 @@ extern MachineState *current_machine;
 const char *machine_class_default_cpu_type(MachineClass *mc);
 
 void machine_add_audiodev_property(MachineClass *mc);
-void machine_run_board_init(MachineState *machine, const char *mem_path, Error **errp);
+void machine_run_board_init(MachineState *machine, Error **errp);
 bool machine_usb(MachineState *machine);
 int machine_phandle_start(MachineState *machine);
 bool machine_dump_guest_core(MachineState *machine);
@@ -104,15 +104,12 @@ struct MachineClass {
     int default_cpus;
     unsigned int no_serial:1,
         no_parallel:1,
-        no_floppy:1,
         no_cdrom:1,
         pci_allow_0_address:1,
         legacy_fw_cfg_order:1;
-    bool auto_create_sdcard;
     bool is_default;
     const char *default_machine_opts;
     const char *default_boot_order;
-    const char *default_display;
     const char *default_nic;
     GPtrArray *compat_props;
     const char *hw_version;
@@ -147,9 +144,7 @@ struct MachineClass {
     const CPUArchIdList *(*possible_cpu_arch_ids)(MachineState *machine);
     int64_t (*get_default_cpu_node_id)(const MachineState *ms, int idx);
     ram_addr_t (*fixup_ram_size)(ram_addr_t size);
-    uint64_t smbios_memory_device_size;
-    bool (*create_default_memdev)(MachineState *ms, const char *path,
-                                  Error **errp);
+    bool (*create_default_memdev)(MachineState *ms, Error **errp);
 };
 
 typedef struct DeviceMemoryState {
@@ -212,7 +207,6 @@ struct MachineState {
     BootConfiguration boot_config;
     char *kernel_filename;
     char *kernel_cmdline;
-    char *shim_filename;
     char *initrd_filename;
     const char *cpu_type;
     AccelState *accelerator;

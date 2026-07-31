@@ -27,8 +27,3 @@ input_event_sync(void) ""
 
 # sdl2-input.c
 sdl2_process_key(int sdl_scancode, int qcode, const char *action) "translated SDL scancode %d to QKeyCode %d (%s)"
-
-# keymaps.c
-keymap_parse(const char *file) "file %s"
-keymap_add(int sym, int code, const char *line) "sym=0x%04x code=0x%04x (line: %s)"
-keymap_unmapped(int sym) "sym=0x%04x"

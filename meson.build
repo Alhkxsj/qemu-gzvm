@@ -12,9 +12,6 @@ add_test_setup('slow', exclude_suites: ['thorough'],
 add_test_setup('thorough',
                env: ['G_TEST_SLOW=1', 'SPEED=thorough', 'RUST_BACKTRACE=1'])
 
-meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
-
-
 not_found = dependency('', required: false)
 keyval = import('keyval')
 rust = import('rust')
@@ -127,17 +124,6 @@ if have_rust
       native: true, language: 'rust')
 endif
 
-dtrace = not_found
-stap = not_found
-if 'dtrace' in get_option('trace_backends')
-  dtrace = find_program('dtrace', required: true)
-  stap = find_program('stap', required: false)
-  if stap.found()
-    add_global_arguments('-DSTAP_SDT_V2',
-                         native: false, language: all_languages)
-  endif
-endif
-
 if get_option('iasl') == ''
   iasl = find_program('iasl', required: false)
 else
@@ -164,19 +150,6 @@ if get_option('fuzzing') and get_option('fuzzing_engine') == '' and \
         ''',
         args: ['-Werror', '-fsanitize=fuzzer'])
   error('Your compiler does not support -fsanitize=fuzzer')
-endif
-
-if 'ftrace' in get_option('trace_backends') and host_os != 'linux'
-  error('ftrace is supported only on Linux')
-endif
-if 'syslog' in get_option('trace_backends') and not cc.compiles('''
-    #include <syslog.h>
-    int main(void) {
-        openlog("qemu", LOG_PID, LOG_DAEMON);
-        syslog(LOG_INFO, "configure");
-        return 0;
-    }''')
-  error('syslog is not supported on this system')
 endif
 
 get_option('mpath') \
@@ -624,16 +597,6 @@ endif
 add_project_arguments('-iquote', host_include / 'generic',
                       language: all_languages)
 
-sparse = find_program('cgcc', required: get_option('sparse'))
-if sparse.found()
-  run_target('sparse',
-             command: [find_program('scripts/check_sparse.py'),
-                       'compile_commands.json', sparse.full_path(), '-Wbitwise',
-                       '-Wno-transparent-union', '-Wno-old-initializer',
-                       '-Wno-non-pointer-null'])
-endif
-
-
 libm = cc.find_library('m', required: false)
 threads = dependency('threads')
 util = cc.find_library('util', required: false)
@@ -674,42 +637,12 @@ elif host_os == 'haiku'
   socket = [cc.find_library('posix_error_mapper'),
             cc.find_library('network'),
             cc.find_library('bsd')]
-elif host_os == 'openbsd'
-  if get_option('tcg').allowed() and target_dirs.length() > 0
-    emulator_link_args = cc.get_supported_link_arguments('-Wl,-z,wxneeded')
-  endif
 endif
 
 
 accelerators = []
 if get_option('gzvm').allowed() and host_os == 'linux'
   accelerators += 'CONFIG_GZVM'
-endif
-tcg_arch = host_arch
-if get_option('tcg').allowed()
-  if host_arch == 'unknown'
-    if not get_option('tcg_interpreter')
-      error('Unsupported CPU @0@, try --enable-tcg-interpreter'.format(cpu))
-    endif
-  elif get_option('tcg_interpreter')
-    warning('Use of the TCG interpreter is not recommended on this host')
-    warning('architecture. There is a native TCG execution backend available')
-    warning('which provides substantially better performance and reliability.')
-    warning('It is strongly recommended to remove the --enable-tcg-interpreter')
-    warning('configuration option on this architecture to use the native')
-    warning('backend.')
-  endif
-  if get_option('tcg_interpreter')
-    tcg_arch = 'tci'
-  elif host_arch == 'x86_64'
-    tcg_arch = 'i386'
-  elif host_arch == 'ppc64'
-    tcg_arch = 'ppc'
-  endif
-  add_project_arguments('-iquote', meson.current_source_dir() / 'tcg' / tcg_arch,
-                        language: all_languages)
-
-  accelerators += 'CONFIG_TCG'
 endif
 
 if 'CONFIG_GZVM' not in accelerators and get_option('gzvm').enabled()
@@ -735,9 +668,6 @@ glib_pc = dependency('glib-2.0', version: glib_req_ver, required: true,
 glib_cflags = []
 if enable_modules
   gmodule = dependency('gmodule-export-2.0', version: glib_req_ver, required: true,
-                       method: 'pkg-config')
-elif get_option('plugins')
-  gmodule = dependency('gmodule-no-export-2.0', version: glib_req_ver, required: true,
                        method: 'pkg-config')
 else
   gmodule = not_found
@@ -808,13 +738,6 @@ if gdbus_codegen.found() and get_option('cfi')
   gdbus_codegen_error = '@0@ uses gdbus-codegen, which does not support control flow integrity'
 endif
 
-xml_pp = find_program('scripts/xml-preprocess.py')
-
-lttng = not_found
-if 'ust' in get_option('trace_backends')
-  lttng = dependency('lttng-ust', required: true, version: '>= 2.1',
-                     method: 'pkg-config')
-endif
 pixman = not_found
 if not get_option('pixman').auto() or have_system or have_tools
   pixman = dependency('pixman-1', required: get_option('pixman'), version:'>=0.21.8',
@@ -891,19 +814,6 @@ if vmnet.found() and not cc.has_header_symbol('vmnet/vmnet.h',
     error('vmnet.framework API is outdated')
   else
     warning('vmnet.framework API is outdated, disabling')
-  endif
-endif
-
-seccomp = not_found
-seccomp_has_sysrawrc = false
-if not get_option('seccomp').auto() or have_system or have_tools
-  seccomp = dependency('libseccomp', version: '>=2.3.0',
-                       required: get_option('seccomp'),
-                       method: 'pkg-config')
-  if seccomp.found()
-    seccomp_has_sysrawrc = cc.has_header_symbol('seccomp.h',
-                                                'SCMP_FLTATR_API_SYSRAWRC',
-                                                dependencies: seccomp)
   endif
 endif
 
@@ -1022,12 +932,6 @@ spice_headers = spice.partial_dependency(compile_args: true, includes: true)
 
 rt = cc.find_library('rt', required: false)
 
-libiscsi = not_found
-if not get_option('libiscsi').auto() or have_block
-  libiscsi = dependency('libiscsi', version: '>=1.9.0',
-                         required: get_option('libiscsi'),
-                         method: 'pkg-config')
-endif
 zstd = not_found
 if not get_option('zstd').auto() or have_block
   zstd = dependency('libzstd', version: '>=1.4.0',
@@ -1061,6 +965,11 @@ if not get_option('qatzip').auto() or have_system
 endif
 
 virgl = not_found
+if not get_option('virglrenderer').auto() or have_system
+  virgl = dependency('virglrenderer',
+                     method: 'pkg-config',
+                     required: get_option('virglrenderer'))
+endif
 
 have_vhost_user_gpu = false
 blkio = not_found
@@ -1393,7 +1302,19 @@ if not get_option('coreaudio').auto() or (host_os == 'darwin' and have_system)
 endif
 
 opengl = not_found
+if not get_option('opengl').auto() or have_system
+  epoxy = dependency('epoxy', method: 'pkg-config',
+                     required: get_option('opengl'))
+  if cc.has_header('epoxy/egl.h', dependencies: epoxy)
+    opengl = epoxy
+  elif get_option('opengl').enabled()
+    error('epoxy/egl.h not found')
+  endif
+endif
 gbm = not_found
+if have_system and (virgl.found() or opengl.found())
+  gbm = dependency('gbm', method: 'pkg-config', required: false)
+endif
 
 libcbor = not_found
 if not get_option('libcbor').auto() or have_system
@@ -1897,11 +1818,9 @@ if glusterfs.found()
   config_host_data.set('CONFIG_GLUSTERFS_FTRUNCATE_HAS_STAT', glusterfs_ftruncate_has_stat)
   config_host_data.set('CONFIG_GLUSTERFS_IOCB_HAS_STAT', glusterfs_iocb_has_stat)
 endif
-config_host_data.set('CONFIG_HEXAGON_IDEF_PARSER', get_option('hexagon_idef_parser'))
 config_host_data.set('CONFIG_LIBATTR', have_old_libattr)
 config_host_data.set('CONFIG_LIBCAP_NG', libcap_ng.found())
 config_host_data.set('CONFIG_LIBDAXCTL', libdaxctl.found())
-config_host_data.set('CONFIG_LIBISCSI', libiscsi.found())
 config_host_data.set('CONFIG_LIBNFS', libnfs.found())
 config_host_data.set('CONFIG_LIBSSH', libssh.found())
 config_host_data.set('CONFIG_LINUX_IO_URING', linux_io_uring.found())
@@ -1913,25 +1832,19 @@ if numa.found()
                        cc.has_function('numa_has_preferred_many',
                                        dependencies: numa))
 endif
-config_host_data.set('CONFIG_OPENGL', opengl.found())
-config_host_data.set('CONFIG_PLUGIN', get_option('plugins'))
+config_host_data.set('CONFIG_OPENGL', false)
+if virgl.found()
+  config_host_data.set('VIRGL_VERSION_MAJOR', virgl.version().split('.')[0])
+endif
 config_host_data.set('CONFIG_RBD', rbd.found())
 config_host_data.set('CONFIG_RDMA', rdma.found())
 config_host_data.set('CONFIG_RELOCATABLE', get_option('relocatable'))
 config_host_data.set('CONFIG_SAFESTACK', get_option('safe_stack'))
 config_host_data.set('CONFIG_SDL', sdl.found())
-config_host_data.set('CONFIG_SECCOMP', seccomp.found())
-if seccomp.found()
-  config_host_data.set('CONFIG_SECCOMP_SYSRAWRC', seccomp_has_sysrawrc)
-endif
 config_host_data.set('CONFIG_PIXMAN', pixman.found())
 config_host_data.set('CONFIG_SLIRP', slirp.found())
 config_host_data.set('CONFIG_SNAPPY', snappy.found())
 config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
-if get_option('tcg').allowed()
-  config_host_data.set('CONFIG_TCG', 1)
-  config_host_data.set('CONFIG_TCG_INTERPRETER', tcg_arch == 'tci')
-endif
 config_host_data.set('CONFIG_TPM', have_tpm)
 config_host_data.set('CONFIG_TSAN', get_option('tsan'))
 config_host_data.set('CONFIG_USB_LIBUSB', libusb.found())
@@ -2001,8 +1914,6 @@ config_host_data.set('CONFIG_COROUTINE_POOL', have_coroutine_pool)
 config_host_data.set('CONFIG_DEBUG_GRAPH_LOCK', get_option('debug_graph_lock'))
 config_host_data.set('CONFIG_DEBUG_MUTEX', get_option('debug_mutex'))
 config_host_data.set('CONFIG_DEBUG_STACK_USAGE', get_option('debug_stack_usage'))
-config_host_data.set('CONFIG_DEBUG_TCG', get_option('debug_tcg'))
-config_host_data.set('CONFIG_DEBUG_REMAP', get_option('debug_remap'))
 config_host_data.set('CONFIG_QOM_CAST_DEBUG', get_option('qom_cast_debug'))
 config_host_data.set('CONFIG_REPLICATION', get_option('replication').allowed())
 config_host_data.set('CONFIG_FSFREEZE', qga_fsfreeze)
@@ -2333,37 +2244,6 @@ has_int128 = has_int128_type and cc.links('''
   }''')
 config_host_data.set('CONFIG_INT128', has_int128)
 
-if has_int128_type
-  atomic_test_128 = '''
-    int main(int ac, char **av) {
-      __uint128_t *p = __builtin_assume_aligned(av[ac - 1], 16);
-      p[1] = __atomic_load_n(&p[0], __ATOMIC_RELAXED);
-      __atomic_store_n(&p[2], p[3], __ATOMIC_RELAXED);
-      __atomic_compare_exchange_n(&p[4], &p[5], p[6], 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
-      return 0;
-    }'''
-  has_atomic128 = cc.links(atomic_test_128, args: qemu_isa_flags)
-
-  config_host_data.set('CONFIG_ATOMIC128', has_atomic128)
-
-  if not has_atomic128
-    has_atomic128_opt = cc.links('__attribute__((optimize("O1")))' + atomic_test_128,
-                                 args: qemu_isa_flags)
-    config_host_data.set('CONFIG_ATOMIC128_OPT', has_atomic128_opt)
-
-    if not has_atomic128_opt
-      config_host_data.set('CONFIG_CMPXCHG128', cc.links('''
-        int main(void)
-        {
-          __uint128_t x = 0, y = 0;
-          __sync_val_compare_and_swap_16(&x, y, x);
-          return 0;
-        }
-      ''', args: qemu_isa_flags))
-    endif
-  endif
-endif
-
 config_host_data.set('CONFIG_GETAUXVAL', cc.links(osdep_prefix + '''
   #include <sys/auxv.h>
   int main(void) {
@@ -2633,7 +2513,7 @@ foreach target : target_dirs
     if host_long_bits < config_target['TARGET_LONG_BITS'].to_int()
       continue
     endif
-    if sym == 'CONFIG_TCG' or target in accelerator_targets.get(sym, [])
+    if target in accelerator_targets.get(sym, [])
       config_target += { sym: 'y' }
       config_all_accel += { sym: 'y' }
       target_kconfig += [ sym + '=y' ]
@@ -2778,20 +2658,9 @@ tracetool = [
 tracetool_depends = files(
   'scripts/tracetool/backend/log.py',
   'scripts/tracetool/backend/__init__.py',
-  'scripts/tracetool/backend/dtrace.py',
-  'scripts/tracetool/backend/ftrace.py',
-  'scripts/tracetool/backend/simple.py',
-  'scripts/tracetool/backend/syslog.py',
-  'scripts/tracetool/backend/ust.py',
-  'scripts/tracetool/format/ust_events_c.py',
-  'scripts/tracetool/format/ust_events_h.py',
   'scripts/tracetool/format/__init__.py',
-  'scripts/tracetool/format/d.py',
-  'scripts/tracetool/format/simpletrace_stap.py',
   'scripts/tracetool/format/c.py',
   'scripts/tracetool/format/h.py',
-  'scripts/tracetool/format/log_stap.py',
-  'scripts/tracetool/format/stap.py',
   'scripts/tracetool/__init__.py',
 )
 
@@ -2841,16 +2710,12 @@ endif
 if have_block
   trace_events_subdirs += [
     'block',
-    'chardev',
     'io',
-    'scsi',
   ]
 endif
 if have_system
   trace_events_subdirs += [
     'audio',
-    'backends',
-    'hw/arm',
     'hw/audio',
     'hw/block',
     'hw/char',
@@ -2860,7 +2725,6 @@ if have_system
     'hw/net',
     'hw/nvram',
     'hw/pci',
-    'hw/pci-host',
     'hw/rtc',
     'hw/virtio',
     'migration',
@@ -2874,12 +2738,6 @@ if have_system or have_user
     'hw/core',
     'target/arm',
   ]
-  if get_option('tcg').allowed()
-    trace_events_subdirs += ['accel/tcg']
-  endif
-  if 'CONFIG_GZVM' in accelerators
-    trace_events_subdirs += ['accel/gzvm']
-  endif
 endif
 
 
@@ -2902,7 +2760,6 @@ util_ss = ss.source_set()
 
 modules = {}
 target_modules = {}
-plugin_modules = []
 hw_arch = {}
 target_arch = {}
 target_system_arch = {}
@@ -2955,12 +2812,7 @@ qemuutil = declare_dependency(link_with: libqemuutil,
                               sources: genh + version_res,
                               dependencies: qemuutil_deps)
 
-if have_system or have_user
-  decodetree = generator(find_program('scripts/decodetree.py'),
-                         output: 'decode-@BASENAME@.c.inc',
-                         arguments: ['@INPUT@', '@EXTRA_ARGS@', '-o', '@OUTPUT@'])
-  subdir('target')
-endif
+subdir('target')
 
 subdir('audio')
 subdir('io')
@@ -3003,25 +2855,14 @@ if get_option('b_lto')
   pagevary = declare_dependency(link_with: pagevary)
 endif
 common_ss.add(pagevary)
-specific_ss.add(files('page-target.c', 'page-vary-target.c'))
+specific_ss.add(files('page-vary-target.c'))
 
 subdir('backends')
 subdir('disas')
 subdir('migration')
 subdir('monitor')
 subdir('net')
-if get_option('tcg').allowed()
-  subdir('tcg')
-endif
-subdir('fpu')
 subdir('accel')
-if get_option('plugins')
-  subdir('plugins')
-endif
-
-if get_option('plugins') and 'CONFIG_TCG' in config_all_accel
-  subdir('contrib/plugins')
-endif
 
 common_user_inc = []
 
@@ -3030,10 +2871,6 @@ if have_user
   subdir('bsd-user')
   subdir('linux-user')
 endif
-
-modinfo_collect = find_program('scripts/modinfo-collect.py')
-modinfo_generate = find_program('scripts/modinfo-generate.py')
-modinfo_files = []
 
 block_mods = []
 system_mods = []
@@ -3060,13 +2897,6 @@ foreach d, list : modules
                     dependencies: module_ss.dependencies(),
                     install: true,
                     install_dir: qemu_moddir)
-      if module_ss.sources() != []
-        modinfo_files += custom_target(d + '-' + m + '.modinfo',
-                                       output: d + '-' + m + '.modinfo',
-                                       input: module_ss.sources() + genh,
-                                       capture: true,
-                                       command: [modinfo_collect, module_ss.sources()])
-      endif
     else
       if d == 'block'
         block_ss.add_all(module_ss)
@@ -3104,11 +2934,6 @@ foreach d, list : target_modules
                     dependencies: target_module_ss.dependencies(),
                     install: true,
                     install_dir: qemu_moddir)
-            modinfo_files += custom_target(module_name + '.modinfo',
-                                           output: module_name + '.modinfo',
-                                           input: target_module_ss.sources() + genh,
-                                           capture: true,
-                                           command: [modinfo_collect, '--target', target, target_module_ss.sources()])
           endif
         endif
       endforeach
@@ -3119,24 +2944,6 @@ foreach d, list : target_modules
 endforeach
 
 if enable_modules
-  foreach target : target_dirs
-    if target.endswith('-softmmu')
-      config_target = config_target_mak[target]
-      config_devices_mak = target + '-config-devices.mak'
-      modinfo_src = custom_target('modinfo-' + target + '.c',
-                                  output: 'modinfo-' + target + '.c',
-                                  input: modinfo_files,
-                                  command: [modinfo_generate, '--devices', config_devices_mak, '@INPUT@'],
-                                  capture: true)
-
-      modinfo_lib = static_library('modinfo-' + target + '.c', modinfo_src)
-      modinfo_dep = declare_dependency(link_with: modinfo_lib)
-
-      arch = config_target['TARGET_NAME'] == 'sparc64' ? 'sparc64' : config_target['TARGET_BASE_ARCH']
-      hw_arch[arch].add(modinfo_dep)
-    endif
-  endforeach
-
   if emulator_modules.length() > 0
     alias_target('modules', emulator_modules)
   endif
@@ -3293,7 +3100,6 @@ if host_os == 'darwin'
   entitlement = find_program('scripts/entitlement.sh')
 endif
 
-traceable = []
 emulators = {}
 foreach target : target_dirs
   config_target = config_target_mak[target]
@@ -3474,21 +3280,9 @@ foreach target : target_dirs
       emulators += {exe['name']: emulator}
     endif
 
-    traceable += [{
-      'exe': exe['name'],
-      'probe-prefix': 'qemu.' + target_type + '.' + target_name,
-    }]
-
   endforeach
 endforeach
 
-
-if get_option('plugins')
-  install_headers('include/qemu/qemu-plugin.h')
-  if host_os == 'windows'
-    install_data(win32_qemu_plugin_api_lib, install_dir: 'lib')
-  endif
-endif
 
 if have_ga
   subdir('qga')
@@ -3500,33 +3294,6 @@ if have_tools
   error('QEMU tools were removed from this trimmed build')
 endif
 
-if stap.found()
-  foreach t: traceable
-    foreach stp: [
-      {'ext': '.stp-build', 'fmt': 'stap', 'bin': meson.current_build_dir() / t['exe'], 'install': false},
-      {'ext': '.stp', 'fmt': 'stap', 'bin': get_option('prefix') / get_option('bindir') / t['exe'], 'install': true},
-      {'ext': '-simpletrace.stp', 'fmt': 'simpletrace-stap', 'bin': '', 'install': true},
-      {'ext': '-log.stp', 'fmt': 'log-stap', 'bin': '', 'install': true},
-    ]
-      cmd = [
-        tracetool, '--group=all', '--format=' + stp['fmt'],
-        '--binary=' + stp['bin'],
-        '--probe-prefix=' + t['probe-prefix'],
-        '@INPUT@', '@OUTPUT@'
-      ]
-
-      custom_target(t['exe'] + stp['ext'],
-                    input: trace_events_all,
-                    output: t['exe'] + stp['ext'],
-                    install: stp['install'],
-                    install_dir: get_option('datadir') / 'systemtap/tapset',
-                    command: cmd,
-                    depend_files: tracetool_depends)
-    endforeach
-  endforeach
-endif
-
-subdir('scripts')
 if host_machine.system() == 'windows'
   nsis_cmd = [
     find_program('scripts/nsis.py'),
@@ -3636,7 +3403,6 @@ if get_option('cfi')
   summary_info += {'CFI debug support': get_option('cfi_debug')}
 endif
 summary_info += {'strip binaries':    get_option('strip')}
-summary_info += {'sparse':            sparse}
 summary_info += {'mingw32 support':   host_os == 'windows'}
 summary(summary_info, bool_yn: true, section: 'Compilation')
 
@@ -3648,19 +3414,6 @@ if have_system
     summary_info += {'xen ctrl version':  xen.version()}
   endif
   summary_info += {'Xen emulation':     config_all_devices.has_key('CONFIG_XEN_EMU')}
-endif
-summary_info += {'TCG support':       config_all_accel.has_key('CONFIG_TCG')}
-if config_all_accel.has_key('CONFIG_TCG')
-  if get_option('tcg_interpreter')
-    summary_info += {'TCG backend':   'TCI (TCG with bytecode interpreter, slow)'}
-  else
-    summary_info += {'TCG backend':   'native (@0@)'.format(cpu)}
-  endif
-  summary_info += {'TCG plugins':       get_option('plugins')}
-  summary_info += {'TCG debug enabled': get_option('debug_tcg')}
-  if have_linux_user or have_bsd_user
-    summary_info += {'syscall buffer debugging support': get_option('debug_remap')}
-  endif
 endif
 summary_info += {'target list':       ' '.join(target_dirs)}
 if have_system
@@ -3718,6 +3471,8 @@ summary_info += {'brlapi support':    brlapi}
 summary(summary_info, bool_yn: true, section: 'User interface')
 
 summary_info = {}
+summary_info += {'VirGL support':     virgl}
+summary_info += {'OpenGL support':    opengl}
 summary(summary_info, bool_yn: true, section: 'Graphics backends')
 
 summary_info = {}
@@ -3772,14 +3527,12 @@ summary_info += {'smartcard support': cacard}
 summary_info += {'U2F support':       u2f}
 summary_info += {'libusb':            libusb}
 summary_info += {'usb net redir':     usbredir}
-summary_info += {'libiscsi support':  libiscsi}
 summary_info += {'libnfs support':    libnfs}
 if host_os == 'windows'
   if have_ga
     summary_info += {'QGA VSS support':   have_qga_vss}
   endif
 endif
-summary_info += {'seccomp support':   seccomp}
 summary_info += {'GlusterFS support': glusterfs}
 summary_info += {'TPM support':       have_tpm}
 summary_info += {'libssh support':    libssh}
@@ -3821,9 +3574,6 @@ if have_system
   summary_info += {'Audio drivers':     ' '.join(audio_drivers_selected)}
 endif
 summary_info += {'Trace backends':    ','.join(get_option('trace_backends'))}
-if 'simple' in get_option('trace_backends')
-  summary_info += {'Trace output file': get_option('trace_file') + '-<pid>'}
-endif
 summary_info += {'D-Bus display':     dbus_display}
 summary_info += {'QOM debugging':     get_option('qom_cast_debug')}
 summary_info += {'Relocatable install': get_option('relocatable')}
@@ -3866,11 +3616,6 @@ if host_arch == 'unknown'
   message('compile or work on this host CPU. You can help by volunteering')
   message('to maintain it and providing a build host for our continuous')
   message('integration setup.')
-  if get_option('tcg').allowed() and target_dirs.length() > 0
-    message()
-    message('configure has succeeded and you can continue to build, but')
-    message('QEMU will use a slow interpreter to emulate the target CPU.')
-  endif
 elif host_long_bits < 64
   message()
   warning('DEPRECATED HOST CPU')

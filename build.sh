@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-sudo apt install -y cmake curl git meson ninja-build patchelf perl pkg-config python3 python3-pip python3-venv zstd
+sudo apt install -y cmake curl git meson ninja-build patchelf perl pkg-config python3 python3-venv zstd
 qemuSrc="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 buildDir="$qemuSrc/build"
 srcDir="$buildDir/src"
@@ -8,9 +8,10 @@ outDir="$buildDir/out"
 prefix="$buildDir/sysroot"
 qemuBuild="$buildDir/qemu"
 sysLib="$prefix/lib"
-libucontextSrc="$srcDir/libucontext"
+epoxySrc="$srcDir/libepoxy"
 liburingSrc="$srcDir/liburing"
 sdlSrc="$srcDir/SDL2"
+virglSrc="$srcDir/virglrenderer"
 termuxDebDir="$srcDir/termux"
 termuxPackages="$termuxDebDir/Packages"
 qemuDir="$outDir/qemu-gzvm"
@@ -27,9 +28,10 @@ mesonCpu="aarch64"
 hostOs=$(uname -s | tr '[:upper:]' '[:lower:]')
 nCpu="$(nproc || sysctl -n hw.ncpu)"
 ndkPath="${ndkPath:-$HOME/android-ndk-r30-beta2}"
-libucontextGitUrl="https://github.com/kaniini/libucontext.git"
+epoxyGitUrl="https://github.com/anholt/libepoxy.git"
 liburingGitUrl="https://github.com/axboe/liburing.git"
 sdlGitUrl="https://github.com/libsdl-org/SDL.git"
+virglGitUrl="https://github.com/AnyLaySys/virglrenderer.git"
 termuxRepo="https://packages.termux.dev/apt/termux-main"
 qemuRawUrl="https://gitlab.com/qemu-project/qemu/-/raw/master"
 case "$hostOs" in
@@ -102,31 +104,16 @@ ar = '$AR'
 strip = '$STRIP'
 pkg-config = '${PKG_CONFIG:-pkg-config}'
 [built-in options]
-c_args = ['-fPIC','-fPIE','-ftls-model=global-dynamic'$extraC]
-cpp_args = ['-fPIC','-fPIE','-ftls-model=global-dynamic'$extraC]
-c_link_args = ['-pie'$extraLink]
-cpp_link_args = ['-pie'$extraLink]
+c_args = ['-fPIC','-Os','-ffunction-sections','-fdata-sections','-fomit-frame-pointer','-ftls-model=global-dynamic','-Wno-error','-I$prefix/include'$extraC]
+cpp_args = ['-fPIC','-Os','-ffunction-sections','-fdata-sections','-fomit-frame-pointer','-ftls-model=global-dynamic','-Wno-error','-I$prefix/include'$extraC]
+c_link_args = ['-L$prefix/lib','-Wl,--gc-sections','-Wl,--icf=all','-Wl,-s'$extraLink]
+cpp_link_args = ['-L$prefix/lib','-Wl,--gc-sections','-Wl,--icf=all','-Wl,-s'$extraLink]
 [host_machine]
 system = 'linux'
 cpu_family = '$mesonCpu'
 cpu = '$mesonCpu'
 endian = 'little'
 EOF
-}
-x11SocketPlaceholders() {
-  local file x11From ximFrom
-  x11From="$(printf '/data/data/com.termux/files/usr/tmp/%s' '.X11-unix/X')"
-  ximFrom="$(printf '/data/data/com.termux/files/usr/tmp/%s' '.XIM-unix/XIM')"
-  for file in "$@"; do
-    [ -f "$file" ] || continue
-    X11_FROM="$x11From" XIM_FROM="$ximFrom" perl -0pi -e '
-      sub fit { $_[1] . "\0" x (length($_[0]) - length($_[1])) }
-      my $x11_to = "X11_TMPDIR_PLACEHOLDER/.X11-unix/X";
-      my $xim_to = "X11_TMPDIR_PLACEHOLDER/.XIM-unix/XIM";
-      s/\Q$ENV{X11_FROM}\E/fit($ENV{X11_FROM}, $x11_to)/eg;
-      s/\Q$ENV{XIM_FROM}\E/fit($ENV{XIM_FROM}, $xim_to)/eg;
-    ' "$file"
-  done
 }
 buildX11PathShim() {
   if [ -f "$prefix/lib/libX11-dir.so" ]; then
@@ -326,14 +313,15 @@ setupToolchain() {
 fetchSources() {
   mkdir -p "$srcDir" "$outDir" "$prefix/lib" "$prefix/include"
   cd "$srcDir"
-  fetchGit "$libucontextGitUrl" "$libucontextSrc"
+  fetchGit "$epoxyGitUrl" "$epoxySrc"
   fetchGit "$liburingGitUrl" "$liburingSrc" --branch liburing-2.8
   fetchGit "$sdlGitUrl" "$sdlSrc" --branch SDL2
+  fetchGit "$virglGitUrl" "$virglSrc"
   fetch "https://github.com/libffi/libffi/releases/download/v${libffiVer}/libffi-${libffiVer}.tar.gz" "$srcDir/libffi-${libffiVer}.tar.gz"
   fetch "https://github.com/PhilipHazel/pcre2/releases/download/pcre2-${pcre2Ver}/pcre2-${pcre2Ver}.tar.bz2" "$srcDir/pcre2-${pcre2Ver}.tar.bz2"
   fetch "https://download.gnome.org/sources/glib/${glibVer%.*}/glib-${glibVer}.tar.xz" "$srcDir/glib-${glibVer}.tar.xz"
   fetch "https://www.cairographics.org/releases/pixman-${pixmanVer}.tar.gz" "$srcDir/pixman-${pixmanVer}.tar.gz"
-  for pkg in libandroid-shmem libx11 libxau libxcb libxcursor libxdmcp libxext libxfixes libxi libxrandr libxrender xorgproto; do
+  for pkg in angle-android libandroid-shmem libx11 libxau libxcb libxdmcp libxext libxrender xorgproto; do
     fetchTermuxDeb "$pkg" > /dev/null
   done
   if [ -f "$qemuSrc/subprojects/dtc.wrap" ] || [ -f "$qemuSrc/subprojects/keycodemapdb.wrap" ]; then
@@ -409,18 +397,6 @@ buildPixman() {
   make -j"$nCpu"
   make install
 }
-buildLibucontext() {
-  if [ -f "$prefix/lib/libucontext.a" ]; then
-    return 0
-  fi
-  cd "$libucontextSrc"
-  make clean || true
-  make ARCH=aarch64 CC="$CC" AR="$AR" RANLIB="$RANLIB" FREESTANDING=yes EXPORT_UNPREFIXED=yes -j"$nCpu" libucontext.a libucontext.pc
-  mkdir -p "$prefix/lib/pkgconfig" "$prefix/include/libucontext"
-  cp -f libucontext.a "$prefix/lib/"
-  cp -f libucontext.pc "$prefix/lib/pkgconfig/"
-  cp -f include/libucontext/libucontext.h "$prefix/include/libucontext/"
-}
 buildLiburing() {
   if [ -f "$prefix/lib/liburing.a" ] && [ -f "$prefix/lib/pkgconfig/liburing.pc" ]; then
     return 0
@@ -432,59 +408,23 @@ buildLiburing() {
   make install ENABLE_SHARED=0
   rm -f "$prefix/lib"/liburing.so* "$prefix/lib"/liburing-ffi.so*
 }
-writeUcontextShims() {
-  mkdir -p "$prefix/include/libucontext"
-  cat > "$prefix/include/ucontext.h" <<'EOF'
-#ifndef _ANDROID_UCONTEXT_SHIM_H
-#define _ANDROID_UCONTEXT_SHIM_H
-#include <sys/ucontext.h>
-#include <libucontext/libucontext.h>
-#endif
-EOF
-  cat > "$prefix/include/libucontext/bits.h" <<'EOF'
-#ifndef LIBUCONTEXT_BITS_H
-#define LIBUCONTEXT_BITS_H
-#include <stddef.h>
-typedef struct {
-	unsigned long long fault_address;
-	unsigned long long regs[31];
-	unsigned long long sp;
-	unsigned long long pc;
-	unsigned long long pstate;
-	unsigned char __reserved[4096] __attribute__((__aligned__(16)));
-} libucontext_mcontext_t;
-typedef struct {
-	void *ss_sp;
-	int ss_flags;
-	size_t ss_size;
-} libucontext_stack_t;
-typedef struct libucontext_ucontext {
-	unsigned long uc_flags;
-	struct libucontext_ucontext *uc_link;
-	libucontext_stack_t uc_stack;
-	unsigned char __pad[136];
-	libucontext_mcontext_t uc_mcontext;
-} libucontext_ucontext_t;
-#endif
-EOF
-  if grep -Fq 'void (*)()' "$prefix/include/libucontext/libucontext.h"; then
-    perl -0pi -e 's[void [(][*][)][(][)]][void (*)(void)]g' "$prefix/include/libucontext/libucontext.h"
-  fi
-}
 installTermuxX11() {
-  local staleAlsRoot debName tmpDir d
+  local staleAlsRoot debName tmpDir d angleDir
   staleAlsRoot="$(printf '/data/local/tmp/%s' 'als')"
   if [ -f "$prefix/lib/libX11.so" ] && grep -a -l "$staleAlsRoot" "$prefix/lib/libX11.so" "$prefix/lib/libxcb.so" >/dev/null 2>&1; then
     rm -f "$prefix/lib"/libX11.so* "$prefix/lib"/libxcb.so*
   fi
-  if [ -f "$prefix/lib/libX11.so" ] && [ -f "$prefix/lib/libandroid-shmem.so" ]; then
+  if [ -f "$prefix/lib/libX11.so" ] &&
+     [ -f "$prefix/lib/libandroid-shmem.so" ] &&
+     [ -f "$prefix/lib/libEGL.so" ] &&
+     [ -f "$prefix/lib/libGLESv2.so" ]; then
     return 0
   fi
   tmpDir="$outDir/x11_tmp"
   rm -rf "$tmpDir"
   mkdir -p "$tmpDir"
   cd "$tmpDir"
-  for pkg in libandroid-shmem libx11 libxau libxcb libxdmcp libxext libxrender xorgproto; do
+  for pkg in angle-android libandroid-shmem libx11 libxau libxcb libxdmcp libxext libxrender xorgproto; do
     debName="$(fetchTermuxDeb "$pkg")"
     cp -f "$debName" .
   done
@@ -505,9 +445,85 @@ installTermuxX11() {
       cp -rf "$d/lib/"* "$prefix/lib/"
     fi
   done
+  angleDir="data/data/com.termux/files/usr/opt/angle-android/vulkan"
+  if [ -d "$angleDir" ]; then
+    cp -Lf "$angleDir/libEGL_angle.so" "$prefix/lib/libEGL.so"
+    cp -Lf "$angleDir/libEGL_angle.so" "$prefix/lib/libEGL_angle.so"
+    cp -Lf "$angleDir/libGLESv1_CM_angle.so" "$prefix/lib/libGLESv1_CM.so"
+    cp -Lf "$angleDir/libGLESv2_angle.so" "$prefix/lib/libGLESv2.so"
+    cp -Lf "$angleDir/libGLESv1_CM_angle.so" "$prefix/lib/libGLESv1_CM_angle.so"
+    cp -Lf "$angleDir/libGLESv2_angle.so" "$prefix/lib/libGLESv2_angle.so"
+    cp -Lf "$angleDir/libfeature_support_angle.so" "$prefix/lib/"
+  fi
   find "$prefix/lib/pkgconfig" -name "*.pc" -type f -exec sed -i "s|/data/data/com.termux/files/usr|$prefix|g" {} +
   cd "$outDir"
   rm -rf "$tmpDir"
+}
+buildEpoxy() {
+  local dispatchCommon="$epoxySrc/src/dispatch_common.c"
+  perl -0pi -e 's/#define GLX_LIB "libGLESv2\.so"/#define GLX_LIB "libGLESv2_angle.so"/; s/#define EGL_LIB "libEGL\.so"/#define EGL_LIB "libEGL_angle.so"/; s/#define GLES1_LIB "libGLESv1_CM\.so"/#define GLES1_LIB "libGLESv1_CM_angle.so"/; s/#define GLES2_LIB "libGLESv2\.so"/#define GLES2_LIB "libGLESv2_angle.so"/' "$dispatchCommon"
+  if [ -f "$prefix/lib/pkgconfig/epoxy.pc" ] &&
+     [ -f "$prefix/lib/libepoxy.so.0.0.0" ] &&
+     grep -aFq 'libEGL_angle.so' "$prefix/lib/libepoxy.so.0.0.0" &&
+     grep -aFq 'libGLESv2_angle.so' "$prefix/lib/libepoxy.so.0.0.0"; then
+    return 0
+  fi
+  writeMesonCross "$outDir/epoxy.cross"
+  rm -rf "$outDir/epoxy"
+  meson setup "$outDir/epoxy" "$epoxySrc" --cross-file "$outDir/epoxy.cross" --prefix "$prefix" -Ddefault_library=shared -Degl=yes -Dglx=no -Dx11=false -Dtests=false
+  meson compile -C "$outDir/epoxy" -j"$nCpu"
+  meson install -C "$outDir/epoxy"
+}
+buildVirglrenderer() {
+  if [ -f "$prefix/lib/pkgconfig/virglrenderer.pc" ] &&
+     [ -f "$prefix/lib/libvirglrenderer.so" ]; then
+    return 0
+  fi
+  local virglRendererC="$virglSrc/src/vrend/vrend_renderer.c"
+  local virglDecodeC="$virglSrc/src/vrend/vrend_decode.c"
+  local compatDir="$prefix/include/compat"
+  if ! grep -Fq 'clear_feature(feat_dual_src_blend);' "$virglRendererC"; then
+    perl -0pi -e 's/(init_features\(gles \? 0 : gl_ver,\s*\n\s*gles \? gl_ver : 0\);\n)/$1   if (gles)\n      clear_feature(feat_dual_src_blend);\n/s' "$virglRendererC"
+  fi
+  perl -0pi -e 's/\n\s*caps->v2\.capability_bits \|= VIRGL_CAP_TRANSFER;\n/\n/s; s/\n\s*caps->v2\.capability_bits \|= VIRGL_CAP_COPY_TRANSFER;\n/\n/s; s/\n\s*caps->v2\.capability_bits_v2 \|= VIRGL_CAP_V2_COPY_TRANSFER_BOTH_DIRECTIONS;\n/\n/s' "$virglRendererC"
+  perl -0pi -e 's/(static int vrend_unsupported\([^{}]*\)\s*\{\s*\(void\)ctx;\s*\(void\)buf;\s*\(void\)length;\s*return )EINVAL(;)/${1}0$2/s' "$virglDecodeC"
+  mkdir -p "$compatDir/log" "$compatDir/cutils"
+  cat > "$compatDir/log/log.h" <<'EOF'
+#ifndef _COMPAT_LOG_LOG_H
+#define _COMPAT_LOG_LOG_H
+#include <android/log.h>
+#ifndef LOG_PRI
+#define LOG_PRI(priority, tag, ...) __android_log_print(priority, tag, __VA_ARGS__)
+#endif
+#endif
+EOF
+  cat > "$compatDir/cutils/properties.h" <<'EOF'
+#ifndef _COMPAT_CUTILS_PROPERTIES_H
+#define _COMPAT_CUTILS_PROPERTIES_H
+#include <string.h>
+#ifndef PROPERTY_VALUE_MAX
+#define PROPERTY_VALUE_MAX 92
+#endif
+#ifndef PROPERTY_KEY_MAX
+#define PROPERTY_KEY_MAX 32
+#endif
+static inline int property_get(const char *key, char *value, const char *def) {
+    (void)key;
+    if (def) {
+        strncpy(value, def, PROPERTY_VALUE_MAX - 1);
+        value[PROPERTY_VALUE_MAX - 1] = 0;
+        return strlen(value);
+    }
+    *value = 0;
+    return 0;
+}
+#endif
+EOF
+  writeMesonCross "$outDir/virgl.cross" ",'-I$compatDir'" ",'-llog'"
+  rm -rf "$outDir/virglrenderer"
+  meson setup "$outDir/virglrenderer" "$virglSrc" --cross-file "$outDir/virgl.cross" --prefix "$prefix" -Ddefault_library=shared -Dtests=false -Dcheck-gl-errors=false
+  meson compile -C "$outDir/virglrenderer" -j"$nCpu"
+  meson install -C "$outDir/virglrenderer"
 }
 buildSdl() {
   if [ -f "$prefix/lib/libSDL2.so" ]; then
@@ -516,7 +532,7 @@ buildSdl() {
   local sdlConfigH="$sdlSrc/include/SDL_config_android.h"
   local sdlXinput2H="$sdlSrc/src/video/x11/SDL_x11xinput2.h"
   if [ -e "$sdlSrc/.git" ]; then
-    git -C "$sdlSrc" checkout -- CMakeLists.txt include/SDL_config_android.h src/SDL.c src/video/x11/SDL_x11opengles.c src/video/x11/SDL_x11xinput2.h || true
+    git -C "$sdlSrc" checkout -- CMakeLists.txt include/SDL_config_android.h src/SDL.c src/video/x11/SDL_x11xinput2.h || true
   fi
   if [ -f "$sdlConfigH" ]; then
     sed -i '/SDL_VIDEO_DRIVER_X11/d;/SDL_VIDEO_DRIVER_ANDROID/d' "$sdlConfigH"
@@ -554,7 +570,7 @@ buildSdl() {
   rm -f "$prefix/lib/libSDL2.so" "$prefix/lib/pkgconfig/sdl2.pc"
   mkdir -p "$sdlSrc/build-android"
   cd "$sdlSrc/build-android"
-  cmake .. -DCMAKE_TOOLCHAIN_FILE="$ndkPath/build/cmake/android.toolchain.cmake" -DANDROID_ABI="$cmakeAbi" -DANDROID_PLATFORM="android-$apiLevel" -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_FIND_ROOT_PATH="$prefix" -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_INCLUDE_PATH="$prefix/include" -DCMAKE_LIBRARY_PATH="$prefix/lib" -DCMAKE_C_FLAGS="$qemuCFlags" -DCMAKE_CXX_FLAGS="$qemuCFlags" -DCMAKE_SHARED_LINKER_FLAGS="-L$prefix/lib -landroid-shmem" -DCMAKE_EXE_LINKER_FLAGS="-L$prefix/lib -landroid-shmem" -DCMAKE_VERBOSE_MAKEFILE=ON -DSDL_STATIC=OFF -DSDL_SHARED=ON -DSDL_RENDER=ON -DSDL_X11=OFF -DSDL_X11_SHARED=OFF -DSDL_VULKAN=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF -DSDL_ANDROID=ON -DHAVE_X11_XLIB_H=1 -DX11_X11_LIB="$prefix/lib/libX11.so" -DX11_Xext_LIB="$prefix/lib/libXext.so" -DX11_Xrender_LIB="$prefix/lib/libXrender.so"
+  cmake .. -DCMAKE_TOOLCHAIN_FILE="$ndkPath/build/cmake/android.toolchain.cmake" -DANDROID_ABI="$cmakeAbi" -DANDROID_PLATFORM="android-$apiLevel" -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_FIND_ROOT_PATH="$prefix" -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_INCLUDE_PATH="$prefix/include" -DCMAKE_LIBRARY_PATH="$prefix/lib" -DCMAKE_C_FLAGS="$qemuCFlags" -DCMAKE_CXX_FLAGS="$qemuCFlags" -DSDL_STATIC=OFF -DSDL_SHARED=ON -DSDL_RENDER=ON -DSDL_VULKAN=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF
   make -j"$nCpu" install
 }
 buildSysroot() {
@@ -566,11 +582,10 @@ buildSysroot() {
   buildPcre2
   buildGlib
   buildPixman
-  buildLibucontext
   buildLiburing
-  writeUcontextShims
   installTermuxX11
-  x11SocketPlaceholders "$prefix/lib/libxcb.so" "$prefix/lib/libX11.so"
+  buildEpoxy
+  buildVirglrenderer
   buildX11PathShim
   buildSdl
 }
@@ -589,16 +604,10 @@ buildQemu() {
   export CPPFLAGS="$qemuCFlags"
   export LDFLAGS="$qemuLdFlags"
   local pixmanOpt
-  if "$wrapPc" --exists pixman-1; then
-    pixmanOpt="--enable-pixman"
-  else
-    pixmanOpt="--disable-pixman"
-  fi
+  pixmanOpt="--enable-pixman"
   mkdir -p "$qemuBuild"
   cd "$qemuBuild"
-  if [ ! -f build.ninja ]; then
-    "$qemuSrc/configure" --prefix="$prefix" --host-cc="$hostCC" --cross-prefix="${targetTriple}-" --cc="$CC" --cxx="$CXX" --extra-cflags="$qemuCFlags" --extra-ldflags="$qemuLdFlags -lX11 -lXext -lxcb -lXau -lXdmcp -lXrender -lX11-xcb -landroid-shmem" --target-list="aarch64-softmmu" --audio-drv-list=aaudio --with-coroutine=ucontext --disable-capstone --disable-cocoa --disable-curses --disable-docs --disable-download --disable-gcrypt --disable-gnutls --disable-guest-agent --disable-libusb --disable-pie --disable-plugins --disable-slirp --disable-tpm --disable-usb-redir --disable-vhost-kernel --disable-vhost-net --disable-vhost-user --disable-vhost-vdpa --disable-virtfs "$pixmanOpt" -Dattr=disabled -Dbochs=disabled -Dcloop=disabled -Dcoroutine_backend=sigaltstack -Dcoroutine_pool=false -Ddbus_display=disabled -Ddmg=disabled -Dgzvm=enabled -Dl2tpv3=disabled -Dlinux_io_uring=enabled -Dmultiprocess=disabled -Dparallels=disabled -Dqcow1=disabled -Dqed=disabled -Dreplication=disabled -Dsdl=enabled -Dtcg=disabled -Dtools=disabled -Dvdi=disabled -Dvhdx=disabled -Dvmdk=disabled -Dvpc=disabled -Dvvfat=disabled -Dxen=disabled -Dxen_pci_passthrough=disabled -Dzstd=disabled
-  fi
+  "$qemuSrc/configure" --prefix="$prefix" --host-cc="$hostCC" --cross-prefix="${targetTriple}-" --cc="$CC" --cxx="$CXX" --extra-cflags="$qemuCFlags" --extra-ldflags="$qemuLdFlags -lEGL -lGLESv2" --target-list="aarch64-softmmu" --audio-drv-list=aaudio --disable-capstone --disable-cocoa --disable-curses --disable-docs --disable-download --disable-gcrypt --disable-gnutls --disable-guest-agent --disable-libusb --disable-pie --disable-slirp --disable-tpm --disable-usb-redir --disable-vhost-kernel --disable-vhost-net --disable-vhost-user --disable-vhost-vdpa --disable-virtfs "$pixmanOpt" -Dattr=disabled -Dbochs=disabled -Dcloop=disabled -Dcoroutine_backend=sigaltstack -Dcoroutine_pool=false -Ddbus_display=disabled -Ddmg=disabled -Dgzvm=enabled -Dl2tpv3=disabled -Dlinux_io_uring=enabled -Dmultiprocess=disabled -Dopengl=enabled -Dparallels=disabled -Dqcow1=disabled -Dqed=disabled -Dreplication=disabled -Dsdl=enabled -Dtools=disabled -Dvdi=disabled -Dvhdx=disabled -Dvirglrenderer=enabled -Dvmdk=disabled -Dvpc=disabled -Dvvfat=disabled -Dxen=disabled -Dxen_pci_passthrough=disabled -Dzstd=disabled
   local meson="$qemuBuild/pyvenv/bin/meson"
   if [ ! -x "$meson" ]; then
     meson="$(command -v meson)"
@@ -606,29 +615,25 @@ buildQemu() {
   "$meson" compile -C "$qemuBuild" qemu-system-aarch64 -j"$nCpu"
 }
 packageQemu() {
-  mkdir -p "$qemuLib" "$qemuFw/keymaps"
+  rm -rf "$qemuLib"
+  mkdir -p "$qemuLib" "$qemuFw"
   fetch "$qemuRawUrl/pc-bios/efi-virtio.rom" "$qemuFw/efi-virtio.rom"
-  fetch "$qemuRawUrl/pc-bios/keymaps/en-us" "$qemuFw/keymaps/en-us"
-  if [ "${DEBUG:-0}" = "1" ]; then
-    cp -f "$qemuBuild/qemu-system-aarch64" "$qemuDir/qemu-system-aarch64"
-  else
-    "$strip" --strip-all "$qemuBuild/qemu-system-aarch64" -o "$qemuDir/qemu-system-aarch64"
-  fi
+  "$strip" --strip-all "$qemuBuild/qemu-system-aarch64" -o "$qemuDir/qemu-system-aarch64"
   patchelf --set-rpath '$ORIGIN/lib' "$qemuDir/qemu-system-aarch64"
   collectLib "$qemuDir/qemu-system-aarch64"
-  x11SocketPlaceholders "$qemuLib/libxcb.so" "$qemuLib/libX11.so"
+  for lib in libEGL_angle.so libGLESv1_CM_angle.so libGLESv2_angle.so libfeature_support_angle.so; do
+    if [ -f "$prefix/lib/$lib" ]; then
+      cp -Lf "$prefix/lib/$lib" "$qemuLib/"
+    fi
+  done
+  patchelf --set-rpath '$ORIGIN' "$qemuLib/libepoxy.so.0"
   cp -f "$prefix/lib/libX11-dir.so" "$qemuLib/"
   echo "产物: $qemuDir"
 }
-if [ "${DEBUG:-0}" = "1" ]; then
-  qemuOptFlags="-Os -g -fno-omit-frame-pointer"
-  qemuExtraLdFlags=""
-else
-  qemuOptFlags="-Os -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables"
-  qemuExtraLdFlags=" -Wl,--icf=all -Wl,-s"
-fi
-qemuCFlags="-fPIC $qemuOptFlags -ffunction-sections -fdata-sections -fmerge-all-constants -mbranch-protection=none -ftls-model=global-dynamic -Wno-error -DSDL_MAIN_HANDLED -DANDROID_PLATFORM=android-${apiLevel} -I$prefix/include -I$prefix/include/pixman-1 -I$qemuSrc/linux-headers"
-qemuLdFlags="-L$prefix/lib -Wl,--gc-sections$qemuExtraLdFlags -lucontext"
+qemuOptFlags="-Os -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables"
+qemuExtraLdFlags=" -Wl,--icf=all -Wl,-s"
+qemuCFlags="-fPIC $qemuOptFlags -ffunction-sections -fdata-sections -fmerge-all-constants -mbranch-protection=none -ftls-model=global-dynamic -Wno-error -DSDL_MAIN_HANDLED -I$prefix/include -I$prefix/include/pixman-1"
+qemuLdFlags="-L$prefix/lib -Wl,--gc-sections$qemuExtraLdFlags"
 mkdir -p "$buildDir" "$srcDir" "$outDir" "$prefix"
 fetchSources
 buildSysroot
