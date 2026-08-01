@@ -1,8 +1,5 @@
 # See docs/devel/tracing.rst for syntax documentation.
 
-# channel-null.c
-qio_channel_null_new(void *ioc) "Null new ioc=%p"
-
 # channel-socket.c
 qio_channel_socket_new(void *ioc) "Socket new ioc=%p"
 qio_channel_socket_new_fd(void *ioc, int fd) "Socket new ioc=%p fd=%d"

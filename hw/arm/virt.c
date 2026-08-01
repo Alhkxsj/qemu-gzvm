@@ -48,24 +48,12 @@
 #include "hw/char/pl011.h"
 #include "qemu/guest-random.h"
 
-static GlobalProperty arm_virt_compat[] = {
- { TYPE_VIRTIO_IOMMU_PCI, "aw-bits", "48" },
-};
-static const size_t arm_virt_compat_len = G_N_ELEMENTS(arm_virt_compat);
-
-static void arm_virt_compat_set(MachineClass *mc)
-{
- compat_props_add(mc->compat_props, arm_virt_compat,
- arm_virt_compat_len);
-}
-
 #define DEFINE_VIRT_MACHINE_IMPL(latest, ...) \
  static void MACHINE_VER_SYM(class_init, virt, __VA_ARGS__)( \
  ObjectClass *oc, \
  void *data) \
  { \
  MachineClass *mc = MACHINE_CLASS(oc); \
- arm_virt_compat_set(mc); \
  MACHINE_VER_SYM(options, virt, __VA_ARGS__)(mc); \
  mc->desc = "QEMU " MACHINE_VER_STR(__VA_ARGS__) " ARM Virtual Machine"; \
  MACHINE_VER_DEPRECATION(__VA_ARGS__); \

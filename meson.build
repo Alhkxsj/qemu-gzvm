@@ -2827,7 +2827,6 @@ if have_block
     error('Block replication was removed from this trimmed build')
   endif
 
-  subdir('scsi')
   subdir('block')
 
   blockdev_ss.add(files(

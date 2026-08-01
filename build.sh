@@ -104,8 +104,8 @@ ar = '$AR'
 strip = '$STRIP'
 pkg-config = '${PKG_CONFIG:-pkg-config}'
 [built-in options]
-c_args = ['-fPIC','-Os','-ffunction-sections','-fdata-sections','-fomit-frame-pointer','-ftls-model=global-dynamic','-Wno-error','-I$prefix/include'$extraC]
-cpp_args = ['-fPIC','-Os','-ffunction-sections','-fdata-sections','-fomit-frame-pointer','-ftls-model=global-dynamic','-Wno-error','-I$prefix/include'$extraC]
+c_args = ['-fPIC','$sizeOptFlag','-ffunction-sections','-fdata-sections','-fomit-frame-pointer','-ftls-model=global-dynamic','-Wno-error','-I$prefix/include'$extraC]
+cpp_args = ['-fPIC','$sizeOptFlag','-ffunction-sections','-fdata-sections','-fomit-frame-pointer','-ftls-model=global-dynamic','-Wno-error','-I$prefix/include'$extraC]
 c_link_args = ['-L$prefix/lib','-Wl,--gc-sections','-Wl,--icf=all','-Wl,-s'$extraLink]
 cpp_link_args = ['-L$prefix/lib','-Wl,--gc-sections','-Wl,--icf=all','-Wl,-s'$extraLink]
 [host_machine]
@@ -235,7 +235,7 @@ int connect(int fd, const struct sockaddr *addr, socklen_t addrlen)
                         strlen(rewritten.sun_path) + 1);
 }
 EOF
-  "$CC" -shared -fPIC -Os -Wl,--gc-sections -Wl,-s -o "$prefix/lib/libX11-dir.so" "$src" -ldl
+  "$CC" -shared -fPIC "$sizeOptFlag" -Wl,--gc-sections -Wl,-s -o "$prefix/lib/libX11-dir.so" "$src" -ldl
 }
 isSystemLib() {
   case "$1" in
@@ -278,6 +278,7 @@ copyLib() {
   fi
   if [ ! -f "$destPath" ]; then
     cp -Lf "$sourcePath" "$destPath"
+    "$strip" --strip-all "$destPath"
     patchelf --set-soname "$neededName" "$destPath"
     pendingElfs+=("$destPath")
   fi
@@ -355,7 +356,7 @@ buildPcre2() {
   mkdir -p "$outDir/pcre2"
   cd "$outDir/pcre2"
   echo "配置 PCRE2 ${pcre2Ver}"
-  cmake -G Ninja "$srcDir/pcre2-${pcre2Ver}" -DCMAKE_TOOLCHAIN_FILE="$ndkPath/build/cmake/android.toolchain.cmake" -DANDROID_ABI="$cmakeAbi" -DANDROID_PLATFORM="android-${apiLevel}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_C_FLAGS="-ftls-model=global-dynamic" -DBUILD_SHARED_LIBS=ON -DPCRE2_BUILD_PCRE2_8=ON -DPCRE2_BUILD_PCRE2_16=OFF -DPCRE2_BUILD_PCRE2_32=OFF -DPCRE2_SUPPORT_JIT=OFF
+  cmake -G Ninja "$srcDir/pcre2-${pcre2Ver}" -DCMAKE_TOOLCHAIN_FILE="$ndkPath/build/cmake/android.toolchain.cmake" -DANDROID_ABI="$cmakeAbi" -DANDROID_PLATFORM="android-${apiLevel}" -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_C_FLAGS="$sizeOptFlag -ftls-model=global-dynamic" -DCMAKE_C_FLAGS_MINSIZEREL="$sizeOptFlag -DNDEBUG" -DBUILD_SHARED_LIBS=ON -DPCRE2_BUILD_PCRE2_8=ON -DPCRE2_BUILD_PCRE2_16=OFF -DPCRE2_BUILD_PCRE2_32=OFF -DPCRE2_SUPPORT_JIT=OFF
   echo "编译 PCRE2"
   cmake --build . -j"$nCpu"
   cmake --install .
@@ -375,7 +376,7 @@ buildGlib() {
     rm -rf ./*
   fi
   echo "配置 GLib ${glibVer}"
-  meson setup . "$srcDir/glib-${glibVer}" --cross-file "$outDir/glib.cross" --prefix "$prefix" -Ddefault_library=shared -Doptimization=2 -Ddebug=false -Dglib_debug=disabled -Dtests=false -Dman-pages=disabled -Ddocumentation=false -Dselinux=disabled -Dlibmount=disabled -Dnls=disabled
+  meson setup . "$srcDir/glib-${glibVer}" --cross-file "$outDir/glib.cross" --prefix "$prefix" -Ddefault_library=shared -Doptimization=s -Ddebug=false -Dglib_debug=disabled -Dtests=false -Dman-pages=disabled -Ddocumentation=false -Dselinux=disabled -Dlibmount=disabled -Dnls=disabled
   echo "编译 GLib"
   meson compile -j"$nCpu"
   meson install
@@ -470,7 +471,7 @@ buildEpoxy() {
   fi
   writeMesonCross "$outDir/epoxy.cross"
   rm -rf "$outDir/epoxy"
-  meson setup "$outDir/epoxy" "$epoxySrc" --cross-file "$outDir/epoxy.cross" --prefix "$prefix" -Ddefault_library=shared -Degl=yes -Dglx=no -Dx11=false -Dtests=false
+  meson setup "$outDir/epoxy" "$epoxySrc" --cross-file "$outDir/epoxy.cross" --prefix "$prefix" -Ddefault_library=shared -Doptimization=s -Ddebug=false -Degl=yes -Dglx=no -Dx11=false -Dtests=false
   meson compile -C "$outDir/epoxy" -j"$nCpu"
   meson install -C "$outDir/epoxy"
 }
@@ -521,7 +522,7 @@ static inline int property_get(const char *key, char *value, const char *def) {
 EOF
   writeMesonCross "$outDir/virgl.cross" ",'-I$compatDir'" ",'-llog'"
   rm -rf "$outDir/virglrenderer"
-  meson setup "$outDir/virglrenderer" "$virglSrc" --cross-file "$outDir/virgl.cross" --prefix "$prefix" -Ddefault_library=shared -Dtests=false -Dcheck-gl-errors=false
+  meson setup "$outDir/virglrenderer" "$virglSrc" --cross-file "$outDir/virgl.cross" --prefix "$prefix" -Ddefault_library=shared -Doptimization=s -Ddebug=false -Dtests=false -Dcheck-gl-errors=false
   meson compile -C "$outDir/virglrenderer" -j"$nCpu"
   meson install -C "$outDir/virglrenderer"
 }
@@ -570,12 +571,12 @@ buildSdl() {
   rm -f "$prefix/lib/libSDL2.so" "$prefix/lib/pkgconfig/sdl2.pc"
   mkdir -p "$sdlSrc/build-android"
   cd "$sdlSrc/build-android"
-  cmake .. -DCMAKE_TOOLCHAIN_FILE="$ndkPath/build/cmake/android.toolchain.cmake" -DANDROID_ABI="$cmakeAbi" -DANDROID_PLATFORM="android-$apiLevel" -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_FIND_ROOT_PATH="$prefix" -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_INCLUDE_PATH="$prefix/include" -DCMAKE_LIBRARY_PATH="$prefix/lib" -DCMAKE_C_FLAGS="$qemuCFlags" -DCMAKE_CXX_FLAGS="$qemuCFlags" -DSDL_STATIC=OFF -DSDL_SHARED=ON -DSDL_RENDER=ON -DSDL_VULKAN=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF
+  cmake .. -DCMAKE_TOOLCHAIN_FILE="$ndkPath/build/cmake/android.toolchain.cmake" -DANDROID_ABI="$cmakeAbi" -DANDROID_PLATFORM="android-$apiLevel" -DCMAKE_BUILD_TYPE=MinSizeRel -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_FIND_ROOT_PATH="$prefix" -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH -DCMAKE_PREFIX_PATH="$prefix" -DCMAKE_INCLUDE_PATH="$prefix/include" -DCMAKE_LIBRARY_PATH="$prefix/lib" -DCMAKE_C_FLAGS="$qemuCFlags" -DCMAKE_C_FLAGS_MINSIZEREL="$sizeOptFlag -DNDEBUG" -DCMAKE_CXX_FLAGS="$qemuCFlags" -DCMAKE_CXX_FLAGS_MINSIZEREL="$sizeOptFlag -DNDEBUG" -DSDL_STATIC=OFF -DSDL_SHARED=ON -DSDL_RENDER=ON -DSDL_VULKAN=OFF -DSDL_OPENGL=OFF -DSDL_OPENGLES=OFF
   make -j"$nCpu" install
 }
 buildSysroot() {
   setupToolchain
-  export CFLAGS="-fPIC -fPIE -ftls-model=global-dynamic"
+  export CFLAGS="-fPIC -fPIE $sizeOptFlag -ftls-model=global-dynamic"
   export CXXFLAGS="$CFLAGS"
   export LDFLAGS="-pie"
   buildLibffi
@@ -630,7 +631,8 @@ packageQemu() {
   cp -f "$prefix/lib/libX11-dir.so" "$qemuLib/"
   echo "产物: $qemuDir"
 }
-qemuOptFlags="-Os -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables"
+sizeOptFlag="-Oz"
+qemuOptFlags="$sizeOptFlag -fomit-frame-pointer -fno-unwind-tables -fno-asynchronous-unwind-tables"
 qemuExtraLdFlags=" -Wl,--icf=all -Wl,-s"
 qemuCFlags="-fPIC $qemuOptFlags -ffunction-sections -fdata-sections -fmerge-all-constants -mbranch-protection=none -ftls-model=global-dynamic -Wno-error -DSDL_MAIN_HANDLED -I$prefix/include -I$prefix/include/pixman-1"
 qemuLdFlags="-L$prefix/lib -Wl,--gc-sections$qemuExtraLdFlags"

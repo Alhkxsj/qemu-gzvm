@@ -129,18 +129,6 @@ static int default_monitor = 1;
 static int default_cdrom = 1;
 static int default_net = 0;
 
-static const struct {
-    const char *driver;
-    int *flag;
-} default_list[] = {
-    { .driver = "isa-serial",           .flag = &default_serial    },
-    { .driver = "isa-parallel",         .flag = &default_parallel  },
-    { .driver = "ide-cd",               .flag = &default_cdrom     },
-    { .driver = "ide-hd",               .flag = &default_cdrom     },
-    { .driver = "scsi-cd",              .flag = &default_cdrom     },
-    { .driver = "scsi-hd",              .flag = &default_cdrom     },
-};
-
 static QemuOptsList qemu_rtc_opts = {
     .name = "rtc",
     .head = QTAILQ_HEAD_INITIALIZER(qemu_rtc_opts.head),
@@ -372,39 +360,6 @@ static QemuOptsList qemu_action_opts = {
 const char *qemu_get_vm_name(void)
 {
     return qemu_name;
-}
-
-static void default_driver_disable(const char *driver)
-{
-    int i;
-
-    if (!driver) {
-        return;
-    }
-
-    for (i = 0; i < ARRAY_SIZE(default_list); i++) {
-        if (strcmp(default_list[i].driver, driver) != 0)
-            continue;
-        *(default_list[i].flag) = 0;
-    }
-}
-
-static int default_driver_check(void *opaque, QemuOpts *opts, Error **errp)
-{
-    const char *driver = qemu_opt_get(opts, "driver");
-
-    default_driver_disable(driver);
-    return 0;
-}
-
-static void default_driver_check_json(void)
-{
-    DeviceOption *opt;
-
-    QTAILQ_FOREACH(opt, &device_opts, next) {
-        const char *driver = qdict_get_try_str(opt->opts, "driver");
-        default_driver_disable(driver);
-    }
 }
 
 static int parse_name(void *opaque, QemuOpts *opts, Error **errp)
@@ -943,12 +898,6 @@ static void foreach_device_config_or_exit(int type,
 static void qemu_disable_default_devices(void)
 {
     MachineClass *machine_class = MACHINE_GET_CLASS(current_machine);
-
-    default_driver_check_json();
-    qemu_opts_foreach(qemu_find_opts("device"),
-                      default_driver_check, NULL, NULL);
-    qemu_opts_foreach(qemu_find_opts("global"),
-                      default_driver_check, NULL, NULL);
 
     if (!has_defaults || machine_class->no_serial) {
         default_serial = 0;

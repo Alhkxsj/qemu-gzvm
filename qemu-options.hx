@@ -522,11 +522,7 @@ SRST
 ``-global driver.prop=value``
   \ 
 ``-global driver=driver,property=property,value=value``
-    Set default value of driver's property prop to value, e.g.:
-
-    .. parsed-literal::
-
-        |qemu_system_x86| -global ide-hd.physical_block_size=4096 disk-image.img
+    Set default value of driver's property prop to value.
 
     In particular, you can use this to set driver properties for devices
     which are created automatically by the machine model. To create a
@@ -541,7 +537,7 @@ ERST
 DEF("boot", HAS_ARG, QEMU_OPTION_boot,
     "-boot [order=drives][,once=drives][,menu=on|off]\n"
     "      [,splash=sp_name][,splash-time=sp_time][,reboot-timeout=rb_time][,strict=on|off]\n"
-    "                'drives': floppy (a), hard disk (c), CD-ROM (d), network (n)\n"
+    "                'drives': hard disk (c), CD-ROM (d), network (n)\n"
     "                'sp_name': the file's name that would be passed to bios as logo picture, if menu=on\n"
     "                'sp_time': the period that splash picture last if menu=on, unit is ms\n"
     "                'rb_timeout': the timeout before guest reboot when boot failed, unit is ms\n",
@@ -958,17 +954,6 @@ SRST
     Please also refer to the wiki page for general scenarios of VT-d
     emulation in QEMU: https://wiki.qemu.org/Features/VT-d.
 
-``-device virtio-iommu-pci[,option=...]``
-    This is only supported by ``-machine q35`` (x86_64) and ``-machine virt`` (ARM).
-    It supports below options:
-
-    ``granule=val`` (possible values are 4k, 8k, 16k, 64k and host; default: host)
-        This decides the default granule to be be exposed by the
-        virtio-iommu. If host, the granule matches the host page size.
-
-    ``aw-bits=val`` (val between 32 and 64, default depends on machine)
-        This decides the address width of the IOVA address space.
-
 ERST
 
 DEF("name", HAS_ARG, QEMU_OPTION_name,
@@ -1233,8 +1218,7 @@ SRST
 
     ``if=interface``
         This option defines on which type on interface the drive is
-        connected. Available types are: ide, scsi, sd, mtd, floppy,
-        virtio, none.
+        connected. Available types are: virtio, none.
 
     ``bus=bus,unit=unit``
         These options define where is connected the drive by defining
@@ -1344,21 +1328,6 @@ SRST
     repeatedly and is useful when the backing file is over a slow
     network. By default copy-on-read is off.
 
-    Instead of ``-cdrom`` you can use:
-
-    .. parsed-literal::
-
-        |qemu_system| -drive file=file,index=2,media=cdrom
-
-    Instead of ``-hda``, ``-hdb``, ``-hdc``, ``-hdd``, you can use:
-
-    .. parsed-literal::
-
-        |qemu_system| -drive file=file,index=0,media=disk
-        |qemu_system| -drive file=file,index=1,media=disk
-        |qemu_system| -drive file=file,index=2,media=disk
-        |qemu_system| -drive file=file,index=3,media=disk
-
     You can open an image using pre-opened file descriptors from an fd
     set:
 
@@ -1369,31 +1338,6 @@ SRST
          -add-fd fd=4,set=2,opaque="rdonly:/path/to/file" \\
          -drive file=/dev/fdset/2,index=0,media=disk
 
-    You can connect a CDROM to the slave of ide0:
-
-    .. parsed-literal::
-
-        |qemu_system_x86| -drive file=file,if=ide,index=1,media=cdrom
-
-    If you don't specify the "file=" argument, you define an empty
-    drive:
-
-    .. parsed-literal::
-
-        |qemu_system_x86| -drive if=ide,index=1,media=cdrom
-
-    By default, interface is "ide" and index is automatically
-    incremented:
-
-    .. parsed-literal::
-
-        |qemu_system_x86| -drive file=a -drive file=b
-
-    is interpreted like:
-
-    .. parsed-literal::
-
-        |qemu_system_x86| -hda a -hdb b
 ERST
 
 DEF("snapshot", 0, QEMU_OPTION_snapshot,
@@ -3119,29 +3063,6 @@ SRST
         resulting from ``/dev/iommu`` opening. Usually the iommufd is shared
         across all subsystems, bringing the benefit of centralized
         reference counting.
-
-    ``-object rng-builtin,id=id``
-        Creates a random number generator backend which obtains entropy
-        from QEMU builtin functions. The ``id`` parameter is a unique ID
-        that will be used to reference this entropy backend from the
-        ``virtio-rng`` device. By default, the ``virtio-rng`` device
-        uses this RNG backend.
-
-    ``-object rng-random,id=id,filename=/dev/random``
-        Creates a random number generator backend which obtains entropy
-        from a device on the host. The ``id`` parameter is a unique ID
-        that will be used to reference this entropy backend from the
-        ``virtio-rng`` device. The ``filename`` parameter specifies
-        which file to obtain entropy from and if omitted defaults to
-        ``/dev/urandom``.
-
-    ``-object rng-egd,id=id,chardev=chardevid``
-        Creates a random number generator backend which obtains entropy
-        from an external daemon running on the host. The ``id``
-        parameter is a unique ID that will be used to reference this
-        entropy backend from the ``virtio-rng`` device. The ``chardev``
-        parameter is the unique ID of a character device backend that
-        provides the connection to the RNG daemon.
 
     ``-object tls-creds-anon,id=id,endpoint=endpoint,dir=/path/to/cred/dir,verify-peer=on|off``
         Creates a TLS anonymous credentials object, which can be used to
