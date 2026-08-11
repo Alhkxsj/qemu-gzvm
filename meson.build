@@ -60,6 +60,13 @@ python = import('python').find_installation()
 
 cc = meson.get_compiler('c')
 all_languages = ['c']
+is_android = cc.get_define('__ANDROID__') != ''
+android_native_window = not_found
+android_log = not_found
+if is_android
+  android_native_window = cc.find_library('android', required: true)
+  android_log = cc.find_library('log', required: true)
+endif
 if host_os == 'windows' and add_languages('cpp', required: false, native: false)
   all_languages += ['cpp']
   cxx = meson.get_compiler('cpp')
@@ -247,8 +254,6 @@ qemu_common_flags = [
   '-fno-strict-aliasing', '-fno-common', '-fwrapv' ]
 qemu_cflags = []
 qemu_ldflags = []
-qemu_ldflags += ['-llog']
-
 if host_os == 'darwin'
   if compiler.get_id() == 'gcc'
     qemu_common_flags += '-DOS_OBJECT_USE_OBJC=0'
@@ -1149,22 +1154,6 @@ if not get_option('brlapi').auto() or have_system
   endif
 endif
 
-sdl = not_found
-if not get_option('sdl').auto() or have_system
-  sdl = dependency('sdl2', required: get_option('sdl'))
-endif
-if sdl.found()
-  if not cc.compiles('''
-                     #include <SDL.h>
-                     #include <SDL_syswm.h>
-                     int main(int argc, char *argv[]) { return 0; }
-                     ''', dependencies: sdl, args: '-Werror=undef')
-    sdl = declare_dependency(compile_args: '-Wno-undef',
-                             dependencies: sdl,
-                             version: sdl.version())
-  endif
-endif
-
 rbd = not_found
 if not get_option('rbd').auto() or have_block
   librados = cc.find_library('rados', required: get_option('rbd'))
@@ -1449,7 +1438,6 @@ if nettle.found() and gmp.found()
 endif
 
 
-x11 = not_found
 png = not_found
 if get_option('png').allowed() and have_system
    png = dependency('libpng', version: '>=1.6.34', required: get_option('png'),
@@ -1653,7 +1641,6 @@ if have_system
     'oss': oss.found(),
     'pa': pulse.found(),
     'pipewire': pipewire.found(),
-    'sdl': sdl.found(),
     'sndio': sndio.found(),
     'aaudio': aaudio.found(),
   }
@@ -1661,9 +1648,7 @@ if have_system
     config_host_data.set('CONFIG_AUDIO_' + k.to_upper(), v)
   endforeach
 
-  audio_drivers_priority = \
-    [ 'pa', 'coreaudio', 'dsound', 'sndio', 'oss' ] + \
-    (host_os == 'linux' ? [] : [ 'sdl' ])
+  audio_drivers_priority = [ 'pa', 'coreaudio', 'dsound', 'sndio', 'oss' ]
   audio_drivers_default = []
   foreach k: audio_drivers_priority
     if audio_drivers_available[k]
@@ -1832,7 +1817,7 @@ if numa.found()
                        cc.has_function('numa_has_preferred_many',
                                        dependencies: numa))
 endif
-config_host_data.set('CONFIG_OPENGL', false)
+config_host_data.set('CONFIG_OPENGL', opengl.found())
 if virgl.found()
   config_host_data.set('VIRGL_VERSION_MAJOR', virgl.version().split('.')[0])
 endif
@@ -1840,7 +1825,7 @@ config_host_data.set('CONFIG_RBD', rbd.found())
 config_host_data.set('CONFIG_RDMA', rdma.found())
 config_host_data.set('CONFIG_RELOCATABLE', get_option('relocatable'))
 config_host_data.set('CONFIG_SAFESTACK', get_option('safe_stack'))
-config_host_data.set('CONFIG_SDL', sdl.found())
+config_host_data.set('CONFIG_AGL', is_android)
 config_host_data.set('CONFIG_PIXMAN', pixman.found())
 config_host_data.set('CONFIG_SLIRP', slirp.found())
 config_host_data.set('CONFIG_SNAPPY', snappy.found())
@@ -1885,7 +1870,6 @@ config_host_data.set('CONFIG_SPICE_PROTOCOL_MINOR', spice_protocol.version().spl
 config_host_data.set('CONFIG_SPICE_PROTOCOL_MICRO', spice_protocol.version().split('.')[2])
 endif
 config_host_data.set('CONFIG_SPICE', spice.found())
-config_host_data.set('CONFIG_X11', x11.found())
 config_host_data.set('CONFIG_DBUS_DISPLAY', dbus_display)
 config_host_data.set('CONFIG_CFI', get_option('cfi'))
 config_host_data.set('CONFIG_XEN_BACKEND', xen.found())
@@ -2460,7 +2444,6 @@ host_kconfig = \
   (have_ivshmem ? ['CONFIG_IVSHMEM=y'] : []) + \
   (libcbor.found() ? ['CONFIG_LIBCBOR=y'] : []) + \
   (gnutls.found() ? ['CONFIG_GNUTLS=y'] : []) + \
-  (x11.found() ? ['CONFIG_X11=y'] : []) + \
   (fdt.found() ? ['CONFIG_FDT=y'] : []) + \
   (have_vhost_user ? ['CONFIG_VHOST_USER=y'] : []) + \
   (have_vhost_vdpa ? ['CONFIG_VHOST_VDPA=y'] : []) + \
@@ -3217,16 +3200,8 @@ foreach target : target_dirs
       'name': 'qemu-system-' + target_name,
       'win_subsystem': 'console',
       'sources': files('system/main.c'),
-      'dependencies': [sdl]
+      'dependencies': []
     }]
-    if host_os == 'windows' and sdl.found()
-      execs += [{
-        'name': 'qemu-system-' + target_name + 'w',
-        'win_subsystem': 'windows',
-        'sources': files('system/main.c'),
-        'dependencies': [sdl]
-      }]
-    endif
     if get_option('fuzzing')
       specific_fuzz = specific_fuzz_ss.apply(config_target, strict: false)
       execs += [{
@@ -3258,6 +3233,23 @@ foreach target : target_dirs
                link_depends: [block_syms, qemu_syms],
                link_args: link_args,
                win_subsystem: exe['win_subsystem'])
+
+    if is_android and target.endswith('-softmmu')
+      jni_name = 'qemu-gzvm'
+      jni_version_script = meson.current_source_dir() / 'system/agl-jni.map'
+      emulators += {jni_name: shared_library(jni_name,
+                   files('system/agl-main.c'),
+                   install: true,
+                   c_args: c_args,
+                   dependencies: arch_deps + [android_log],
+                   gnu_symbol_visibility: 'hidden',
+                   objects: lib.extract_all_objects(recursive: true),
+                   link_depends: [block_syms, qemu_syms, jni_version_script],
+                   link_args: link_args + [
+                     '-Wl,--wrap=exit',
+                     '-Wl,--version-script=' + jni_version_script,
+                   ])}
+    endif
 
     if host_os == 'darwin'
       icon = 'pc-bios/qemu.rsrc'
@@ -3458,7 +3450,7 @@ summary_info = {}
 if host_os == 'darwin'
   summary_info += {'Cocoa support':           cocoa}
 endif
-summary_info += {'SDL support':       sdl}
+summary_info += {'AGL support':       is_android}
 summary_info += {'pixman':            pixman}
 summary_info += {'PNG support':       png}
 summary_info += {'spice protocol support': spice_protocol}

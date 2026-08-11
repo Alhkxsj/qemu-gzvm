@@ -694,10 +694,6 @@ DEF("audiodev", HAS_ARG, QEMU_OPTION_audiodev,
     "                in|out.stream-name= name of pipewire stream\n"
     "                in|out.latency= desired latency in microseconds\n"
 #endif
-#ifdef CONFIG_AUDIO_SDL
-    "-audiodev sdl,id=id[,prop[=value][,...]]\n"
-    "                in|out.buffer-count= number of buffers\n"
-#endif
 #ifdef CONFIG_AUDIO_SNDIO
     "-audiodev sndio,id=id[,prop[=value][,...]]\n"
 #endif
@@ -872,16 +868,6 @@ SRST
     ``in|out.stream-name``
         Specify the name of pipewire stream.
 
-``-audiodev sdl,id=id[,prop[=value][,...]]``
-    Creates a backend using SDL. This backend is available on most
-    systems, but you should use your platform's native backend if
-    possible.
-
-    SDL specific options are:
-
-    ``in|out.buffer-count=count``
-        Sets the count of the buffers.
-
 ``-audiodev sndio,id=id[,prop[=value][,...]]``
     Creates a backend using SNDIO. This backend is available on
     OpenBSD and most other Unix-like systems.
@@ -965,9 +951,8 @@ DEF("name", HAS_ARG, QEMU_OPTION_name,
     QEMU_ARCH_ALL)
 SRST
 ``-name name``
-    Sets the name of the guest. This name will be displayed in the SDL
-    window caption. Also optionally set the top visible process name in
-    Linux. Naming of individual threads can also be enabled on Linux to
+    Sets the name of the guest and optionally the top visible process name
+    in Linux. Naming of individual threads can also be enabled on Linux to
     aid debugging.
 ERST
 
@@ -1363,35 +1348,14 @@ DEFHEADING()
 DEFHEADING(Display options:)
 
 DEF("display", HAS_ARG, QEMU_OPTION_display,
-#if defined(CONFIG_SPICE)
-    "-display spice-app[,gl=on|off]\n"
-#endif
-#if defined(CONFIG_SDL)
-    "-display sdl[,gl=on|core|es|off][,grab-mod=<mod>][,show-cursor=on|off]\n"
-    "            [,window-close=on|off]\n"
-#endif
-#if defined(CONFIG_CURSES)
-    "-display curses[,charset=<encoding>]\n"
-#endif
-#if defined(CONFIG_COCOA)
-    "-display cocoa[,full-grab=on|off][,swap-opt-cmd=on|off]\n"
-    "              [,show-cursor=on|off][,left-command-key=on|off]\n"
-    "              [,full-screen=on|off][,zoom-to-fit=on|off]\n"
-#endif
-#if defined(CONFIG_OPENGL)
-    "-display egl-headless[,rendernode=<file>]\n"
-#endif
-#if defined(CONFIG_DBUS_DISPLAY)
-    "-display dbus[,addr=<dbusaddr>]\n"
-    "             [,gl=on|core|es|off][,rendernode=<file>]\n"
+#if defined(CONFIG_AGL)
+    "-display agl\n"
 #endif
     "-display none\n"
     "                select display backend type\n"
     "                The default display is equivalent to\n                "
-#if defined(CONFIG_SDL)
-            "\"-display sdl\"\n"
-#elif defined(CONFIG_COCOA)
-            "\"-display cocoa\"\n"
+#if defined(CONFIG_AGL)
+            "\"-display agl\"\n"
 #else
             "\"-display none\"\n"
 #endif
@@ -1401,82 +1365,8 @@ SRST
     Select type of display to use. Use ``-display help`` to list the available
     display types. Valid values for type are
 
-    ``spice-app[,gl=on|off]``
-        Start QEMU as a Spice server and launch the default Spice client
-        application. The Spice server will redirect the serial consoles
-        and QEMU monitors. (Since 4.0)
-
-    ``dbus``
-        Export the display over D-Bus interfaces. (Since 7.0)
-
-        The connection is registered with the "org.qemu" name (and queued when
-        already owned).
-
-        ``addr=<dbusaddr>`` : D-Bus bus address to connect to.
-
-        ``p2p=yes|no`` : Use peer-to-peer connection, accepted via QMP ``add_client``.
-
-        ``gl=on|off|core|es`` : Use OpenGL for rendering (the D-Bus interface
-        will share framebuffers with DMABUF file descriptors).
-
-    ``sdl``
-        Display video output via SDL (usually in a separate graphics
-        window; see the SDL documentation for other possibilities).
-        Valid parameters are:
-
-        ``grab-mod=<mods>`` : Used to select the modifier keys for toggling
-        the mouse grabbing in conjunction with the "g" key. ``<mods>`` can be
-        either ``lshift-lctrl-lalt`` or ``rctrl``.
-
-        ``gl=on|off|core|es`` : Use OpenGL for displaying
-
-        ``show-cursor=on|off`` :  Force showing the mouse cursor
-
-        ``window-close=on|off`` : Allow to quit qemu with window close button
-
-        ``zoom-to-fit=on|off`` : Expand video output to the window size,
-                                 defaults to "off"
-
-    ``curses[,charset=<encoding>]``
-        Display video output via curses. For graphics device models
-        which support a text mode, QEMU can display this output using a
-        curses/ncurses interface. Nothing is displayed when the graphics
-        device is in graphical mode or if the graphics device does not
-        support a text mode. Generally only the VGA device models
-        support text mode. The font charset used by the guest can be
-        specified with the ``charset`` option, for example
-        ``charset=CP850`` for IBM CP850 encoding. The default is
-        ``CP437``.
-
-    ``cocoa``
-        Display video output in a Cocoa window. Mac only. This interface
-        provides drop-down menus and other UI elements to configure and
-        control the VM during runtime. Valid parameters are:
-
-        ``full-grab=on|off`` : Capture all key presses, including system combos.
-                               This requires accessibility permissions, since it
-                               performs a global grab on key events.
-                               (default: off) See
-                               https://support.apple.com/en-in/guide/mac-help/mh32356/mac
-
-        ``swap-opt-cmd=on|off`` : Swap the Option and Command keys so that their
-                                  key codes match their position on non-Mac
-                                  keyboards and you can use Meta/Super and Alt
-                                  where you expect them.  (default: off)
-
-        ``show-cursor=on|off`` :  Force showing the mouse cursor
-
-        ``left-command-key=on|off`` : Disable forwarding left command key to host
-
-        ``full-screen=on|off`` : Start in fullscreen mode
-
-        ``zoom-to-fit=on|off`` : Expand video output to the window size,
-                                 defaults to "off"
-
-    ``egl-headless[,rendernode=<file>]``
-        Offload all OpenGL operations to a local DRI device. For any
-        graphical display, this display needs to be paired with another
-        display backend.
+    ``agl``
+        Display video output through the Android native window backend.
 
     ``none``
         Do not display video output. The guest will still see an

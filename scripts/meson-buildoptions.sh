@@ -1,7 +1,7 @@
 meson_options_help() {
   printf "%s\n" '  --audio-drv-list=CHOICES Set audio driver list [default] (choices: alsa/co'
-  printf "%s\n" '                           reaudio/default/dsound/jack/oss/pa/pipewire/sdl/s'
-  printf "%s\n" '                           ndio)'
+  printf "%s\n" '                           reaudio/default/dsound/jack/oss/pa/pipewire/sndio'
+  printf "%s\n" '                           )'
   printf "%s\n" '  --bindir=VALUE           Executable directory [bin]'
   printf "%s\n" '  --block-drv-ro-whitelist=VALUE'
   printf "%s\n" '                           set block driver read-only whitelist'
@@ -152,7 +152,6 @@ meson_options_help() {
   printf "%s\n" '  rdma            Enable RDMA-based migration'
   printf "%s\n" '  replication     replication support'
   printf "%s\n" '  rust            Rust support'
-  printf "%s\n" '  sdl             SDL user interface'
   printf "%s\n" '  slirp           libslirp user mode network backend support'
   printf "%s\n" '  slirp-smbd      use smbd (at path --smbd=*) in slirp networking'
   printf "%s\n" '  smartcard       CA smartcard emulation support'
@@ -388,8 +387,6 @@ _meson_option_parse() {
     --disable-rust) printf "%s" -Drust=disabled ;;
     --enable-safe-stack) printf "%s" -Dsafe_stack=true ;;
     --disable-safe-stack) printf "%s" -Dsafe_stack=false ;;
-    --enable-sdl) printf "%s" -Dsdl=enabled ;;
-    --disable-sdl) printf "%s" -Dsdl=disabled ;;
     --enable-slirp) printf "%s" -Dslirp=enabled ;;
     --disable-slirp) printf "%s" -Dslirp=disabled ;;
     --enable-slirp-smbd) printf "%s" -Dslirp_smbd=enabled ;;

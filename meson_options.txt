@@ -16,7 +16,7 @@ option('tls_priority', type : 'string', value : 'NORMAL',
 option('default_devices', type : 'boolean', value : true,
        description: 'Include a default selection of devices in emulators')
 option('audio_drv_list', type: 'array', value: ['default'],
-       choices: ['aaudio', 'alsa', 'coreaudio', 'default', 'dsound', 'jack', 'oss', 'pa', 'pipewire', 'sdl', 'sndio'],
+       choices: ['aaudio', 'alsa', 'coreaudio', 'default', 'dsound', 'jack', 'oss', 'pa', 'pipewire', 'sndio'],
        description: 'Set audio driver list')
 option('block_drv_rw_whitelist', type : 'string', value : '',
        description: 'set block driver read-write whitelist')
@@ -170,8 +170,6 @@ option('opengl', type : 'feature', value : 'auto',
        description: 'OpenGL support')
 option('rdma', type : 'feature', value : 'auto',
        description: 'Enable RDMA-based migration')
-option('sdl', type : 'feature', value : 'auto',
-       description: 'SDL user interface')
 option('smartcard', type : 'feature', value : 'auto',
        description: 'CA smartcard emulation support')
 option('snappy', type : 'feature', value : 'auto',

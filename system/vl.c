@@ -271,8 +271,7 @@ static QemuOptsList qemu_name_opts = {
         {
             .name = "guest",
             .type = QEMU_OPT_STRING,
-            .help = "Sets the name of the guest.\n"
-                    "This name will be displayed in the SDL window caption.",
+            .help = "Sets the name of the guest.",
         }, {
             .name = "process",
             .type = QEMU_OPT_STRING,
@@ -1406,15 +1405,6 @@ static void qemu_apply_machine_options(QDict *qdict)
 static void qemu_create_early_backends(void)
 {
     MachineClass *machine_class = MACHINE_GET_CLASS(current_machine);
-#if defined(CONFIG_SDL)
-    const bool use_sdl = (dpy.type == DISPLAY_TYPE_SDL);
-#else
-    const bool use_sdl = false;
-#endif
-    if (dpy.has_window_close && !use_sdl) {
-        error_report("window-close is only valid for SDL, "
-                     "ignoring option");
-    }
 
     qemu_console_early_init();
 

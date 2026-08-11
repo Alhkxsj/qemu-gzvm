@@ -12,6 +12,13 @@ system_ss.add(files(
   'qemu-pixman.c',
 ))
 system_ss.add(files('console-vc-stubs.c'))
+if is_android
+  system_ss.add(opengl, android_native_window, files(
+    'agl.c',
+    'egl-helpers.c',
+    'shader.c',
+  ))
+endif
 if dbus_display
   error('DBus display was removed from this trimmed build')
 endif
@@ -23,23 +30,12 @@ if cocoa.found()
   error('Cocoa UI was removed from this trimmed build')
 endif
 
-ui_modules = {}
-
 if dbus_display
   error('DBus UI was removed from this trimmed build')
 endif
 
-if sdl.found()
-  sdl_ss = ss.source_set()
-  sdl_ss.add(sdl, pixman, glib, files(
-    'sdl2-2d.c',
-    'sdl2-input.c',
-    'sdl2.c',
-  ))
-  ui_modules += {'sdl' : sdl_ss}
-endif
-
 keymaps = [
+  ['linux', 'qcode'],
   ['qcode', 'linux'],
   ['qnum', 'qcode'],
   ['usb', 'qcode'],
@@ -59,5 +55,3 @@ if have_system or xkbcommon.found()
                             '@INPUT0@', e[0], e[1]])
   endforeach
 endif
-
-modules += {'ui': ui_modules}

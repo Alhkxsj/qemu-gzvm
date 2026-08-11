@@ -19,7 +19,7 @@ system_ss.add(files(
   'runstate-hmp-cmds.c',
   'runstate.c',
   'vl.c',
-), sdl, libpmem, libdaxctl)
+), libpmem, libdaxctl)
 
 if have_tpm
   error('TPM support was removed from this trimmed build')
