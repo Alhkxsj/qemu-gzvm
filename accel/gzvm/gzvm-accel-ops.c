@@ -21,18 +21,6 @@ static int gzvm_init(MachineState *ms)
     return gzvm_create_vm();
 }
 
-static bool gzvm_get_protected(Object *obj, Error **errp)
-{
-    GZVMState *s = GZVM_STATE(obj);
-    return s->protected_vm;
-}
-
-static void gzvm_set_protected(Object *obj, bool value, Error **errp)
-{
-    GZVMState *s = GZVM_STATE(obj);
-    s->protected_vm = value;
-}
-
 static void gzvm_accel_instance_finalize(Object *obj)
 {
     GZVMState *s = GZVM_STATE(obj);
@@ -51,12 +39,8 @@ static void gzvm_accel_instance_init(Object *obj)
     GZVMState *s = GZVM_STATE(obj);
     s->fd = -1;
     s->vmfd = -1;
-    s->protected_vm = false;
     s->slots = NULL;
     s->sorted_ids = NULL;
-    object_property_add_bool(obj, "protected",
-                             gzvm_get_protected,
-                             gzvm_set_protected);
 }
 
 static void gzvm_setup_post(MachineState *ms, AccelState *accel)

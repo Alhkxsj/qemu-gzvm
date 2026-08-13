@@ -20,7 +20,6 @@
 #include "system/hvf.h"
 #include "system/gzvm.h"
 #include "hw/arm/virt-gzvm.h"
-#include "system/confidential-guest-support.h"
 #include "qom/object_interfaces.h"
 #include "hw/loader.h"
 #include "qapi/error.h"
@@ -156,35 +155,6 @@ static bool ns_el2_virt_timer_present(void)
  arm_feature(env, ARM_FEATURE_EL2) && cpu_isar_feature(aa64_vh, cpu);
 }
 
-static void create_gzvm_restricted_dma_pool(VirtMachineState *vms)
-{
- MachineState *ms = MACHINE(vms);
- hwaddr size = 256 * MiB;
- hwaddr base;
- char *nodename;
-
- if (!gzvm_enabled() || ms->ram_size <= size) {
- return;
- }
-
- base = vms->memmap[VIRT_MEM].base + ms->ram_size - size;
- vms->restricted_dma_phandle = qemu_fdt_alloc_phandle(ms->fdt);
- qemu_fdt_add_subnode(ms->fdt, "/reserved-memory");
- qemu_fdt_setprop_cell(ms->fdt, "/reserved-memory", "#address-cells", 2);
- qemu_fdt_setprop_cell(ms->fdt, "/reserved-memory", "#size-cells", 2);
- qemu_fdt_setprop(ms->fdt, "/reserved-memory", "ranges", NULL, 0);
-
- nodename = g_strdup_printf("/reserved-memory/restricted-dma-pool@%" PRIx64,
- base);
- qemu_fdt_add_subnode(ms->fdt, nodename);
- qemu_fdt_setprop_string(ms->fdt, nodename, "compatible",
- "restricted-dma-pool");
- qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
- qemu_fdt_setprop_cell(ms->fdt, nodename, "phandle",
- vms->restricted_dma_phandle);
- g_free(nodename);
-}
-
 static void create_fdt(VirtMachineState *vms)
 {
  MachineState *ms = MACHINE(vms);
@@ -218,7 +188,6 @@ static void create_fdt(VirtMachineState *vms)
  }
 
  qemu_fdt_add_subnode(fdt, "/aliases");
- create_gzvm_restricted_dma_pool(vms);
 
  vms->clock_phandle = qemu_fdt_alloc_phandle(fdt);
  qemu_fdt_add_subnode(fdt, "/apb-pclk");
@@ -725,12 +694,13 @@ static bool virt_firmware_init(VirtMachineState *vms,
  MemoryRegion *secure_sysmem)
 {
  const char *bios_name;
- MachineState *ms = MACHINE(vms);
+
+ (void)secure_sysmem;
 
  bios_name = MACHINE(vms)->firmware;
  if (bios_name) {
   char *fname;
-  int image_size;
+  int64_t image_size;
 
   fname = qemu_find_file(QEMU_FILE_TYPE_BIOS, bios_name);
   if (!fname) {
@@ -739,13 +709,29 @@ static bool virt_firmware_init(VirtMachineState *vms,
   }
 
   if (gzvm_enabled()) {
-   hwaddr fw_base = vms->memmap[VIRT_MEM].base;
-   image_size = load_image_targphys_as(fname, fw_base,
-    MIN(ms->ram_size, 4 * MiB), &address_space_memory);
-   if (image_size > 0) {
-    gzvm_set_firmware(fw_base, image_size);
-   } else if (image_size == 0) {
+   hwaddr fw_base = vms->memmap[VIRT_FLASH].base;
+   uint64_t rom_size;
+
+   image_size = get_image_size(fname);
+   if (image_size == 0) {
     error_report("Could not load ROM image '%s' (empty file)", bios_name);
+    exit(1);
+   } else if (image_size < 0) {
+    error_report("Could not load ROM image '%s'", bios_name);
+    exit(1);
+   } else if (image_size > vms->memmap[VIRT_FLASH].size) {
+    error_report("ROM image '%s' is too large for the flash window",
+     bios_name);
+    exit(1);
+   }
+
+   rom_size = QEMU_ALIGN_UP(image_size, qemu_real_host_page_size());
+   memory_region_init_rom_nomigrate(&vms->firmware, OBJECT(vms),
+    "virt.gzvm-firmware", rom_size, &error_fatal);
+   memory_region_add_subregion(sysmem, fw_base, &vms->firmware);
+
+   if (load_image_mr(fname, &vms->firmware) != image_size) {
+    error_report("Could not load ROM image '%s'", bios_name);
     exit(1);
    }
   } else {
@@ -925,10 +911,6 @@ static void create_pcie(VirtMachineState *vms)
  qemu_fdt_setprop_cells(ms->fdt, nodename, "bus-range", 0,
  nr_pcie_buses - 1);
  qemu_fdt_setprop(ms->fdt, nodename, "dma-coherent", NULL, 0);
- if (vms->restricted_dma_phandle) {
- qemu_fdt_setprop_cell(ms->fdt, nodename, "memory-region",
- vms->restricted_dma_phandle);
- }
 
  if (vms->msi_phandle) {
  qemu_fdt_setprop_cells(ms->fdt, nodename, "msi-map",

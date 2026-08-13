@@ -15,33 +15,6 @@ int gzvm_start_vm(void)
     }
     s = GZVM_STATE(accel);
 
-
-    if (s->protected_vm) {
-        if (s->firmware_size) {
-            struct gzvm_enable_cap cap = {
-                .cap = GZVM_CAP_PROTECTED_VM,
-                .args = { GZVM_CAP_PVM_SET_PVMFW_GPA, s->firmware_start, 0, 0, 0 },
-            };
-            ret = gzvm_vm_ioctl(GZVM_ENABLE_CAP, &cap);
-            if (ret < 0) {
-                error_report("gzvm: GZVM_ENABLE_CAP PVMFW_GPA failed: %s (errno=%d)",
-                             strerror(errno), errno);
-                return -1;
-            }
-        }
-
-        struct gzvm_enable_cap cap = {
-            .cap = GZVM_CAP_PROTECTED_VM,
-            .args = { GZVM_CAP_PVM_SET_PROTECTED_VM, 0, 0, 0, 0 },
-        };
-        ret = gzvm_vm_ioctl(GZVM_ENABLE_CAP, &cap);
-        if (ret < 0) {
-            error_report("gzvm: GZVM_ENABLE_CAP PROTECTED_VM failed: %s (errno=%d)",
-                         strerror(errno), errno);
-            return -1;
-        }
-    }
-
     if (s->dtb_start) {
         struct gzvm_dtb_config dtb;
         dtb.dtb_addr = s->dtb_start;

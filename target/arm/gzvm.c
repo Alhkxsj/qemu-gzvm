@@ -122,14 +122,6 @@ int gzvm_arm_set_dtb(uint64_t dtb_start, uint64_t dtb_size)
     return 0;
 }
 
-void gzvm_set_firmware(uint64_t start, uint64_t size)
-{
-    assert(gzvm_enabled());
-    GZVMState *state = GZVM_STATE(current_accel());
-    state->firmware_start = start;
-    state->firmware_size = size;
-}
-
 void gzvm_set_gic_bases(uint64_t dist_base, uint64_t redist_base,
                         uint64_t redist_size)
 {

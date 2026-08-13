@@ -6,8 +6,6 @@
 #include "hw/nvram/fw_cfg.h"
 #include "qemu/error-report.h"
 #include "system/gzvm.h"
-#include "system/gzvm_int.h"
-#include "system/system.h"
 
 void virt_gzvm_init(VirtMachineState *vms)
 {
@@ -66,13 +64,6 @@ void virt_gzvm_set_bootinfo(VirtMachineState *vms, bool firmware_loaded)
         return;
     }
 
-    vms->bootinfo.entry = vms->memmap[VIRT_MEM].base;
-
-    AccelState *accel = current_accel();
-    GZVMState *s = accel ? GZVM_STATE(accel) : NULL;
-    if (s && s->firmware_size) {
-        vms->bootinfo.dtb_start = QEMU_ALIGN_UP(s->firmware_start + s->firmware_size, 8);
-    } else {
-        vms->bootinfo.dtb_start = vms->memmap[VIRT_MEM].base + 4 * MiB;
-    }
+    vms->bootinfo.entry = vms->memmap[VIRT_FLASH].base;
+    vms->bootinfo.dtb_start = vms->memmap[VIRT_MEM].base;
 }

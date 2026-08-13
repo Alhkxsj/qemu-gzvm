@@ -25,9 +25,6 @@ struct GZVMState {
     uint32_t nr_active_slots;
     int fd;
     int vmfd;
-    bool protected_vm;
-    uint64_t firmware_start;
-    uint64_t firmware_size;
     uint64_t dtb_start;
     uint64_t dtb_size;
     uint64_t gic_dist_base;

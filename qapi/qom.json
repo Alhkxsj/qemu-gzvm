@@ -128,9 +128,6 @@
             'reduced-phys-bits': 'uint32',
             '*kernel-hashes': 'bool' } }
 
-{ 'struct': 'ArmConfidentialGuestProperties',
-  'data': { '*swiotlb-size': 'size' } }
-
 { 'struct': 'SevGuestProperties',
   'base': 'SevCommonProperties',
   'data': { '*dh-cert-file': 'str',
@@ -182,7 +179,6 @@
     'sev-guest',
     'sev-snp-guest',
     'thread-context',
-    'arm-confidential-guest',
     's390-pv-guest',
     'tls-creds-anon',
     'tls-creds-psk',
@@ -198,7 +194,6 @@
   'data': {
       'acpi-generic-initiator':     'AcpiGenericInitiatorProperties',
       'acpi-generic-port':          'AcpiGenericPortProperties',
-      'arm-confidential-guest':     'ArmConfidentialGuestProperties',
       'dbus-vmstate':               'DBusVMStateProperties',
       'iommufd':                    'IOMMUFDProperties',
       'iothread':                   'IothreadProperties',

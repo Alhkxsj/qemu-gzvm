@@ -89,6 +89,7 @@ struct VirtMachineState {
     MachineState parent;
     Notifier machine_done;
     FWCfgState *fw_cfg;
+    MemoryRegion firmware;
     bool secure;
     bool highmem;
     bool highmem_compact;
@@ -114,7 +115,6 @@ struct VirtMachineState {
     uint32_t gic_phandle;
     uint32_t msi_phandle;
     uint32_t iommu_phandle;
-    uint32_t restricted_dma_phandle;
     int psci_conduit;
     hwaddr highest_gpa;
     DeviceState *gic;

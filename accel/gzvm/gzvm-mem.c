@@ -246,69 +246,6 @@ static int gzvm_add_mem(GZVMState *s, MemoryRegionSection *section,
     return gzvm_add_mem_slot(s, base_hva, base_gpa, total_size, flags);
 }
 
-static int
-gzvm_add_mem_range(GZVMState *s, MemoryRegionSection *section,
-                   uint64_t gpa, uint64_t size, uint32_t flags)
-{
-    MemoryRegion *area = section->mr;
-    uint64_t section_start = section->offset_within_address_space;
-    uint64_t section_end = section_start + int128_get64(section->size);
-    uint64_t offset;
-    uint8_t *hva;
-
-    if (gpa < section_start || gpa + size > section_end) {
-        error_report("gzvm: memory range [0x%" PRIx64 ", 0x%" PRIx64 
-                     ") is out of section bounds [0x%" PRIx64 ", 0x%" PRIx64 ")",
-                     gpa, gpa + size, section_start, section_end);
-        return -EINVAL;
-    }
-
-    offset = gpa - section_start;
-    hva = memory_region_get_ram_ptr(area) +
-          section->offset_within_region + offset;
-
-    return gzvm_add_mem_slot(s, hva, gpa, size, flags);
-}
-
-static int gzvm_set_phys_mem_fw_split(GZVMState *s,
-                                       MemoryRegionSection *section,
-                                       uint64_t section_start,
-                                       uint64_t section_size,
-                                       uint32_t flags)
-{
-    uint64_t page_size = qemu_real_host_page_size();
-    uint64_t section_end = section_start + section_size;
-    uint64_t fw_start = QEMU_ALIGN_DOWN(s->firmware_start, page_size);
-    uint64_t fw_end = QEMU_ALIGN_UP(s->firmware_start + s->firmware_size,
-                                    page_size);
-
-    if (!(fw_start < section_end && fw_end > section_start)) {
-        return 0;
-    }
-
-    uint64_t protect_start = MAX(fw_start, section_start);
-    uint64_t protect_end = MIN(fw_end, section_end);
-
-    if (protect_start > section_start) {
-        if (gzvm_add_mem_range(s, section, section_start,
-                               protect_start - section_start, flags)) {
-            return -1;
-        }
-    }
-    if (gzvm_add_mem_range(s, section, protect_start,
-                           protect_end - protect_start,
-                           GZVM_USER_MEM_REGION_PROTECT_FW)) {
-        return -1;
-    }
-    if (protect_end < section_end) {
-        if (gzvm_add_mem_range(s, section, protect_end,
-                               section_end - protect_end, flags)) {
-            return -1;
-        }
-    }
-    return 1;
-}
-
 static void gzvm_set_phys_mem(GZVMState *s, MemoryRegionSection *section, bool add)
 {
     MemoryRegion *area = section->mr;
@@ -347,26 +284,6 @@ static void gzvm_set_phys_mem(GZVMState *s, MemoryRegionSection *section, bool a
                      section_start, section_start + section_size);
         gzvm_slots_unlock(s);
         return;
-    }
-
-    if (s->protected_vm && (area->readonly || area->rom_device)) {
-        flags = GZVM_USER_MEM_REGION_PROTECT_FW;
-    }
-
-    if (s->protected_vm && s->firmware_size &&
-        !area->readonly && !area->rom_device) {
-        int fw_ret = gzvm_set_phys_mem_fw_split(s, section,
-                                                 section_start, section_size,
-                                                 flags);
-        if (fw_ret < 0) {
-            gzvm_remove_overlap_slots_locked(s, section_start, section_size);
-            gzvm_slots_unlock(s);
-            return;
-        }
-        if (fw_ret > 0) {
-            gzvm_slots_unlock(s);
-            return;
-        }
     }
 
     if (gzvm_add_mem(s, section, flags)) {
@@ -461,7 +378,6 @@ static void gzvm_probe_caps(GZVMState *s)
             uint64_t cap;
             const char *name;
         } cap_list[] = {
-            { GZVM_CAP_ARM_PROTECTED_VM,     "PROTECTED_VM" },
             { GZVM_CAP_ENABLE_IDLE,          "ENABLE_IDLE" },
         };
         for (int i = 0; i < (int)ARRAY_SIZE(cap_list); i++) {
