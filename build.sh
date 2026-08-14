@@ -316,6 +316,10 @@ buildGlib() {
     return 0
   fi
   [ -d "$srcDir/glib-${glibVer}" ] || tar -C "$srcDir" -xf "$srcDir/glib-${glibVer}.tar.xz"
+  if [ ! -f "$srcDir/glib-${glibVer}/subprojects/proxy-libintl/meson.build" ]; then
+    rm -rf "$srcDir/glib-${glibVer}/subprojects/proxy-libintl"
+    meson subprojects download --sourcedir "$srcDir/glib-${glibVer}" proxy-libintl
+  fi
   sed -i "/  'lchmod',/d" "$srcDir/glib-${glibVer}/meson.build"
   sed -i "s/if cc.has_header_symbol('pthread.h', 'pthread_getaffinity_np', prefix : pthread_prefix)/if false and cc.has_header_symbol('pthread.h', 'pthread_getaffinity_np', prefix : pthread_prefix)/" "$srcDir/glib-${glibVer}/meson.build"
   writeMesonCross "$outDir/glib.cross"
