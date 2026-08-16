@@ -32,11 +32,7 @@ typedef int64_t  __s64;
 #define GZVM_IOC_MAGIC			0x92
 
 #define GZVM_CAP_VM_GPA_SIZE		0xa5
-#define GZVM_CAP_BLOCK_BASED_DEMAND_PAGING	0x9201
-#define GZVM_CAP_ENABLE_DEMAND_PAGING	0x9202
 #define GZVM_CAP_ENABLE_IDLE		0x9203
-#define GZVM_CAP_QUERY_HYP_BATCH_PAGES	0x9204
-#define GZVM_CAP_QUERY_DESTROY_BATCH_PAGES	0x9205
 
 #define GZVM_CAP_ARM_VM_IPA_SIZE	GZVM_CAP_VM_GPA_SIZE
 
@@ -87,16 +83,6 @@ typedef int64_t  __s64;
 
 #define GZVM_CREATE_VM             _IO(GZVM_IOC_MAGIC,   0x01)
 #define GZVM_CHECK_EXTENSION       _IO(GZVM_IOC_MAGIC,   0x03)
-
-struct gzvm_memory_region {
-	__u32 slot;
-	__u32 flags;
-	__u64 guest_phys_addr;
-	__u64 memory_size;
-};
-
-#define GZVM_SET_MEMORY_REGION     _IOW(GZVM_IOC_MAGIC,  0x40, \
-					struct gzvm_memory_region)
 
 #define GZVM_CREATE_VCPU           _IO(GZVM_IOC_MAGIC,   0x41)
 
@@ -183,16 +169,6 @@ enum {
 	GZVM_EXIT_IPI = 0x9292000d,
 };
 
-enum {
-	GZVM_EXCEPTION_UNKNOWN = 0x0,
-	GZVM_EXCEPTION_PAGE_FAULT = 0x1,
-};
-
-enum {
-	GZVM_HVC_PTP = 0x86000001,
-	GZVM_HVC_MEM_RELINQUISH = 0xc6000009,
-};
-
 struct gzvm_vcpu_run {
 	__u32 exit_reason;
 	__u8 immediate_exit;
@@ -238,14 +214,6 @@ struct gzvm_vcpu_run {
 		char padding[256];
 	};
 };
-
-struct gzvm_enable_cap {
-	__u64 cap;
-	__u64 args[5];
-};
-
-#define GZVM_ENABLE_CAP            _IOW(GZVM_IOC_MAGIC,  0xa3, \
-					struct gzvm_enable_cap)
 
 struct gzvm_one_reg {
 	__u64 id;
