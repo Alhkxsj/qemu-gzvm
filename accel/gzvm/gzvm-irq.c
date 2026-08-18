@@ -100,3 +100,63 @@ MemoryListener gzvm_ioeventfd_listener = {
     .eventfd_del = gzvm_mem_ioeventfd_del,
     .priority = MEMORY_LISTENER_PRIORITY_ACCEL,
 };
+
+static int
+gzvm_set_ioeventfd_pio(int fd, uint16_t addr, uint32_t size, uint64_t data,
+                       bool datamatch, bool assign)
+{
+    struct gzvm_ioeventfd io;
+
+    memset(&io, 0, sizeof(io));
+    io.fd = fd;
+    io.datamatch = datamatch ? data : 0;
+    io.len = size;
+    io.addr = addr;
+    io.flags = GZVM_IOEVENTFD_FLAG_PIO;
+    if (datamatch) io.flags |= GZVM_IOEVENTFD_FLAG_DATAMATCH;
+    if (!assign) io.flags |= GZVM_IOEVENTFD_FLAG_DEASSIGN;
+
+    return gzvm_vm_ioctl(GZVM_IOEVENTFD, &io);
+}
+
+static void
+gzvm_io_ioeventfd_add(MemoryListener *listener, MemoryRegionSection *section,
+                      bool match_data, uint64_t data, EventNotifier *e)
+{
+    int fd = event_notifier_get_fd(e);
+    int r;
+
+    r = gzvm_set_ioeventfd_pio(fd, section->offset_within_address_space,
+                               int128_get64(section->size), data,
+                               match_data, true);
+    if (r < 0 && errno == EEXIST) return;
+    if (r < 0) {
+        error_report("gzvm: pio ioeventfd_add failed addr=0x%" PRIx64 ": %s",
+                     (uint64_t)section->offset_within_address_space,
+                     strerror(errno));
+    }
+}
+
+static void
+gzvm_io_ioeventfd_del(MemoryListener *listener, MemoryRegionSection *section,
+                      bool match_data, uint64_t data, EventNotifier *e)
+{
+    int fd = event_notifier_get_fd(e);
+    int r;
+
+    r = gzvm_set_ioeventfd_pio(fd, section->offset_within_address_space,
+                               int128_get64(section->size), data,
+                               match_data, false);
+    if (r < 0 && errno != ENOENT) {
+        error_report("gzvm: pio ioeventfd_del failed addr=0x%" PRIx64 ": %s",
+                     (uint64_t)section->offset_within_address_space,
+                     strerror(errno));
+    }
+}
+
+MemoryListener gzvm_io_listener = {
+    .name = "gzvm-io",
+    .eventfd_add = gzvm_io_ioeventfd_add,
+    .eventfd_del = gzvm_io_ioeventfd_del,
+    .priority = MEMORY_LISTENER_PRIORITY_DEV_BACKEND,
+};
