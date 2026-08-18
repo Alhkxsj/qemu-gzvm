@@ -208,11 +208,6 @@ int gzvm_arch_put_registers(CPUState *cs, int level)
 
     gzvm_arch_set_id_regs(cs);
 
-    info_report("gzvm: vcpu%d entry PC=0x%" PRIx64 " X0=0x%" PRIx64
-                " reset_pstate=0x%" PRIx64,
-                cs->cpu_index, (uint64_t)env->pc, (uint64_t)env->xregs[0],
-                (uint64_t)(PSTATE_DAIF | PSTATE_MODE_EL1h));
-
     val = PSTATE_DAIF | PSTATE_MODE_EL1h;
     ret = gzvm_set_one_reg_err(cs, GZVM_CORE_REG(GZVM_REGS_PSTATE),
                                &val, "pstate");
