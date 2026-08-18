@@ -67,22 +67,11 @@ static gzvm_slot *gzvm_find_overlap_slot(GZVMState *s, uint64_t start, uint64_t 
 gzvm_slot *gzvm_find_slot_by_addr_locked(GZVMState *s, uint64_t addr)
 {
     gzvm_assert_mutex_locked(&s->slots_lock);
-
-    if (!s->nr_active_slots) {
-        return NULL;
-    }
-
-    int lo = 0, hi = (int)s->nr_active_slots - 1;
-    while (lo <= hi) {
-        int mid = lo + (hi - lo) / 2;
-        gzvm_slot *slot = &s->slots[s->sorted_ids[mid]];
-        if (addr < slot->start) {
-            hi = mid - 1;
-        } else if (addr - slot->start >= slot->size) {
-            lo = mid + 1;
-        } else {
-            return slot;
-        }
+    if (!s->nr_active_slots) return NULL;
+    int pos = gzvm_find_first_ge(s, addr + 1);
+    if (pos > 0) {
+        gzvm_slot *slot = &s->slots[s->sorted_ids[pos - 1]];
+        if (addr - slot->start < slot->size) return slot;
     }
     return NULL;
 }
@@ -105,41 +94,41 @@ gzvm_slot *gzvm_find_slot_by_addr(uint64_t addr)
 
 static gzvm_slot *gzvm_get_free_slot(GZVMState *s)
 {
-    for (guint i = 0; i < GZVM_MAX_MEM_SLOTS; i++) {
-        if (s->slots[i].size == 0) {
+    for (guint i = 0; i < s->nr_slots_allocated; i++)
+        if (!s->slots[i].size)
             return &s->slots[i];
-        }
-    }
-    return NULL;
+    uint32_t old = s->nr_slots_allocated;
+    uint32_t nslots = MIN(old * 2, GZVM_MAX_MEM_SLOTS);
+    if (nslots <= old) return NULL;
+    s->slots = g_renew(gzvm_slot, s->slots, nslots);
+    memset(s->slots + old, 0, (nslots - old) * sizeof(gzvm_slot));
+    s->sorted_ids = g_renew(gint, s->sorted_ids, nslots);
+    for (uint32_t i = old; i < nslots; i++) s->slots[i].id = i;
+    s->nr_slots_allocated = nslots;
+    return &s->slots[old];
 }
 
 static void gzvm_update_sorted_ids(GZVMState *s, int slot_id, bool add)
 {
     int pos;
-
     if (add) {
-        uint64_t gpa = s->slots[slot_id].start;
-        pos = 0;
-        while (pos < (int)s->nr_active_slots &&
-               s->slots[s->sorted_ids[pos]].start < gpa) {
-            pos++;
-        }
-        if (pos < (int)s->nr_active_slots) {
-            memmove(&s->sorted_ids[pos + 1], &s->sorted_ids[pos],
-                    (s->nr_active_slots - pos) * sizeof(gint));
-        }
+        pos = gzvm_find_first_ge(s, s->slots[slot_id].start);
+        memmove(&s->sorted_ids[pos + 1], &s->sorted_ids[pos],
+                (s->nr_active_slots - (uint32_t)pos) * sizeof(gint));
         s->sorted_ids[pos] = slot_id;
         s->nr_active_slots++;
     } else {
-        for (pos = 0; pos < (int)s->nr_active_slots; pos++) {
+        uint64_t gpa = s->slots[slot_id].start;
+        pos = gzvm_find_first_ge(s, gpa);
+        while (pos < (int)s->nr_active_slots &&
+               s->slots[s->sorted_ids[pos]].start == gpa) {
             if (s->sorted_ids[pos] == slot_id) {
-                break;
+                memmove(&s->sorted_ids[pos], &s->sorted_ids[pos + 1],
+                        (s->nr_active_slots - (uint32_t)pos - 1) * sizeof(gint));
+                s->nr_active_slots--;
+                return;
             }
-        }
-        if (pos < (int)s->nr_active_slots) {
-            memmove(&s->sorted_ids[pos], &s->sorted_ids[pos + 1],
-                    (s->nr_active_slots - pos - 1) * sizeof(gint));
-            s->nr_active_slots--;
+            pos++;
         }
     }
 }
@@ -246,7 +235,8 @@ static int gzvm_add_mem(GZVMState *s, MemoryRegionSection *section,
     return gzvm_add_mem_slot(s, base_hva, base_gpa, total_size, flags);
 }
 
-static void gzvm_set_phys_mem(GZVMState *s, MemoryRegionSection *section, bool add)
+static void gzvm_set_phys_mem_locked(GZVMState *s,
+                                     MemoryRegionSection *section, bool add)
 {
     MemoryRegion *area = section->mr;
     uint32_t flags = GZVM_USER_MEM_REGION_GUEST_MEM;
@@ -255,61 +245,77 @@ static void gzvm_set_phys_mem(GZVMState *s, MemoryRegionSection *section, bool a
     uint64_t section_size = int128_get64(section->size);
 
     if (!memory_region_is_ram(area) && !memory_region_is_rom(area) &&
-        !memory_region_is_romd(area)) {
+        !memory_region_is_romd(area))
         return;
-    }
 
     if (!section_size || section_start > UINT64_MAX - section_size ||
         !QEMU_IS_ALIGNED(section_size, page_size) ||
-        !QEMU_IS_ALIGNED(section_start, page_size)) {
+        !QEMU_IS_ALIGNED(section_start, page_size))
         return;
-    }
 
     if (section_start < s->ram_base &&
         !memory_region_is_rom(area) && !memory_region_is_romd(area)) {
         return;
-    }
 
     if (!add) {
-        gzvm_slots_lock(s);
         gzvm_remove_overlap_slots_locked(s, section_start, section_size);
-        gzvm_slots_unlock(s);
         return;
     }
 
-    gzvm_slots_lock(s);
     if (gzvm_remove_overlap_slots_locked(s, section_start, section_size)) {
         error_report("gzvm: failed to remove overlapping memory slots for "
                      "region [0x%" PRIx64 ", 0x%" PRIx64 ")",
                      section_start, section_start + section_size);
-        gzvm_slots_unlock(s);
         return;
     }
 
-    if (gzvm_add_mem(s, section, flags)) {
-        gzvm_slots_unlock(s);
-        return;
-    }
-
-    gzvm_slots_unlock(s);
+    gzvm_add_mem(s, section, flags);
 }
 
 static void gzvm_region_add(MemoryListener *listener, MemoryRegionSection *section)
 {
-    AccelState *accel = current_accel();
-    if (!accel) {
-        return;
-    }
-    gzvm_set_phys_mem(GZVM_STATE(accel), section, true);
+    GZVMState *s = GZVM_STATE(current_accel());
+    GZVMMemoryUpdate *u;
+    if (!s) return;
+    u = g_new0(GZVMMemoryUpdate, 1);
+    u->section = *section;
+    QSIMPLEQ_INSERT_TAIL(&s->transaction_add, u, next);
 }
 
 static void gzvm_region_del(MemoryListener *listener, MemoryRegionSection *section)
 {
-    AccelState *accel = current_accel();
-    if (!accel) {
-        return;
+    GZVMState *s = GZVM_STATE(current_accel());
+    GZVMMemoryUpdate *u;
+    if (!s) return;
+    u = g_new0(GZVMMemoryUpdate, 1);
+    u->section = *section;
+    QSIMPLEQ_INSERT_TAIL(&s->transaction_del, u, next);
+}
+
+static void gzvm_drain_updates(GZVMState *s, bool add)
+{
+    QSIMPLEQ_HEAD(, GZVMMemoryUpdate) *q = add
+        ? (void *)&s->transaction_add
+        : (void *)&s->transaction_del;
+    GZVMMemoryUpdate *u;
+    while ((u = QSIMPLEQ_FIRST(q))) {
+        QSIMPLEQ_REMOVE_HEAD(q, next);
+        gzvm_set_phys_mem_locked(s, &u->section, add);
+        g_free(u);
     }
-    gzvm_set_phys_mem(GZVM_STATE(accel), section, false);
+}
+
+static void gzvm_region_commit(MemoryListener *listener)
+{
+    GZVMState *s = GZVM_STATE(current_accel());
+    if (!s) return;
+    if (QSIMPLEQ_EMPTY(&s->transaction_add) &&
+        QSIMPLEQ_EMPTY(&s->transaction_del))
+        return;
+    gzvm_slots_lock(s);
+    gzvm_drain_updates(s, false);
+    gzvm_drain_updates(s, true);
+    gzvm_slots_unlock(s);
 }
 
 static MemoryListener gzvm_memory_listener = {
@@ -317,6 +323,7 @@ static MemoryListener gzvm_memory_listener = {
     .priority = MEMORY_LISTENER_PRIORITY_ACCEL,
     .region_add = gzvm_region_add,
     .region_del = gzvm_region_del,
+    .commit = gzvm_region_commit,
 };
 
 static int gzvm_create_vgic_device(GZVMState *s,
@@ -435,17 +442,21 @@ int gzvm_create_vm(void)
 
     gzvm_probe_caps(s);
 
-    s->slots = g_new0(gzvm_slot, GZVM_MAX_MEM_SLOTS);
-    s->sorted_ids = g_new0(gint, GZVM_MAX_MEM_SLOTS);
+    s->nr_slots_allocated = 32;
+    s->slots = g_new0(gzvm_slot, s->nr_slots_allocated);
+    s->sorted_ids = g_new0(gint, s->nr_slots_allocated);
     qemu_mutex_init(&s->slots_lock);
     s->nr_active_slots = 0;
-    for (int i = 0; i < GZVM_MAX_MEM_SLOTS; ++i) {
+    for (uint32_t i = 0; i < s->nr_slots_allocated; ++i) {
         s->slots[i].id = i;
     }
+    QSIMPLEQ_INIT(&s->transaction_add);
+    QSIMPLEQ_INIT(&s->transaction_del);
 
     gzvm_install_sigsegv_handler();
     memory_listener_register(&gzvm_memory_listener, &address_space_memory);
     memory_listener_register(&gzvm_ioeventfd_listener, &address_space_memory);
+    memory_listener_register(&gzvm_io_listener, &address_space_io);
 
     return gzvm_create_vgic_devices(s);
 }
