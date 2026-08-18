@@ -33,3 +33,20 @@ void gzvm_init_cpu_signals(void)
     sigdelset(&set, SIG_IPI);
     pthread_sigmask(SIG_SETMASK, &set, NULL);
 }
+
+void gzvm_eat_signals(CPUState *cpu)
+{
+    struct timespec ts = { 0, 0 };
+    sigset_t waitset, chkset;
+    siginfo_t siginfo;
+
+    qatomic_set(&GZVCPU(cpu)->run->immediate_exit, 0);
+
+    sigemptyset(&waitset);
+    sigaddset(&waitset, SIG_IPI);
+    do {
+        if (sigtimedwait(&waitset, &siginfo, &ts) < 0 &&
+            errno != EAGAIN && errno != EINTR)
+            break;
+    } while (sigpending(&chkset) == 0 && sigismember(&chkset, SIG_IPI));
+}
