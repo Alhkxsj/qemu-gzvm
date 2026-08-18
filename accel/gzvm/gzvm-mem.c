@@ -36,31 +36,19 @@ static int gzvm_find_first_ge(GZVMState *s, uint64_t addr)
     return first_ge;
 }
 
-static gzvm_slot *gzvm_find_overlap_slot(GZVMState *s, uint64_t start, uint64_t size)
+static gzvm_slot *gzvm_find_matching_slot_locked(GZVMState *s,
+                                                  uint64_t start,
+                                                  uint64_t size, void *mem)
 {
-    uint64_t end;
-    int first_ge = gzvm_find_first_ge(s, start);
+    gzvm_assert_mutex_locked(&s->slots_lock);
 
-    if (!size || start > UINT64_MAX - size) {
-        return NULL;
-    }
+    for (guint i = 0; i < s->nr_active_slots; i++) {
+        gzvm_slot *slot = &s->slots[s->sorted_ids[i]];
 
-    end = start + size;
-
-    if (first_ge < (int)s->nr_active_slots) {
-        gzvm_slot *slot = &s->slots[s->sorted_ids[first_ge]];
-        if (slot->start < end) {
+        if (slot->start == start && slot->size == size && slot->mem == mem) {
             return slot;
         }
     }
-
-    if (first_ge > 0) {
-        gzvm_slot *slot = &s->slots[s->sorted_ids[first_ge - 1]];
-        if (slot->start <= start && slot->size > start - slot->start) {
-            return slot;
-        }
-    }
-
     return NULL;
 }
 
@@ -177,16 +165,14 @@ static int gzvm_remove_mem_slot_locked(GZVMState *s, gzvm_slot *slot)
     return 0;
 }
 
-static int gzvm_remove_overlap_slots_locked(GZVMState *s, uint64_t start,
-                                             uint64_t size)
+static int gzvm_remove_matching_slot_locked(GZVMState *s, uint64_t start,
+                                             uint64_t size, void *mem)
 {
     gzvm_slot *slot;
 
-    while ((slot = gzvm_find_overlap_slot(s, start, size))) {
-        int ret = gzvm_remove_mem_slot_locked(s, slot);
-        if (ret) {
-            return ret;
-        }
+    slot = gzvm_find_matching_slot_locked(s, start, size, mem);
+    if (slot) {
+        return gzvm_remove_mem_slot_locked(s, slot);
     }
     return 0;
 }
@@ -243,6 +229,8 @@ static void gzvm_set_phys_mem_locked(GZVMState *s,
     uint64_t page_size = qemu_real_host_page_size();
     uint64_t section_start = section->offset_within_address_space;
     uint64_t section_size = int128_get64(section->size);
+    uint8_t *section_hva;
+    gzvm_slot *slot;
 
     if (!memory_region_is_ram(area) && !memory_region_is_rom(area) &&
         !memory_region_is_romd(area))
@@ -256,16 +244,23 @@ static void gzvm_set_phys_mem_locked(GZVMState *s,
     if (section_start < s->ram_base &&
         !memory_region_is_rom(area) && !memory_region_is_romd(area)) {
         return;
+    }
+
+    section_hva = memory_region_get_ram_ptr(area) +
+                  section->offset_within_region;
 
     if (!add) {
-        gzvm_remove_overlap_slots_locked(s, section_start, section_size);
+        slot = gzvm_find_matching_slot_locked(s, section_start, section_size,
+                                               section_hva);
+        if (slot) {
+            gzvm_remove_mem_slot_locked(s, slot);
+        }
         return;
     }
 
-    if (gzvm_remove_overlap_slots_locked(s, section_start, section_size)) {
-        error_report("gzvm: failed to remove overlapping memory slots for "
-                     "region [0x%" PRIx64 ", 0x%" PRIx64 ")",
-                     section_start, section_start + section_size);
+    slot = gzvm_find_matching_slot_locked(s, section_start, section_size,
+                                           section_hva);
+    if (slot) {
         return;
     }
 
