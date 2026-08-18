@@ -48,6 +48,7 @@ static int gzvm_cpu_exec(CPUState *cpu)
     bql_lock();
     if (ret < 0) {
         if (errno == EINTR || errno == EAGAIN) {
+            gzvm_eat_signals(cpu);
             return EXCP_INTERRUPT;
         }
         error_report("gzvm: GZVM_RUN failed: %s (errno=%d)", strerror(errno), errno);
@@ -115,6 +116,21 @@ void gzvm_cpu_synchronize_post_reset(CPUState *cpu)
     run_on_cpu(cpu, do_gzvm_cpu_synchronize_post_reset, RUN_ON_CPU_NULL);
 }
 
+static void do_gzvm_cpu_synchronize_post_init(CPUState *cpu,
+                                              run_on_cpu_data arg)
+{
+    int ret = gzvm_arch_put_registers(cpu, 1);
+    if (ret) {
+        warn_report("gzvm: VCPU%u put_registers(post_init) failed with %d",
+                    cpu->cpu_index, ret);
+    }
+}
+
+void gzvm_cpu_synchronize_post_init(CPUState *cpu)
+{
+    run_on_cpu(cpu, do_gzvm_cpu_synchronize_post_init, RUN_ON_CPU_NULL);
+}
+
 static bool gzvm_cpu_thread_init(CPUState *cpu)
 {
     rcu_register_thread();
@@ -171,7 +187,7 @@ void *gzvm_cpu_thread_fn(void *arg)
                 vm_stop(RUN_STATE_INTERNAL_ERROR);
             }
         }
-        qemu_wait_io_event(cpu);
+        qemu_wait_io_event_common(cpu);
     } while (!cpu->unplug || cpu_can_run(cpu));
 
     gzvm_cpu_thread_cleanup(cpu);
