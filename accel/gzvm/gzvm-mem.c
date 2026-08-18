@@ -165,18 +165,6 @@ static int gzvm_remove_mem_slot_locked(GZVMState *s, gzvm_slot *slot)
     return 0;
 }
 
-static int gzvm_remove_matching_slot_locked(GZVMState *s, uint64_t start,
-                                             uint64_t size, void *mem)
-{
-    gzvm_slot *slot;
-
-    slot = gzvm_find_matching_slot_locked(s, start, size, mem);
-    if (slot) {
-        return gzvm_remove_mem_slot_locked(s, slot);
-    }
-    return 0;
-}
-
 
 static int gzvm_add_mem_slot(GZVMState *s, uint8_t *hva, uint64_t gpa,
                               uint64_t size,
