@@ -4,8 +4,15 @@
 #include "qemu/accel.h"
 #include "qemu/typedefs.h"
 #include "qemu/thread.h"
+#include "qemu/queue.h"
 #include "system/accel-ops.h"
+#include "exec/memory.h"
 #include "linux-headers/linux/gzvm.h"
+
+typedef struct GZVMMemoryUpdate {
+    MemoryRegionSection section;
+    QSIMPLEQ_ENTRY(GZVMMemoryUpdate) next;
+} GZVMMemoryUpdate;
 
 typedef struct gzvm_slot {
     uint64_t start;
@@ -23,6 +30,7 @@ struct GZVMState {
     gzvm_slot *slots;
     gint *sorted_ids;
     uint32_t nr_active_slots;
+    uint32_t nr_slots_allocated;
     int fd;
     int vmfd;
     uint64_t dtb_start;
@@ -31,6 +39,8 @@ struct GZVMState {
     uint64_t gic_redist_base;
     uint64_t gic_redist_size;
     uint64_t ram_base;
+    QSIMPLEQ_HEAD(, GZVMMemoryUpdate) transaction_add;
+    QSIMPLEQ_HEAD(, GZVMMemoryUpdate) transaction_del;
 };
 
 struct GZVCPUState {
@@ -48,6 +58,7 @@ void *gzvm_cpu_thread_fn(void *arg);
 int gzvm_arch_put_registers(CPUState *cs, int level);
 int gzvm_arch_get_registers(CPUState *cs, int level);
 void gzvm_cpu_synchronize_post_reset(CPUState *cpu);
+void gzvm_cpu_synchronize_post_init(CPUState *cpu);
 gzvm_slot *gzvm_find_slot_by_addr(uint64_t addr);
 
 #endif
