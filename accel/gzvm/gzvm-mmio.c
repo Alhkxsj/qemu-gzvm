@@ -10,41 +10,14 @@
 #include "linux-headers/linux/gzvm.h"
 #include "gzvm-internal.h"
 
-static MemTxAttrs gzvm_mmio_attrs(hwaddr addr)
-{
-    gzvm_slot *slot = gzvm_find_slot_by_addr(addr);
-    if (slot && slot->mem) {
-        return MEMTXATTRS_UNSPECIFIED;
-    }
-    return (MemTxAttrs) { .secure = true };
-}
-
-static gzvm_slot *gzvm_find_slot_for_mmio_locked(GZVMState *s, hwaddr addr,
-                                                   hwaddr *slot_addr_out)
-{
-    gzvm_slot *slot = gzvm_find_slot_by_addr_locked(s, addr);
-    if (slot) {
-        *slot_addr_out = addr;
-        return slot;
-    }
-
-#if defined(GZVM_IPA_WORKAROUND)
-    if ((addr >> 28) == 0x4) {
-        hwaddr corrected = (addr & 0x0FFFFFFF) | 0x04000000;
-        slot = gzvm_find_slot_by_addr_locked(s, corrected);
-        if (slot) {
-            *slot_addr_out = corrected;
-            warn_report_once("gzvm: MMIO IPA corrected from 0x%" PRIx64 " to 0x%" PRIx64 " (bit-30/bit-26 workaround)", addr, corrected);
-            return slot;
-        }
-    }
-#endif
-    return NULL;
-}
-
 int gzvm_handle_mmio_exit(CPUState *cpu, struct gzvm_vcpu_run *run)
 {
     hwaddr addr = run->mmio.phys_addr;
+    AccelState *accel = current_accel();
+    GZVMState *s = accel ? GZVM_STATE(accel) : NULL;
+    uint8_t *slot_mem = NULL;
+    uint64_t slot_start = 0, slot_size = 0;
+    MemTxAttrs attrs = { .secure = true };
     MemTxResult r;
 
     if (run->mmio.size > 8) {
@@ -56,36 +29,45 @@ int gzvm_handle_mmio_exit(CPUState *cpu, struct gzvm_vcpu_run *run)
         return 0;
     }
 
-    r = address_space_rw(&address_space_memory, addr,
-                         gzvm_mmio_attrs(addr),
+    if (s) {
+        gzvm_slots_lock(s);
+        gzvm_slot *slot = gzvm_find_slot_by_addr_locked(s, addr);
+#if defined(GZVM_IPA_WORKAROUND)
+        if (!slot && (addr >> 28) == 0x4) {
+            hwaddr corrected = (addr & 0x0FFFFFFF) | 0x04000000;
+            slot = gzvm_find_slot_by_addr_locked(s, corrected);
+            if (slot) {
+                warn_report_once("gzvm: MMIO IPA corrected 0x%" PRIx64
+                                 " to 0x%" PRIx64, addr, corrected);
+                addr = corrected;
+            }
+        }
+#endif
+        if (slot && slot->mem) {
+            attrs = MEMTXATTRS_UNSPECIFIED;
+            slot_mem = slot->mem;
+            slot_start = slot->start;
+            slot_size = slot->size;
+        }
+        gzvm_slots_unlock(s);
+    }
+
+    r = address_space_rw(&address_space_memory, addr, attrs,
                          run->mmio.data, run->mmio.size, run->mmio.is_write);
     if (r == MEMTX_OK) {
         return 0;
     }
 
-    {
-        AccelState *accel = current_accel();
-        GZVMState *s = accel ? GZVM_STATE(accel) : NULL;
-        if (s) {
-            gzvm_slots_lock(s);
-            hwaddr slot_addr;
-            gzvm_slot *slot = gzvm_find_slot_for_mmio_locked(s, addr,
-                                                              &slot_addr);
-            if (slot) {
-                uint64_t offset = slot_addr - slot->start;
-                if (offset < slot->size) {
-                    size_t xlen = MIN((uint64_t)run->mmio.size,
-                                      slot->size - offset);
-                    if (run->mmio.is_write) {
-                        memcpy(slot->mem + offset, run->mmio.data, xlen);
-                    } else {
-                        memcpy(run->mmio.data, slot->mem + offset, xlen);
-                    }
-                    gzvm_slots_unlock(s);
-                    return 0;
-                }
+    if (slot_mem) {
+        uint64_t offset = addr - slot_start;
+        if (offset < slot_size) {
+            size_t xlen = MIN((uint64_t)run->mmio.size, slot_size - offset);
+            if (run->mmio.is_write) {
+                memcpy(slot_mem + offset, run->mmio.data, xlen);
+            } else {
+                memcpy(run->mmio.data, slot_mem + offset, xlen);
             }
-            gzvm_slots_unlock(s);
+            return 0;
         }
     }
 
