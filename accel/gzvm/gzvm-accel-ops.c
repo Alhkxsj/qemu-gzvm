@@ -102,7 +102,7 @@ static void gzvm_accel_ops_class_init(ObjectClass *oc, void *data)
     ops->kick_vcpu_thread = gzvm_kick_vcpu_thread;
     ops->cpu_thread_is_idle = gzvm_vcpu_thread_is_idle;
     ops->synchronize_post_reset = gzvm_cpu_synchronize_post_reset;
-    ops->synchronize_post_init = gzvm_cpu_synchronize_post_reset;
+    ops->synchronize_post_init = gzvm_cpu_synchronize_post_init;
 }
 
 static const TypeInfo gzvm_accel_ops_type = {
