@@ -187,7 +187,7 @@ void *gzvm_cpu_thread_fn(void *arg)
                 vm_stop(RUN_STATE_INTERNAL_ERROR);
             }
         }
-        qemu_wait_io_event_common(cpu);
+        qemu_wait_io_event(cpu);
     } while (!cpu->unplug || cpu_can_run(cpu));
 
     gzvm_cpu_thread_cleanup(cpu);
