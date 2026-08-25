@@ -196,7 +196,7 @@ static void *jni_log_thread(void *opaque)
     size_t size = 0;
     ssize_t length;
 
-    pthread_setname_np(pthread_self(), "qemu-logcat");
+    pthread_setname_np(pthread_self(), "logcat");
     stream = fdopen(log->read_fd, "r");
     if (!stream) {
         close(log->read_fd);
