@@ -15,6 +15,12 @@ extern bool gzvm_allowed;
 
 #define gzvm_enabled() (gzvm_allowed)
 
+/*
+ * Whether VIRTIO_RING_F_EVENT_IDX may be offered to guests.  False by default
+ * under gzvm; see the comment on the definition in accel/gzvm/gzvm-accel-ops.c.
+ */
+bool gzvm_event_idx_allowed(void);
+
 int gzvm_arm_set_dtb(uint64_t dtb_start, uint64_t dtb_size);
 void gzvm_set_gic_bases(uint64_t dist_base, uint64_t redist_base,
                         uint64_t redist_size);

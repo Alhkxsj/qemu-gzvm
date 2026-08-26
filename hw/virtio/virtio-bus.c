@@ -6,6 +6,7 @@
 #include "hw/virtio/virtio-bus.h"
 #include "hw/virtio/virtio.h"
 #include "exec/address-spaces.h"
+#include "system/gzvm.h"
 
 
 #ifdef DEBUG_VIRTIO_BUS
@@ -42,6 +43,20 @@ void virtio_bus_device_plugged(VirtIODevice *vdev, Error **errp)
     if (local_err) {
         error_propagate(errp, local_err);
         return;
+    }
+
+    /*
+     * Withdraw VIRTIO_RING_F_EVENT_IDX under gzvm, from every virtio device on
+     * every bus, so that no guest negotiates the index-based notification
+     * handshakes.  See gzvm_event_idx_allowed() for why they do not work here.
+     *
+     * Doing this on the bus rather than per device is deliberate: this is the one
+     * point where host_features is final for all of them, and the
+     * VIRTIO_F_IOMMU_PLATFORM handling below is the precedent for adjusting them
+     * from here.
+     */
+    if (gzvm_enabled() && !gzvm_event_idx_allowed()) {
+        virtio_clear_feature(&vdev->host_features, VIRTIO_RING_F_EVENT_IDX);
     }
 
     if (klass->device_plugged != NULL) {

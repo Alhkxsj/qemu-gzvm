@@ -12,6 +12,77 @@
 
 bool gzvm_allowed;
 
+/*
+ * Whether to offer VIRTIO_RING_F_EVENT_IDX to guests.  Off under gzvm; set
+ * GZVM_EVENT_IDX=on to offer it anyway, which reproduces the hang below.
+ *
+ * Both of virtio's split-ring handshakes have two forms, and which pair gets
+ * negotiated is decided by this one feature bit:
+ *
+ *   guest -> host kick    EVENT_IDX: vring_need_event(used->avail_event, ...),
+ *                                    an index *we* wrote into guest memory
+ *                         flags:     !(used->flags & VRING_USED_F_NO_NOTIFY)
+ *
+ *   host -> guest notify  EVENT_IDX: vring_need_event(avail->used_event, ...),
+ *                                    an index the *guest* wrote
+ *                         flags:     !(avail->flags & VRING_AVAIL_F_NO_INTERRUPT)
+ *
+ * The flag forms carry their own recovery.  Whoever re-enables re-examines the
+ * ring afterwards -- virtqueue_enable_cb() in the guest is literally
+ * enable_cb_prepare() followed by !virtqueue_poll(), and the device side does the
+ * same when it calls virtio_queue_set_notification(vq, 1) and then re-checks
+ * virtio_queue_empty().  Read a stale flag and you lose a notification, then the
+ * re-poll finds the work anyway.
+ *
+ * The index forms have no such step.  Each side trusts that it is reading an
+ * index the peer wrote recently enough, with nothing to fall back on, and both
+ * indices live in memory the hypervisor maps rather than we do.  Lose a kick and
+ * QEMU sits in virtqueue_pop() with an empty avail ring waiting for a doorbell
+ * that will never ring; lose a notification and completed requests sit in the
+ * used ring while a level-triggered INTx line stays where it is.  Neither
+ * recovers, and with no ITS in this tree every virtio-pci device is on INTx.
+ *
+ * The evidence for taking the bit away rather than working around it from the
+ * host side: a temporary patch that forced a notification on every single push --
+ * a strict superset of the notifications the flag form produces -- booted -smp 8
+ * only occasionally, while event_idx=off on the command line booted every time.
+ * No host-side fix can do better, because the kick direction is the guest reading
+ * a stale index and deciding not to ring the doorbell; there is no point in QEMU
+ * where that decision can be observed, let alone corrected.
+ *
+ * Nor is this the guest's barriers being too weak.  Offering
+ * VIRTIO_F_ORDER_PLATFORM sets vq->weak_barriers = false in the guest, which on
+ * arm64 turns virtio_mb() from dmb(ish) into dsb(sy) and virtio_rmb()/wmb() from
+ * dmb(ishld)/dmb(ishst) into dmb(oshld)/dmb(oshst) -- Inner Shareable becomes
+ * Outer Shareable or full system.  With that bit and EVENT_IDX both on, -smp 8
+ * still hung.  So the guest cannot reach us with any barrier it has, which points
+ * at GZ's stage-2 shareability or cacheability being wrong outright rather than
+ * merely under-ordered.  That is not reachable from here, and not from the host
+ * driver either: drivers/virt/geniezone only hands GZ an address range and never
+ * touches guest RAM attributes.  gz.img is a blob.  Withdrawing the bit is the
+ * fix.
+ *
+ * More vCPUs mean more concurrent ring traffic and more chances to lose one,
+ * which is why -smp 2 was reliable, 3 and 4 marginal, and 5 and up never
+ * finished booting.
+ */
+bool gzvm_event_idx_allowed(void)
+{
+    static int allowed = -1;
+
+    if (allowed < 0) {
+        const char *env = getenv("GZVM_EVENT_IDX");
+
+        allowed = env && (!strcmp(env, "on") || !strcmp(env, "1"));
+        if (allowed) {
+            warn_report("gzvm: offering VIRTIO_RING_F_EVENT_IDX; expect hangs "
+                        "at -smp 4 and above");
+        }
+    }
+
+    return allowed != 0;
+}
+
 static int gzvm_init(MachineState *ms)
 {
     GZVMState *s = GZVM_STATE(current_accel());
