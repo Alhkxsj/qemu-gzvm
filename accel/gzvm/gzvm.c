@@ -46,6 +46,31 @@ static int gzvm_cpu_exec(CPUState *cpu)
     }
     ret = gzvm_vcpu_ioctl(cpu, GZVM_RUN, run);
     bql_lock();
+
+    /*
+     * Clear the kick.  cpu_exit() in hw/core/cpu-common.c sets exit_request and
+     * nothing in the tree ever clears it, so without this the first kick a vCPU
+     * receives latches for the life of the VM: every later entry here calls
+     * gzvm_cpu_kick_self(), which sets run->immediate_exit, and the host driver
+     * honours that at the top of GZVM_RUN ("if (vcpu->run->immediate_exit == 1)"
+     * in gzvm_vcpu.c) and returns without entering the guest.
+     *
+     * That vCPU then makes no forward progress at all, and it does so at full
+     * speed: gzvm_eat_signals() clears immediate_exit, we return EXCP_INTERRUPT,
+     * gzvm_vcpu_thread_is_idle() returns false so qemu_wait_io_event() does not
+     * park, and we come straight back here to set immediate_exit again.  Each
+     * turn of that loop takes and drops the BQL, and the BQL is global, so a
+     * single stuck vCPU starves every other vCPU, the main loop and the
+     * iothreads.  Nothing deadlocks, so the guest reports no hung tasks and no
+     * RCU stalls -- it just runs orders of magnitude too slowly, and the more
+     * vCPUs there are the likelier it is that at least one has been kicked.
+     *
+     * Upstream kvm_cpu_exec() clears exit_request at the end of every call for
+     * exactly this reason.  Done here rather than after the exit_reason switch
+     * below because that switch returns from many places.
+     */
+    qatomic_set(&cpu->exit_request, 0);
+
     if (ret < 0) {
         if (errno == EINTR || errno == EAGAIN) {
             gzvm_eat_signals(cpu);
@@ -187,6 +212,19 @@ void *gzvm_cpu_thread_fn(void *arg)
                 vm_stop(RUN_STATE_INTERNAL_ERROR);
             }
         }
+        /*
+         * qemu_wait_io_event(), not qemu_wait_io_event_common(): the latter
+         * never blocks, so while the VM is not yet running (cpu_can_run() is
+         * false during machine init, when runstate is still PRELAUNCH) this
+         * loop would spin without ever reaching gzvm_cpu_exec() -- the only
+         * place that releases the BQL.  The vCPU thread then holds the BQL
+         * forever and the main thread can never finish machine init or reach
+         * vm_start(), so the VM hangs before any firmware or kernel runs.
+         *
+         * qemu_wait_io_event() parks on cpu->halt_cond while
+         * cpu_thread_is_idle() holds, which releases the BQL; resume_all_vcpus()
+         * clears cpu->stopped and broadcasts halt_cond to wake us.
+         */
         qemu_wait_io_event(cpu);
     } while (!cpu->unplug || cpu_can_run(cpu));
 
