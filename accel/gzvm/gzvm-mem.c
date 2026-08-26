@@ -2,6 +2,7 @@
 #include <sys/ioctl.h>
 #include "qemu/error-report.h"
 #include "exec/cpu-common.h"
+#include "hw/boards.h"
 #include "hw/core/cpu.h"
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
@@ -153,8 +154,7 @@ static int gzvm_remove_mem_slot_locked(GZVMState *s, gzvm_slot *slot)
 
     gzvm_assert_mutex_locked(&s->slots_lock);
 
-    ret = gzvm_set_memory_region_locked(s, slot->id, 0,
-                                        slot->start, 0, slot->mem);
+    ret = gzvm_set_memory_region_locked(s, slot->id, 0, 0, 0, NULL);
     if (ret) {
         error_report("gzvm: remove memory slot %u failed: %s (errno=%d)",
                      slot->id, strerror(errno), errno);
@@ -213,6 +213,7 @@ static void gzvm_set_phys_mem_locked(GZVMState *s,
                                      MemoryRegionSection *section, bool add)
 {
     MemoryRegion *area = section->mr;
+    MachineState *ms = MACHINE(qdev_get_machine());
     uint32_t flags = GZVM_USER_MEM_REGION_GUEST_MEM;
     uint64_t page_size = qemu_real_host_page_size();
     uint64_t section_start = section->offset_within_address_space;
@@ -229,8 +230,12 @@ static void gzvm_set_phys_mem_locked(GZVMState *s,
         !QEMU_IS_ALIGNED(section_start, page_size))
         return;
 
-    if (section_start < s->ram_base &&
-        !memory_region_is_rom(area) && !memory_region_is_romd(area)) {
+    if (memory_region_is_rom(area) || memory_region_is_romd(area)) {
+        if (section_start) {
+            return;
+        }
+    } else if (section_start < s->ram_base ||
+               section_start + section_size > s->ram_base + ms->ram_size) {
         return;
     }
 
@@ -250,6 +255,24 @@ static void gzvm_set_phys_mem_locked(GZVMState *s,
                                            section_hva);
     if (slot) {
         return;
+    }
+
+    /*
+     * The kernel driver forwards this flags word verbatim to the hypervisor as
+     * the MEMREGION_PURPOSE hypercall argument (see
+     * gzvm_arch_memregion_purpose() in arch/arm64/geniezone/vm.c), so it is not
+     * an advisory hint -- it tells GZ what the region *is*.  A read-only or
+     * ROMD region is the firmware image (-bios installs virt.gzvm-firmware via
+     * memory_region_init_rom_nomigrate(), which sets mr->readonly), and GZ
+     * expects it to be declared as PROTECT_FW rather than ordinary guest RAM.
+     * Declaring it as GUEST_MEM leaves the hypervisor's idea of the region's
+     * purpose wrong for the whole life of the VM.
+     *
+     * A direct -kernel boot has no read-only region at all, which is why only
+     * the UEFI path is affected.
+     */
+    if (area->readonly || area->rom_device) {
+        flags = GZVM_USER_MEM_REGION_PROTECT_FW;
     }
 
     gzvm_add_mem(s, section, flags);

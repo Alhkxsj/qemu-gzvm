@@ -87,6 +87,8 @@ typedef int64_t  __s64;
 #define GZVM_CREATE_VCPU           _IO(GZVM_IOC_MAGIC,   0x41)
 
 #define GZVM_USER_MEM_REGION_GUEST_MEM	(1UL << 0)
+#define GZVM_USER_MEM_REGION_PROTECT_FW	(1UL << 1)
+#define GZVM_USER_MEM_REGION_STATIC_SWIOTLB	(1UL << 2)
 
 struct gzvm_userspace_memory_region {
 	__u32 slot;
