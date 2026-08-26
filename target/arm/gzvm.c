@@ -11,6 +11,7 @@
 #ifdef CONFIG_LINUX
 #include <sys/auxv.h>
 #include <asm/hwcap.h>
+#include <sched.h>
 #endif
 #ifndef HWCAP_CPUID
 #define HWCAP_CPUID (1 << 11)
@@ -206,6 +207,43 @@ int gzvm_arch_put_registers(CPUState *cs, int level)
     ARMCPU *cpu = ARM_CPU(cs);
     CPUARMState *env = &cpu->env;
 
+    /*
+     * The GZ hypervisor creates every secondary vCPU in the PSCI powered-off
+     * state and owns its entry state: PC and x0 are latched by the hypervisor
+     * when the guest issues PSCI CPU_ON.  Programming any register other than
+     * PSTATE from here writes into a powered-off vCPU, which the hypervisor
+     * rejects, and the ID registers are equally off limits.  The
+     * hypervisor-side power state then stops matching what PSCI expects and
+     * the later CPU_ON fails, so the guest can only ever bring up CPU 0.
+     *
+     * Secondaries therefore get PSTATE and nothing else; the rest is the
+     * hypervisor's to set at CPU_ON time.  This matches crosvm and the
+     * GenieZone reference accelerator.
+     *
+     * Pushing the ID registers to the secondaries as well was tried and GZ
+     * rejects it: every secondary returns EINVAL from the first
+     * GZVM_SET_ONE_REG of the set ("failed to set CPU ID register
+     * ID_AA64PFR0_EL1: Invalid argument", once per vCPU per sync point).  So
+     * the guest necessarily sees vCPU 0's ID registers -- ours -- and the
+     * secondaries' -- GZ's.  On this host that shows up in the guest as
+     *
+     *   CPU features: SANITY CHECK: Unexpected variation in SYS_MPAMIDR_EL1.
+     *                 Boot CPU: 0x240000010006003f, CPU1: 0x0000000000000000
+     *
+     * i.e. the boot CPU sees the hardware MPAMIDR_EL1 and the secondaries see
+     * zero, which taints the guest with TAINT_CPU_OUT_OF_SPEC.  MPAM is a
+     * partitioning/QoS feature, so the guest just disables it and carries on;
+     * it is not worth chasing.  SYS_CTR_EL0 -- the one that would matter, since
+     * cache_line_size() and all DMA cache maintenance derive from it -- is
+     * uniform on this SoC (0x49444c004, 64-byte lines everywhere), and the host
+     * kernel confirms it by never setting TAINT_CPU_OUT_OF_SPEC itself.
+     */
+    if (cs != first_cpu) {
+        val = PSTATE_DAIF | PSTATE_MODE_EL1h;
+        return gzvm_set_one_reg_err(cs, GZVM_CORE_REG(GZVM_REGS_PSTATE),
+                                    &val, "pstate");
+    }
+
     gzvm_arch_set_id_regs(cs);
 
     val = PSTATE_DAIF | PSTATE_MODE_EL1h;
@@ -213,10 +251,6 @@ int gzvm_arch_put_registers(CPUState *cs, int level)
                                &val, "pstate");
     if (ret) {
         return ret;
-    }
-
-    if (cs->cpu_index != 0) {
-        return 0;
     }
 
     val = env->pc;
@@ -359,7 +393,7 @@ static uint64_t gzvm_arm_host_features_from_idregs(ARMISARegisters *isar)
     return features;
 }
 
-static bool gzvm_arm_read_host_cpu_features(ARMCPU *cpu)
+static bool gzvm_probe_host_cpu_features(ARMCPU *cpu)
 {
     ARMISARegisters *isar = &cpu->isar;
     struct sigaction sa, old;
@@ -404,6 +438,86 @@ static bool gzvm_arm_read_host_cpu_features(ARMCPU *cpu)
     }
 
     return true;
+}
+
+/*
+ * Probe the host ID registers exactly once and hand the same answer to every
+ * vCPU.
+ *
+ * gzvm_arm_set_cpu_features_from_host() runs from aarch64_host_initfn(), i.e.
+ * once per ARMCPU object, so at -smp 8 the probe used to run eight times.  Most
+ * of the registers in GZVM_ID_REG_LIST() are not exported through
+ * /sys/devices/system/cpu/cpu0/regs/identification/, so gzvm_read_host_sysreg()
+ * misses and GZVM_READ_SYSREG() falls back to executing a real MRS -- on
+ * whichever physical core the main thread happens to be scheduled on at that
+ * moment.
+ *
+ * On a big.LITTLE host that is not reproducible.  MT6991 is 4x Cortex-A720
+ * (MIDR 0x410fd811) + 3x Cortex-X4 (0x410fd821) + 1x Cortex-X925 (0x410fd851),
+ * so consecutive probes can land on three different microarchitectures and
+ * return three different feature sets, while MIDR_EL1 always comes from sysfs
+ * and is therefore always cpu0's.  The CPU model QEMU builds was thus a mix of
+ * one cluster's MIDR and another cluster's ID registers, and it differed
+ * between vCPUs of the same VM.
+ *
+ * Pin the probing thread to a single CPU for the duration and cache the result:
+ * the model is now self-consistent and identical for all vCPUs regardless of
+ * host scheduling.  Failing to set affinity is not fatal -- we just lose the
+ * determinism, exactly as before.
+ */
+static bool gzvm_arm_read_host_cpu_features(ARMCPU *cpu)
+{
+    static ARMISARegisters cached_isar;
+    static uint64_t cached_afr0, cached_afr1, cached_ctr;
+    static uint64_t cached_midr_val, cached_revidr_val;
+    static bool cached, cached_ok;
+
+    if (!cached) {
+#ifdef CONFIG_LINUX
+        cpu_set_t old_set, probe_set;
+        bool restore = false;
+
+        if (sched_getaffinity(0, sizeof(old_set), &old_set) == 0) {
+            CPU_ZERO(&probe_set);
+            for (int i = 0; i < CPU_SETSIZE; i++) {
+                if (CPU_ISSET(i, &old_set)) {
+                    CPU_SET(i, &probe_set);
+                    break;
+                }
+            }
+            if (CPU_COUNT(&probe_set)) {
+                restore = sched_setaffinity(0, sizeof(probe_set),
+                                            &probe_set) == 0;
+            }
+        }
+#endif
+
+        cached_ok = gzvm_probe_host_cpu_features(cpu);
+
+#ifdef CONFIG_LINUX
+        if (restore) {
+            sched_setaffinity(0, sizeof(old_set), &old_set);
+        }
+#endif
+
+        cached_isar = cpu->isar;
+        cached_afr0 = cpu->id_aa64afr0;
+        cached_afr1 = cpu->id_aa64afr1;
+        cached_ctr = cpu->ctr;
+        cached_midr_val = cpu->midr;
+        cached_revidr_val = cpu->revidr;
+        cached = true;
+        return cached_ok;
+    }
+
+    cpu->isar = cached_isar;
+    cpu->id_aa64afr0 = cached_afr0;
+    cpu->id_aa64afr1 = cached_afr1;
+    cpu->ctr = cached_ctr;
+    cpu->midr = cached_midr_val;
+    cpu->revidr = cached_revidr_val;
+
+    return cached_ok;
 }
 
 static void gzvm_override_ipa_size(ARMISARegisters *isar)
