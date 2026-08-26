@@ -18,8 +18,10 @@
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/range.h"
+#include "system/gzvm.h"
 #include "standard-headers/linux/virtio_ids.h"
 #include "standard-headers/linux/virtio_pci.h"
 #include "trace.h"
@@ -48,6 +50,66 @@ static inline VirtIOPCIProxy *to_virtio_pci_proxy_fast(DeviceState *d)
     return container_of(d, VirtIOPCIProxy, pci_dev.qdev);
 }
 
+/*
+ * Re-derive the INTx level from ISR and push it down the PCI stack.  Always
+ * runs with the BQL held: either directly from virtio_pci_notify() when the
+ * caller already holds it, or from a main-loop bottom half when it does not.
+ */
+static void virtio_pci_intx_update(VirtIOPCIProxy *proxy)
+{
+    VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
+    int level;
+
+    if (!vdev) {
+        return;
+    }
+
+    level = qatomic_read(&vdev->isr) & 1;
+
+    /*
+     * Assertions must reach the interrupt controller even when this device
+     * already has INTx asserted, because gzvm's controller consumes a pending
+     * bit instead of holding a level it can re-present from: once the guest acks
+     * and EOIs, only a fresh assertion can bring the interrupt back.
+     *
+     * pci_set_irq() cannot do that.  pci_irq_handler() de-duplicates in both
+     * directions and returns before pci_change_irq_level() when the level it is
+     * handed matches the level it recorded, so the ioctl is never issued.  The
+     * losing interleaving is entirely inside one guest interrupt handler:
+     *
+     *   1. completion       -> isr = 1, pci_set_irq(1): 0->1, INTID goes pending
+     *   2. guest reads ISR  -> isr = 0, pci_irq_deassert(): 1->0
+     *   3. completion       -> isr = 1, pci_set_irq(1): 0->1, pending again
+     *   4. guest EOIs       -> the pending bit from 3 is consumed
+     *   5. completion       -> isr is already 1, so pci_set_irq(1) is swallowed
+     *
+     * After 5 the device is holding a level-triggered line high, waiting, with
+     * work in the used ring and no way to re-present the interrupt, so the
+     * device stops answering for good.  Widening the window between 2 and 4 is
+     * what makes this scale with -smp: the guest reports no hung tasks and no
+     * RCU stalls, every vCPU simply goes idle in WFI and stays there -- eight
+     * vCPU threads blocked in gzvm_handle_guest_idle() with the main loop parked
+     * in ppoll() and the host 71% idle.
+     *
+     * This and the EVENT_IDX withdrawal in gzvm_event_idx_allowed() are two
+     * independent defects on one path, and both fixes are required: an -smp 8
+     * UEFI boot of a desktop image hangs in systemd startup with either one
+     * missing, and reaches the login prompt only with both.  Each was tested
+     * alone first, and alone each looked useless.
+     */
+    if (level && gzvm_enabled()) {
+        pci_irq_reassert(&proxy->pci_dev);
+        return;
+    }
+
+    pci_set_irq(&proxy->pci_dev, level);
+}
+
+static void virtio_pci_intx_update_bh(void *opaque)
+{
+    virtio_pci_intx_update(opaque);
+}
+
 static void virtio_pci_notify(DeviceState *d, uint16_t vector)
 {
     VirtIOPCIProxy *proxy = to_virtio_pci_proxy_fast(d);
@@ -57,8 +119,51 @@ static void virtio_pci_notify(DeviceState *d, uint16_t vector)
             msix_notify(&proxy->pci_dev, vector);
         }
     } else {
-        VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
-        pci_set_irq(&proxy->pci_dev, qatomic_read(&vdev->isr) & 1);
+        /*
+         * The INTx path mutates state that is not thread safe, and it can be
+         * entered without the BQL.  A virtio-blk completion runs in its
+         * iothread and arrives here as virtio_notify() -> virtio_pci_notify();
+         * upstream normally does not care because a device with MSI-X routes
+         * completions through an irqfd instead, but MSI-X is not always
+         * available.  Under gzvm it never is: there is no ITS, so
+         * msi_nonbroken stays false, msix_init() fails with -ENOTSUP and every
+         * virtio-pci device falls back to a shared level-triggered INTx line.
+         *
+         * pci_set_irq() -> pci_irq_handler() then does an unlocked
+         * test-then-set of its own,
+         *
+         *     change = level - pci_irq_state(pci_dev, irq_num);
+         *     if (!change) return;
+         *     pci_set_irq_state(pci_dev, irq_num, level);
+         *
+         * followed by pci_change_irq_level(), which does a non-atomic
+         * bus->irq_count[irq_num] += change and asserts the line on the count
+         * being non-zero.  Race that against a vCPU thread deasserting the
+         * same line from its ISR read (virtio_pci_isr_read() clears ISR and
+         * lowers INTx under the BQL) and a transition is lost.  On a
+         * level-triggered line a lost 0->1 is terminal rather than a hiccup:
+         * the line stays low with work still in the used ring and no further
+         * edge ever comes, so the disk stops answering.  That shows up in the
+         * guest as tasks blocked on I/O forever -- jbd2, ext4lazyinit, or the
+         * initramfs waiting on a root device that never appears -- and it gets
+         * likelier the more vCPUs there are to race with.
+         *
+         * So do the level change from a thread that holds the BQL.  Deferring
+         * to a main-loop bottom half rather than taking the BQL here is
+         * deliberate: bdrv_drained_begin() runs in the main thread holding the
+         * BQL while it waits for in-flight requests to settle, so an iothread
+         * that blocks on bql_lock() inside a completion would deadlock against
+         * it.  The BH cannot deadlock and coalesces naturally, and because it
+         * re-reads ISR rather than capturing a level, whatever it finally
+         * writes still matches the device state at the time it runs.
+         */
+        if (!bql_locked()) {
+            aio_bh_schedule_oneshot(qemu_get_aio_context(),
+                                    virtio_pci_intx_update_bh, proxy);
+            return;
+        }
+
+        virtio_pci_intx_update(proxy);
     }
 }
 
