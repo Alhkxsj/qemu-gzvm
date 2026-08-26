@@ -2225,6 +2225,16 @@ enum {
     QEMU_PSCI_CONDUIT_HVC = 2,
 };
 
+/*
+ * PSCI version numbers are encoded as (major << 16) | minor, so v0.2 is
+ * 0x00000002 -- not 0x00020000, which would be v2.0.  Getting this wrong made
+ * the "psci_version >= QEMU_PSCI_VERSION_0_2" test in fdt_add_psci_node()
+ * false for QEMU_PSCI_VERSION_1_1, so the DTB advertised compatible =
+ * "arm,psci" with QEMU's invented v0.1 function IDs.  The guest then issued
+ * CPU_ON with an ID no real firmware implements and every secondary failed
+ * with INVALID_PARAMS (-EINVAL).  QEMU_PSCI_VERSION_0_1 is not a real PSCI
+ * version number; it is just an internal marker and keeps its odd value.
+ */
 #define QEMU_PSCI_VERSION_0_1 0x00001
 #define QEMU_PSCI_VERSION_0_2 0x00000002
 #define QEMU_PSCI_VERSION_1_0 0x00010000
