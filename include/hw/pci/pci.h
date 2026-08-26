@@ -542,6 +542,14 @@ static inline void pci_irq_deassert(PCIDevice *pci_dev)
     pci_set_irq(pci_dev, 0);
 }
 
+/*
+ * Assert INTx even if this device already has it asserted, i.e. re-present the
+ * interrupt to the controller instead of letting pci_irq_handler() de-duplicate
+ * it away.  Needed for controllers that consume a pending bit rather than
+ * holding a level they can re-present from.
+ */
+void pci_irq_reassert(PCIDevice *pci_dev);
+
 MSIMessage pci_get_msi_message(PCIDevice *dev, int vector);
 void pci_set_enabled(PCIDevice *pci_dev, bool state);
 void pci_set_power(PCIDevice *pci_dev, bool state);

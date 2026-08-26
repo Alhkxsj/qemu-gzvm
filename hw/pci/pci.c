@@ -1561,6 +1561,53 @@ void pci_set_irq(PCIDevice *pci_dev, int level)
     pci_irq_handler(pci_dev, intx, level);
 }
 
+/*
+ * Re-drive the device's INTx line at level 1, even when this device already has
+ * it asserted.
+ *
+ * pci_irq_handler() de-duplicates in both directions: it computes
+ * "change = level - pci_irq_state(...)" and returns early when that is zero, so
+ * a second pci_irq_assert() from a device whose line is already high never
+ * reaches pci_change_irq_level() and never reaches the interrupt controller.
+ * With a controller that latches a level that is exactly right and saves work.
+ *
+ * It is wrong for a controller that only accepts "make this INTID pending" and
+ * does not hold a level to re-present from, which is what GZVM_IRQ_LINE gives
+ * us: once the guest acks and EOIs, the pending bit is consumed, and the next
+ * assertion from the device is the only thing that can bring the interrupt
+ * back.  Swallowing it wedges the line high forever with work still queued.
+ *
+ * So bypass the de-duplication without disturbing the recorded state: passing
+ * change == 0 to pci_change_irq_level() leaves bus->irq_count[] alone -- which
+ * matters, because the line may be shared -- while still calling the bus's
+ * set_irq(), which re-evaluates the count and drives the line high again.
+ *
+ * Confirmed necessary by A/B at -smp 8: with EVENT_IDX withdrawn (see
+ * gzvm_event_idx_allowed()) a UEFI boot of a desktop image reaches the login
+ * prompt with this function and hangs in systemd startup without it, the rest of
+ * the build being identical.  Neither fix is sufficient alone -- this one was
+ * first tried while EVENT_IDX was still being offered and changed nothing --
+ * because they are two independent defects on the same path.
+ */
+void pci_irq_reassert(PCIDevice *pci_dev)
+{
+    int irq_num = pci_intx(pci_dev);
+
+    assert(0 <= irq_num && irq_num < PCI_NUM_PINS);
+
+    if (!pci_irq_state(pci_dev, irq_num)) {
+        /* Not asserted yet: an ordinary 0->1 transition is not de-duplicated. */
+        pci_irq_handler(pci_dev, irq_num, 1);
+        return;
+    }
+
+    if (pci_irq_disabled(pci_dev)) {
+        return;
+    }
+
+    pci_change_irq_level(pci_dev, irq_num, 0);
+}
+
 void pci_bus_set_route_irq_fn(PCIBus *bus, pci_route_irq_fn route_intx_to_irq)
 {
     assert(pci_bus_is_root(bus));
