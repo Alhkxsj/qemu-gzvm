@@ -89,7 +89,7 @@ static void gzvm_arch_set_id_regs(CPUState *cs)
                            ((uint64_t)(CRM) << 3) |                        \
                            (uint64_t)(OP2);                                \
             uint64_t sysid = GZVM_REG_ARM64 | GZVM_REG_SIZE_U64 |          \
-                             GZVM_REG_ARM64_SYSREG | (enc & 0x3fff);       \
+                             GZVM_REG_ARM64_SYSREG | (enc & 0xffff);       \
             if (gzvm_set_one_reg(cs, sysid, &reg)) {                       \
                 if (!warned) {                                             \
                     warn_report("gzvm: failed to set CPU ID register %s: %s", \
@@ -276,7 +276,7 @@ static uint32_t gzvm_arm_read_midr(void)
     static bool cached;
     g_autofree char *contents = NULL;
     g_auto(GStrv) lines = NULL;
-    uint32_t midr = 0x410fd810;
+    uint32_t midr = 0x410fd811;
 
     if (cached) {
         return cached_midr;
