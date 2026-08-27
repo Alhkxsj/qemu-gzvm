@@ -67,6 +67,45 @@ gzvm_mem_ioeventfd_del(MemoryListener *listener, MemoryRegionSection *section,
     }
 }
 
+/*
+ * Whether virtio-pci should drive INTx through an irqfd.
+ *
+ * GZ has no notion of a level: an injection means "make this INTID pending",
+ * and once the guest EOIs it there is nothing left for the hypervisor to
+ * re-present.  A level-triggered device that keeps its line high therefore goes
+ * silent, which is what hw/intc/arm_gicv3_gzvm.c's asymmetric de-duplication
+ * exists to paper over for the devices that still use the ioctl path.
+ *
+ * The driver's irqfd path is a much better match, because it is edge-triggered
+ * by construction -- irqfd_set_irq() in drivers/virt/geniezone/gzvm_irqfd.c is
+ * literally "if (level) inject", so level 0 is dropped and one eventfd signal is
+ * exactly one "make pending".  It also injects inline from the eventfd wake-up
+ * ("gzvm's irq injection is not blocked, don't need workq"), so a device thread
+ * can signal it without taking the BQL.
+ *
+ * On by default.  Set GZVM_INTX_IRQFD=off to go back to the ioctl path, which is
+ * still what gets used for any device whose irqfd fails to bind.
+ */
+bool gzvm_intx_irqfd_allowed(void)
+{
+    static int allowed = -1;
+
+    if (allowed < 0) {
+        const char *val = getenv("GZVM_INTX_IRQFD");
+
+        allowed = !(val && (!strcmp(val, "off") || !strcmp(val, "0")));
+    }
+
+    return allowed;
+}
+
+/*
+ * rn must be NULL.  GZVM_IRQFD_FLAG_RESAMPLE is accepted by the driver's
+ * validity mask and then ignored -- nothing in drivers/virt/geniezone/ ever
+ * reads it -- so there is no EOI notification to be had and a resample eventfd
+ * would simply never fire.  The flag is set here to keep the UAPI intent visible
+ * if the driver ever grows an implementation.
+ */
 int gzvm_add_irqfd(EventNotifier *n, EventNotifier *rn, int gsi)
 {
     struct gzvm_irqfd irqfd = {

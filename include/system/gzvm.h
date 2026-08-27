@@ -2,6 +2,7 @@
 #define QEMU_GZVM_H
 
 #include "qemu/accel.h"
+#include "qemu/typedefs.h"
 #include "qom/object.h"
 
 
@@ -20,6 +21,23 @@ extern bool gzvm_allowed;
  * under gzvm; see the comment on the definition in accel/gzvm/gzvm-accel-ops.c.
  */
 bool gzvm_event_idx_allowed(void);
+
+/*
+ * Whether a virtio-pci INTx line should be driven through a GZVM_IRQFD instead
+ * of pci_set_irq().  On by default under gzvm; set GZVM_INTX_IRQFD=off to fall
+ * back.  See the comment on the definition in accel/gzvm/gzvm-irq.c.
+ */
+bool gzvm_intx_irqfd_allowed(void);
+
+/*
+ * Bind or unbind an eventfd to a GSI.  gsi is the 0-based SPI number -- the same
+ * numbering gzvm_arm_gicv3_set_irq() passes as knum, which is what the driver
+ * hands gzvm_irqchip_inject_irq() from both the GZVM_IRQ_LINE and the irqfd
+ * path.  rn is a resample eventfd and must be NULL: the flag exists in the UAPI
+ * but the driver never acts on it.
+ */
+int gzvm_add_irqfd(EventNotifier *n, EventNotifier *rn, int gsi);
+int gzvm_remove_irqfd(EventNotifier *n, int gsi);
 
 int gzvm_arm_set_dtb(uint64_t dtb_start, uint64_t dtb_size);
 void gzvm_set_gic_bases(uint64_t dist_base, uint64_t redist_base,

@@ -63,14 +63,14 @@ static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
      * The shadow level state and the ioctl that acts on it have to move as one
      * unit, hence the lock.
      *
-     * This function is not always called under the BQL.  virtio-blk completions
-     * run in their iothread and reach us as virtio_notify() ->
-     * virtio_pci_notify() -> pci_set_irq() with no BQL held, because
-     * with_irqfd in virtio_pci_vector_unmask()/virtio_pci_notify() is
-     * msix_enabled() and there is no MSI-X here: this tree has no ITS, so
-     * msi_nonbroken stays false, msix_init() fails with -ENOTSUP and every
-     * virtio-pci device falls back to a level-triggered INTx line.  Meanwhile a
-     * vCPU thread drives that same line low from its ISR read, under the BQL.
+     * This function is not guaranteed to run under the BQL.  The caller that
+     * used to prove it -- a virtio-blk completion arriving from its iothread as
+     * virtio_notify() -> virtio_pci_notify() -> pci_set_irq(), because this tree
+     * has no ITS and therefore no MSI-X to route it through an irqfd -- now goes
+     * through a GZVM_IRQFD instead and never reaches us.  The lock stays anyway:
+     * the shadow test-then-set has to be atomic against a vCPU thread driving
+     * the same line low from its ISR read, and nothing here can tell whether a
+     * given qemu_irq is only ever pulsed from the main loop.
      *
      * Two threads doing an unlocked test-then-set on one line lose transitions.
      * On a shared level-triggered INTx line a lost 0->1 is not a hiccup, it is
@@ -85,16 +85,16 @@ static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
      * through, and that asymmetry is a correctness requirement, not a tuning
      * choice.
      *
-     * Note that letting them through here is necessary but not sufficient for
-     * PCI devices, which do not reach us via qemu_set_irq() directly.
-     * pci_irq_handler() de-duplicates in both directions one layer above us and
-     * returns before pci_change_irq_level(), so a re-assertion from a device
-     * that already holds INTx high never becomes a call into this function at
-     * all.  hw/virtio/virtio-pci.c uses pci_irq_reassert() to get past that;
-     * see the comment in virtio_pci_intx_update().  That fix and the EVENT_IDX
-     * withdrawal in gzvm_event_idx_allowed() are both required: an -smp 8 UEFI
-     * boot hangs with either one missing, which is why each of them looked
-     * useless when it was first tested on its own.
+     * Letting them through here cannot rescue a PCI device on its own, because
+     * PCI devices do not reach us via qemu_set_irq() directly: pci_irq_handler()
+     * de-duplicates in both directions one layer above us and returns before
+     * pci_change_irq_level(), so a re-assertion from a device that already holds
+     * INTx high never becomes a call into this function at all.  virtio-pci
+     * gets around that by bypassing this path entirely and driving INTx through
+     * a GZVM_IRQFD; see virtio_pci_intx_irqfd_setup().  What is left here is the
+     * platform devices -- pl011, the RTC, gpio -- which have no irqfd and for
+     * which the asymmetry above is the only thing between a shared
+     * level-triggered line and permanent silence.
      *
      * GZ gives userspace no way to read back or resample a line.  The only
      * primitive is GZVM_IRQ_LINE -> gzvm_irqchip_inject_irq() -> an HVC into the

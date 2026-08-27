@@ -132,6 +132,16 @@ struct VirtIOPCIProxy {
 
     VirtIOIRQFD *vector_irqfd;
     int nvqs_with_notifiers;
+
+    /*
+     * INTx driven through a gzvm irqfd rather than pci_set_irq().  intx_gsi is
+     * the bound 0-based SPI and is only meaningful while intx_irqfd is set; see
+     * virtio_pci_intx_irqfd_setup() in hw/virtio/virtio-pci.c.
+     */
+    EventNotifier intx_notifier;
+    int intx_gsi;
+    bool intx_irqfd;
+
     VirtioBusState bus;
 };
 

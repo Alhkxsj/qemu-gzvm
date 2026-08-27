@@ -17,6 +17,7 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/error-report.h"
+#include "qemu/event_notifier.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -51,6 +52,128 @@ static inline VirtIOPCIProxy *to_virtio_pci_proxy_fast(DeviceState *d)
 }
 
 /*
+ * INTx over a gzvm irqfd.
+ *
+ * Everything else in this file's INTx handling exists to work around gzvm's
+ * interrupt model: GZ treats an injection as "make this INTID pending" rather
+ * than "hold this line at this level", so a level-triggered device that keeps
+ * INTx high gets nothing re-presented once the guest EOIs, and
+ * pci_irq_handler() de-duplicates the fresh assertion that would fix it.  Hence
+ * the asymmetric de-duplication in hw/intc/arm_gicv3_gzvm.c, which is still what
+ * carries the platform devices that have no irqfd, and the bottom half below.
+ *
+ * An irqfd is a much better fit, because the driver's irqfd path is
+ * edge-triggered by construction: irqfd_set_irq() in
+ * drivers/virt/geniezone/gzvm_irqfd.c is "if (level) inject", so level 0 is
+ * dropped and one eventfd signal is exactly one "make pending" -- no shadow
+ * state and no de-duplication anywhere between the device model and the
+ * hypervisor.  That is the semantics the code below emulates by hand.
+ *
+ * It also takes the BQL off the interrupt path.  The driver injects inline from
+ * the eventfd wake-up instead of bouncing through a workqueue, so a virtio-blk
+ * completion in its iothread can signal the notifier directly and nothing is
+ * left that needs main-loop serialisation.
+ *
+ * ISR still has to be maintained, and still is: the guest reads it through an
+ * MMIO trap that QEMU answers rather than out of shared memory, so it stays
+ * authoritative and none of the visibility problems that forced
+ * VIRTIO_RING_F_EVENT_IDX out apply to it.
+ *
+ * If setup fails for any reason -- including GZVM_INTX_IRQFD=off -- intx_irqfd
+ * stays false and the pci_set_irq() path below is used unchanged.
+ */
+static bool virtio_pci_intx_irqfd_setup(VirtIOPCIProxy *proxy)
+{
+    PCIDevice *pci_dev = &proxy->pci_dev;
+    PCIINTxRoute route;
+    int pin;
+
+    if (!gzvm_enabled() || !gzvm_intx_irqfd_allowed()) {
+        return false;
+    }
+
+    /*
+     * PCI_INTERRUPT_PIN is written in virtio_pci_device_plugged(), so this can
+     * only run after that point: pci_intx() returns -1 until then and
+     * pci_device_route_intx_to_irq() asserts on the pin.
+     */
+    pin = pci_intx(pci_dev);
+    if (pin < 0) {
+        return false;
+    }
+
+    route = pci_device_route_intx_to_irq(pci_dev, pin);
+    if (route.mode != PCI_INTX_ENABLED || route.irq < 0) {
+        return false;
+    }
+
+    if (event_notifier_init(&proxy->intx_notifier, 0) < 0) {
+        return false;
+    }
+
+    if (gzvm_add_irqfd(&proxy->intx_notifier, NULL, route.irq) < 0) {
+        warn_report("gzvm: INTx irqfd for %s on gsi %d failed: %s; using ioctl "
+                    "injection instead",
+                    object_get_typename(OBJECT(pci_dev)), route.irq,
+                    strerror(errno));
+        event_notifier_cleanup(&proxy->intx_notifier);
+        return false;
+    }
+
+    proxy->intx_gsi = route.irq;
+    proxy->intx_irqfd = true;
+
+    /*
+     * Reported rather than traced because the two failure paths above are
+     * silent, and a successful boot proves nothing on its own: the pci_set_irq()
+     * fallback boots too.  This line is the only positive evidence that the
+     * irqfd is what is carrying interrupts.
+     */
+    info_report("gzvm: %s INTx -> irqfd on gsi %d",
+                object_get_typename(OBJECT(pci_dev)), route.irq);
+    return true;
+}
+
+static void virtio_pci_intx_irqfd_teardown(VirtIOPCIProxy *proxy)
+{
+    if (!proxy->intx_irqfd) {
+        return;
+    }
+
+    proxy->intx_irqfd = false;
+    if (gzvm_remove_irqfd(&proxy->intx_notifier, proxy->intx_gsi) < 0) {
+        error_report("gzvm: releasing INTx irqfd on gsi %d failed: %s",
+                     proxy->intx_gsi, strerror(errno));
+    }
+    event_notifier_cleanup(&proxy->intx_notifier);
+}
+
+/*
+ * The binding is to a GSI, so it has to be redone if the pin is ever routed
+ * somewhere else.  It is not on hw/arm/virt -- gpex_route_intx_pin_to_irq()
+ * returns a fixed irq_num decided before any device is realized -- but a device
+ * behind a bridge on a board that re-swizzles would otherwise keep signalling
+ * the SPI it was bound to at plug time.
+ */
+static void virtio_pci_intx_routing_notifier(PCIDevice *pci_dev)
+{
+    VirtIOPCIProxy *proxy = VIRTIO_PCI(pci_dev);
+    PCIINTxRoute route;
+
+    if (!proxy->intx_irqfd) {
+        return;
+    }
+
+    route = pci_device_route_intx_to_irq(pci_dev, pci_intx(pci_dev));
+    if (route.mode == PCI_INTX_ENABLED && route.irq == proxy->intx_gsi) {
+        return;
+    }
+
+    virtio_pci_intx_irqfd_teardown(proxy);
+    virtio_pci_intx_irqfd_setup(proxy);
+}
+
+/*
  * Re-derive the INTx level from ISR and push it down the PCI stack.  Always
  * runs with the BQL held: either directly from virtio_pci_notify() when the
  * caller already holds it, or from a main-loop bottom half when it does not.
@@ -64,18 +187,26 @@ static void virtio_pci_intx_update(VirtIOPCIProxy *proxy)
         return;
     }
 
+    /*
+     * With an irqfd there is no level to re-derive: QEMU's INTx line was never
+     * raised, so there is nothing to hold or drop.  virtio_pci_isr_read()'s
+     * pci_irq_deassert() is a no-op for the same reason.
+     */
+    if (proxy->intx_irqfd) {
+        return;
+    }
+
     level = qatomic_read(&vdev->isr) & 1;
 
     /*
-     * Assertions must reach the interrupt controller even when this device
-     * already has INTx asserted, because gzvm's controller consumes a pending
-     * bit instead of holding a level it can re-present from: once the guest acks
-     * and EOIs, only a fresh assertion can bring the interrupt back.
-     *
-     * pci_set_irq() cannot do that.  pci_irq_handler() de-duplicates in both
-     * directions and returns before pci_change_irq_level() when the level it is
-     * handed matches the level it recorded, so the ioctl is never issued.  The
-     * losing interleaving is entirely inside one guest interrupt handler:
+     * Under gzvm this is only reached when the irqfd could not be set up --
+     * GZVM_INTX_IRQFD=off, or a bind failure -- and it is a comparison baseline
+     * rather than a working fallback.  gzvm's controller consumes a pending bit
+     * instead of holding a level it can re-present from, and pci_irq_handler()
+     * de-duplicates in both directions: it returns before pci_change_irq_level()
+     * when the level it is handed matches the level it recorded, so a fresh
+     * assertion from a device that already holds INTx high never reaches the
+     * controller.  The losing interleaving sits inside one guest handler:
      *
      *   1. completion       -> isr = 1, pci_set_irq(1): 0->1, INTID goes pending
      *   2. guest reads ISR  -> isr = 0, pci_irq_deassert(): 1->0
@@ -83,25 +214,14 @@ static void virtio_pci_intx_update(VirtIOPCIProxy *proxy)
      *   4. guest EOIs       -> the pending bit from 3 is consumed
      *   5. completion       -> isr is already 1, so pci_set_irq(1) is swallowed
      *
-     * After 5 the device is holding a level-triggered line high, waiting, with
-     * work in the used ring and no way to re-present the interrupt, so the
-     * device stops answering for good.  Widening the window between 2 and 4 is
-     * what makes this scale with -smp: the guest reports no hung tasks and no
-     * RCU stalls, every vCPU simply goes idle in WFI and stays there -- eight
-     * vCPU threads blocked in gzvm_handle_guest_idle() with the main loop parked
-     * in ppoll() and the host 71% idle.
-     *
-     * This and the EVENT_IDX withdrawal in gzvm_event_idx_allowed() are two
-     * independent defects on one path, and both fixes are required: an -smp 8
-     * UEFI boot of a desktop image hangs in systemd startup with either one
-     * missing, and reaches the login prompt only with both.  Each was tested
-     * alone first, and alone each looked useless.
+     * After 5 the device holds a level-triggered line high with work in the used
+     * ring and no way to re-present the interrupt, so it stops answering for
+     * good.  Widening the window between 2 and 4 is what makes this scale with
+     * -smp: the guest reports no hung tasks and no RCU stalls, every vCPU simply
+     * goes idle in WFI and stays there -- eight vCPU threads in
+     * gzvm_handle_guest_idle() with the main loop parked in ppoll().  That is
+     * the -smp 8 systemd hang, and the irqfd path above is the fix for it.
      */
-    if (level && gzvm_enabled()) {
-        pci_irq_reassert(&proxy->pci_dev);
-        return;
-    }
-
     pci_set_irq(&proxy->pci_dev, level);
 }
 
@@ -119,6 +239,26 @@ static void virtio_pci_notify(DeviceState *d, uint16_t vector)
             msix_notify(&proxy->pci_dev, vector);
         }
     } else {
+        /*
+         * Signalling an eventfd is atomic, so the irqfd path can run straight
+         * from an iothread with no BQL and no bottom half.  virtio_notify() has
+         * already set ISR before calling us, so the injection cannot outrun the
+         * state the guest will read.
+         *
+         * INTX_DISABLE has to be checked here because the irqfd bypasses
+         * pci_irq_handler(), which is where that check normally lives.  The read
+         * is unlocked, and racing it against a guest write to PCI_COMMAND at
+         * worst injects one interrupt that the guest then dismisses as spurious
+         * after finding ISR clear.
+         */
+        if (proxy->intx_irqfd) {
+            if (!(pci_get_word(proxy->pci_dev.config + PCI_COMMAND) &
+                  PCI_COMMAND_INTX_DISABLE)) {
+                event_notifier_set(&proxy->intx_notifier);
+            }
+            return;
+        }
+
         /*
          * The INTx path mutates state that is not thread safe, and it can be
          * entered without the BQL.  A virtio-blk completion runs in its
@@ -1952,6 +2092,16 @@ static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
         pci_register_bar(&proxy->pci_dev, proxy->legacy_io_bar_idx,
                          PCI_BASE_ADDRESS_SPACE_IO, &proxy->bar);
     }
+
+    /*
+     * Last, because it needs PCI_INTERRUPT_PIN above and the bus routing to be
+     * in place.  The routing notifier is only armed if a binding exists, so
+     * devices on the pci_set_irq() path stay off that list entirely.
+     */
+    if (virtio_pci_intx_irqfd_setup(proxy)) {
+        pci_device_set_intx_routing_notifier(&proxy->pci_dev,
+                                            virtio_pci_intx_routing_notifier);
+    }
 }
 
 static void virtio_pci_device_unplugged(DeviceState *d)
@@ -1961,6 +2111,8 @@ static void virtio_pci_device_unplugged(DeviceState *d)
     bool modern_pio = proxy->flags & VIRTIO_PCI_FLAG_MODERN_PIO_NOTIFY;
 
     virtio_pci_stop_ioeventfd(proxy);
+    pci_device_set_intx_routing_notifier(&proxy->pci_dev, NULL);
+    virtio_pci_intx_irqfd_teardown(proxy);
 
     if (modern) {
         virtio_pci_modern_mem_region_unmap(proxy, &proxy->common);
