@@ -39,6 +39,13 @@ bool gzvm_intx_irqfd_allowed(void);
 int gzvm_add_irqfd(EventNotifier *n, EventNotifier *rn, int gsi);
 int gzvm_remove_irqfd(EventNotifier *n, int gsi);
 
+/*
+ * Virtqueue re-poll interval in ms, 0 (the default) to disable.  A diagnostic
+ * for splitting the EVENT_IDX failure by direction; see the comment on the
+ * definition in accel/gzvm/gzvm-accel-ops.c.
+ */
+int gzvm_vq_repoll_ms(void);
+
 int gzvm_arm_set_dtb(uint64_t dtb_start, uint64_t dtb_size);
 void gzvm_set_gic_bases(uint64_t dist_base, uint64_t redist_base,
                         uint64_t redist_size);

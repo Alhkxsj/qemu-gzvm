@@ -142,6 +142,15 @@ struct VirtIOPCIProxy {
     int intx_gsi;
     bool intx_irqfd;
 
+    /*
+     * GZVM_VQ_REPOLL_MS diagnostic.  vq_repoll_pending[n] records whether vq n
+     * was already seen non-empty, so a synthetic kick is issued once per
+     * empty -> non-empty transition rather than on every tick.
+     */
+    QEMUTimer *vq_repoll_timer;
+    uint64_t vq_repoll_hits;
+    bool vq_repoll_pending[VIRTIO_QUEUE_MAX];
+
     VirtioBusState bus;
 };
 
