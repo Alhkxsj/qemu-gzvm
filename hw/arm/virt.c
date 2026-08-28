@@ -29,7 +29,9 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "hw/pci-host/gpex.h"
+#include "hw/pci/msi.h"
 #include "hw/virtio/virtio-pci.h"
+#include "qemu/log.h"
 #include "hw/qdev-properties.h"
 #include "hw/arm/fdt.h"
 #include "hw/intc/arm_gic.h"
@@ -90,6 +92,8 @@ static const MemMapEntry base_memmap[] = {
 
  [VIRT_GIC_DIST] = { 0x08000000, 0x00010000 },
  [VIRT_GIC_CPU] = { 0x08010000, 0x00010000 },
+ /* Only instantiated under gzvm, which has no ITS.  See create_gzvm_v2m(). */
+ [VIRT_GIC_V2M] = { 0x08020000, 0x00001000 },
  [VIRT_GIC_HYP] = { 0x08030000, 0x00010000 },
  [VIRT_GIC_VCPU] = { 0x08040000, 0x00010000 },
 
@@ -130,6 +134,16 @@ static const int a15irqmap[] = {
  [VIRT_UART1] = 8,
  [VIRT_MMIO] = 16,
  [VIRT_SMMU] = 74,
+ /*
+  * gzvm MSI vectors, 0-based SPI 48..95 == INTID 80..127.  Above every SPI this
+  * board actually wires, and deliberately all the way below INTID 128: GZ owns
+  * the VGIC and there is no interface to ask it how many SPIs it implements
+  * (drivers/virt/geniezone/ never configures a count), so the range is kept
+  * inside what a GICD_TYPER.ITLinesNumber of 3 would cover.  The nominal overlap
+  * with VIRT_SMMU is inert -- this tree has no SMMU sources, so create_smmu()
+  * does not exist and SPI 74..77 are never wired.
+  */
+ [VIRT_GIC_V2M] = 48,
 };
 
 static void create_randomness(MachineState *ms, const char *node)
@@ -611,6 +625,152 @@ static void create_gic(VirtMachineState *vms, MemoryRegion *mem)
  }
 
  fdt_add_gic_node(vms);
+}
+
+/*
+ * A GICv2m frame, for gzvm only.
+ *
+ * GZ has no ITS -- enum gzvm_device_type is just VGIC_V3_DIST and VGIC_V3_REDIST
+ * -- so msi_nonbroken stays false, msix_init() returns -ENOTSUP and every
+ * virtio-pci device ends up sharing one level-triggered INTx line.  That is what
+ * puts unrelated devices on a common failure path: one stuck queue takes the
+ * disk and the NIC down with it.
+ *
+ * There is no LPI injection primitive to build an emulated ITS on, but there is
+ * an SPI, and a GICv2m frame is the standard way to spell "an MSI write becomes
+ * an SPI".  The doorbell is a plain 4K MMIO region owned by QEMU: msix_notify()
+ * writes to it through address_space_memory, the write is dispatched locally and
+ * never reaches the guest or GZ, and the handler turns it into one SPI
+ * assertion.  Edge semantics, which is what GZ implements anyway -- an injection
+ * makes an INTID pending rather than holding a line at a level.
+ *
+ * The guest needs no changes.  irq-gic-v3.c gates mbi_init() on
+ * GICD_TYPER.MBIS, which is unreachable here because the distributor MMIO
+ * belongs to GZ and gzvm_gicv3_dist_read() returns 0, but it calls gicv2m_init()
+ * unconditionally on the !gic_dist_supports_lpis() path -- exactly our case --
+ * and arm64 has "select ARM_GIC_V2M if PCI".
+ */
+#define NUM_GZVM_MSI_SPIS 48
+
+/* Frame register offsets, as read by the guest's irq-gic-v2m driver. */
+#define V2M_MSI_TYPER     0x008
+#define V2M_MSI_SETSPI_NS 0x040
+#define V2M_MSI_IIDR      0xfcc
+
+typedef struct GZVMV2MState {
+    MemoryRegion iomem;
+    DeviceState *gic;
+    int spi_base;   /* 0-based SPI of the first vector */
+    int num_spis;
+} GZVMV2MState;
+
+static uint64_t gzvm_v2m_read(void *opaque, hwaddr offset, unsigned size)
+{
+    GZVMV2MState *s = opaque;
+
+    switch (offset) {
+    case V2M_MSI_TYPER:
+        /*
+         * Base INTID in 31:16, count in 9:0.  The DT carries arm,msi-base-spi
+         * and arm,msi-num-spis, which the driver prefers over this register, so
+         * this exists only so that a guest reading TYPER sees the truth.
+         */
+        return ((uint32_t)(s->spi_base + GIC_INTERNAL) << 16) | s->num_spis;
+    case V2M_MSI_IIDR:
+        return 0;
+    default:
+        return 0;
+    }
+}
+
+static void gzvm_v2m_write(void *opaque, hwaddr offset, uint64_t value,
+                           unsigned size)
+{
+    GZVMV2MState *s = opaque;
+    int spi;
+
+    if (offset != V2M_MSI_SETSPI_NS) {
+        return;
+    }
+
+    /* The driver puts the absolute INTID in the message data. */
+    spi = (int)(value & 0x3ff) - GIC_INTERNAL;
+
+    if (spi < s->spi_base || spi >= s->spi_base + s->num_spis) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "gzvm v2m: SETSPI_NS with INTID %" PRIu64
+                      " outside the frame's %d..%d\n", value & 0x3ff,
+                      s->spi_base + GIC_INTERNAL,
+                      s->spi_base + GIC_INTERNAL + s->num_spis - 1);
+        return;
+    }
+
+    /*
+     * Safe from a device thread: gzvm_arm_gicv3_set_irq() never early-returns
+     * for level 1 and takes gzvm_irq_level_lock, so no BQL is needed here.  The
+     * shadow level bit it sets stays set for the life of the MSI SPI, which is
+     * inert -- nothing ever deasserts an MSI.
+     */
+    qemu_set_irq(qdev_get_gpio_in(s->gic, spi), 1);
+}
+
+static const MemoryRegionOps gzvm_v2m_ops = {
+    .read = gzvm_v2m_read,
+    .write = gzvm_v2m_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 4,
+};
+
+static void create_gzvm_v2m(VirtMachineState *vms, MemoryRegion *mem)
+{
+    MachineState *ms = MACHINE(vms);
+    hwaddr base = vms->memmap[VIRT_GIC_V2M].base;
+    hwaddr size = vms->memmap[VIRT_GIC_V2M].size;
+    int spi_base = vms->irqmap[VIRT_GIC_V2M];
+    GZVMV2MState *s;
+    char *nodename;
+
+    s = g_new0(GZVMV2MState, 1);
+    s->gic = vms->gic;
+    s->spi_base = spi_base;
+    s->num_spis = NUM_GZVM_MSI_SPIS;
+
+    memory_region_init_io(&s->iomem, NULL, &gzvm_v2m_ops, s, "gzvm-gicv2m",
+                          size);
+    memory_region_add_subregion(mem, base, &s->iomem);
+
+    /*
+     * A child of the GIC node, which is where gicv2m_of_init() starts its scan
+     * for arm,gic-v2m-frame and where the empty "ranges" makes reg an identity
+     * translation.
+     */
+    nodename = g_strdup_printf("/intc@%" PRIx64 "/v2m@%" PRIx64,
+                               vms->memmap[VIRT_GIC_DIST].base, base);
+    qemu_fdt_add_subnode(ms->fdt, nodename);
+    qemu_fdt_setprop_string(ms->fdt, nodename, "compatible",
+                            "arm,gic-v2m-frame");
+    qemu_fdt_setprop(ms->fdt, nodename, "msi-controller", NULL, 0);
+    qemu_fdt_setprop_sized_cells(ms->fdt, nodename, "reg", 2, base, 2, size);
+    /*
+     * Absolute INTIDs, not 0-based SPIs: the driver rejects a base below
+     * V2M_MIN_SPI (32) and then subtracts 32 again for the GIC fwspec.
+     */
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "arm,msi-base-spi",
+                          spi_base + GIC_INTERNAL);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "arm,msi-num-spis",
+                          NUM_GZVM_MSI_SPIS);
+
+    vms->msi_phandle = qemu_fdt_alloc_phandle(ms->fdt);
+    qemu_fdt_setprop_cell(ms->fdt, nodename, "phandle", vms->msi_phandle);
+    g_free(nodename);
+
+    /* Lets msix_init() through, so virtio-pci stops falling back to INTx. */
+    msi_nonbroken = true;
+
+    info_report("gzvm: GICv2m MSI frame at 0x%" PRIx64 ", INTID %d..%d",
+                base, spi_base + GIC_INTERNAL,
+                spi_base + GIC_INTERNAL + NUM_GZVM_MSI_SPIS - 1);
 }
 
 static void create_uart(const VirtMachineState *vms, int uart,
@@ -1364,6 +1524,14 @@ static void machvirt_init(MachineState *machine)
 
  create_gic(vms, sysmem);
  virt_gzvm_post_gic(vms);
+
+ /*
+  * After create_gic(), which allocates vms->gic and the /intc node this hangs
+  * off, and before create_pcie(), which emits msi-map from vms->msi_phandle.
+  */
+ if (gzvm_enabled() && gzvm_msi_allowed()) {
+ create_gzvm_v2m(vms, sysmem);
+ }
 
  virt_cpu_post_init(vms, sysmem);
 

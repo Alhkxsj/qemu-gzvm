@@ -30,6 +30,13 @@ bool gzvm_event_idx_allowed(void);
 bool gzvm_intx_irqfd_allowed(void);
 
 /*
+ * Whether to give the guest a GICv2m frame so that MSI works without an ITS.
+ * On by default under gzvm; set GZVM_MSI=off to fall back to shared INTx lines.
+ * See the comment on the definition in accel/gzvm/gzvm-irq.c.
+ */
+bool gzvm_msi_allowed(void);
+
+/*
  * Bind or unbind an eventfd to a GSI.  gsi is the 0-based SPI number -- the same
  * numbering gzvm_arm_gicv3_set_irq() passes as knum, which is what the driver
  * hands gzvm_irqchip_inject_irq() from both the GZVM_IRQ_LINE and the irqfd
