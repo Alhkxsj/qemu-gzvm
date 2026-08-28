@@ -85,12 +85,30 @@ bool gzvm_allowed;
  * arm64 turns virtio_mb() from dmb(ish) into dsb(sy) and virtio_rmb()/wmb() from
  * dmb(ishld)/dmb(ishst) into dmb(oshld)/dmb(oshst) -- Inner Shareable becomes
  * Outer Shareable or full system.  With that bit and EVENT_IDX both on, -smp 8
- * still hung.  So the guest cannot reach us with any barrier it has, which points
- * at GZ's stage-2 shareability or cacheability being wrong outright rather than
- * merely under-ordered.  That is not reachable from here, and not from the host
- * driver either: drivers/virt/geniezone only hands GZ an address range and never
- * touches guest RAM attributes.  gz.img is a blob.  Withdrawing the bit is the
- * fix.
+ * still hung.  Which is what you would expect either way: a barrier orders writes
+ * a CPU has already made, it does not make them propagate sooner, so no barrier
+ * the guest can execute changes when our write to avail_event becomes visible to
+ * it.
+ *
+ * Nor is it plain non-coherency, and this is the part worth handing to MediaTek.
+ * virtqueue_kick_prepare_split() reads either vring_avail_event() or used->flags
+ * after the same virtio_mb() -- same used ring, same page, same memory type, one
+ * function, one barrier -- and the flag form is reliable: with EVENT_IDX off,
+ * -smp 8 boots every time.  If our stores to that page were simply not arriving,
+ * the flag form would break too.  What differs between them is not visibility but
+ * how each one fails under lag.  A stale flag read only suppresses if it catches
+ * the brief window where NO_NOTIFY is set, which is rare and self-correcting.  A
+ * stale index read suppresses whenever the value it sees is more than one behind,
+ * and avail_event advances monotonically under load, so "more than one behind" is
+ * the common case rather than a rare one.  Same lag, wildly different
+ * consequences.
+ *
+ * So the ask is narrower than "host writes to guest RAM are invisible": our stores
+ * become visible to the guest with a delay long enough that a continuously
+ * advancing counter is routinely read stale, while a rarely toggled flag in the
+ * same page survives.  Not reachable from here, and not from the host driver
+ * either: drivers/virt/geniezone only hands GZ an address range and never touches
+ * guest RAM attributes.  gz.img is a blob.  Withdrawing the bit is the fix.
  *
  * More vCPUs mean more concurrent ring traffic and more chances to lose one,
  * which is why -smp 2 was reliable, 3 and 4 marginal, and 5 and up never
