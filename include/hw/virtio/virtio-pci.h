@@ -143,13 +143,17 @@ struct VirtIOPCIProxy {
     bool intx_irqfd;
 
     /*
-     * GZVM_VQ_REPOLL_MS diagnostic.  vq_repoll_pending[n] records whether vq n
-     * was already seen non-empty, so a synthetic kick is issued once per
-     * empty -> non-empty transition rather than on every tick.
+     * GZVM_VQ_REPOLL_MS diagnostic.  vq_repoll_pending[n] records that vq n was
+     * already seen non-empty on the previous tick and vq_repoll_mark[n] the
+     * last_avail_idx it had then, so a hit requires two consecutive ticks with
+     * work waiting and nothing consumed in between.  One tick is not enough: the
+     * guest writing avail->idx just before our notify handler runs looks
+     * identical to a lost kick, and at 1 ms those benign races dominate.
      */
     QEMUTimer *vq_repoll_timer;
     uint64_t vq_repoll_hits;
     bool vq_repoll_pending[VIRTIO_QUEUE_MAX];
+    unsigned int vq_repoll_mark[VIRTIO_QUEUE_MAX];
 
     VirtioBusState bus;
 };

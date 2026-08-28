@@ -195,6 +195,7 @@ static void virtio_pci_vq_repoll(void *opaque)
 {
     VirtIOPCIProxy *proxy = opaque;
     VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
+    unsigned int last_avail;
     int n;
 
     if (!vdev || !virtio_device_started(vdev, vdev->status)) {
@@ -214,15 +215,36 @@ static void virtio_pci_vq_repoll(void *opaque)
             continue;
         }
 
-        if (proxy->vq_repoll_pending[n]) {
+        last_avail = virtio_queue_get_last_avail_idx(vdev, n);
+
+        if (!proxy->vq_repoll_pending[n]) {
+            /*
+             * First sighting.  Do not believe it yet: the guest writing
+             * avail->idx a moment before its kick reaches us looks exactly like
+             * a lost kick from here, and at 1 ms those races are the common
+             * case.  Record where we are and wait one tick.
+             */
+            proxy->vq_repoll_pending[n] = true;
+            proxy->vq_repoll_mark[n] = last_avail;
             continue;
         }
-        proxy->vq_repoll_pending[n] = true;
 
+        if (last_avail != proxy->vq_repoll_mark[n]) {
+            /* We consumed something, so a kick did reach us.  Re-mark. */
+            proxy->vq_repoll_mark[n] = last_avail;
+            continue;
+        }
+
+        /*
+         * Two consecutive ticks with work waiting and last_avail_idx unmoved, so
+         * we popped nothing at all in that window.  Either the kick was lost or
+         * we stalled for a whole tick; both are worth reporting, and the
+         * synthetic kick is harmless either way.
+         */
         if (++proxy->vq_repoll_hits <= 8) {
-            info_report("gzvm: re-poll: %s vq %d went non-empty with no kick "
-                        "reaching us (hit %" PRIu64 ")",
-                        vdev->name, n, proxy->vq_repoll_hits);
+            info_report("gzvm: re-poll: %s vq %d idle at avail_idx %u for two "
+                        "ticks with work waiting (hit %" PRIu64 ")",
+                        vdev->name, n, last_avail, proxy->vq_repoll_hits);
         }
         virtio_queue_notify(vdev, n);
     }

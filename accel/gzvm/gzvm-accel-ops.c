@@ -44,24 +44,38 @@ bool gzvm_allowed;
  * indices live in memory the hypervisor maps rather than we do, and with no ITS
  * in this tree every virtio-pci device is on INTx.
  *
- * GZVM_VQ_REPOLL_MS pinned down the direction.  With INTx already carried by an
- * irqfd, so that nothing de-duplicates between virtio_notify() and the
- * hypervisor, a 10 ms re-poll ran an -smp 8 boot with EVENT_IDX on and it still
- * hung, and in the hung state every queue polled empty, all eight vCPUs sat in
- * gzvm_handle_guest_idle() and the main loop in ppoll().  Nobody had work
- * outstanding, so nothing was waiting on a lost kick: the loss is host -> guest.
+ * A four-cell matrix pinned down the direction.  All four ran on one binary with
+ * INTx already carried by an irqfd, so that nothing de-duplicates between
+ * virtio_notify() and the hypervisor, three or four times each at -smp 8 with
+ * EVENT_IDX on:
  *
- * Read the hit counter with care.  It counts empty -> non-empty transitions the
- * re-poll saw first, which includes the benign case of a kick already in flight
- * that the iothread has not consumed yet -- and in practice that is all it
- * counts: the same 11 hits, in the same per-device distribution, show up in a
- * boot that succeeds.  The verdict above rests on the queues being empty while
- * the VM is wedged, not on the count.
+ *   nothing else            hangs
+ *   GZVM_VQ_REPOLL_MS=1     boots
+ *   GZVM_NOTIFY_FORCE=on    hangs
+ *   both                    boots, no better than the re-poll alone
  *
- * QEMU has no lever on host -> guest.  Either we read a stale
- * avail->used_event and suppressed the interrupt, or we sent it and the guest
- * read a stale used ring; both are the visibility problem below, and forcing
- * every notification only throws away what EVENT_IDX is for.  (An earlier
+ * Synthesising the guest's doorbell repairs it and notifying unconditionally does
+ * not, so the lost event is the guest -> host kick: the guest reads a stale
+ * used->avail_event, vring_need_event() answers no, and we wait in front of an
+ * avail ring we believe is empty.  Forced notification on top of the re-poll buys
+ * nothing, which rules the host -> guest half out as a contributor.
+ *
+ * Two caveats.  The re-poll here is the two-tick form described on
+ * gzvm_vq_repoll_ms(); it kicks an order of magnitude less often than the
+ * one-tick form it replaced and is no less stable, so the kicks it does issue are
+ * doing real work and "1 ms merely perturbs timing" no longer explains the
+ * result.  But those cells are "almost always" rather than always, and one blind
+ * spot is known: if avail->idx itself is stale to us then virtio_queue_empty()
+ * returns true, the probe never fires, and a loss of that shape is invisible to
+ * this instrument.
+ *
+ * None of which makes EVENT_IDX shippable.  For the guest to kick it must read
+ * avail_event == new - 1, and virtio_queue_split_set_notification() already
+ * writes exactly the value that produces that -- vring_avail_idx(vq), followed by
+ * an smp_mb().  No other value forces a kick out of a stale read; 0xffff, for
+ * one, actively suppresses it.  So the levers are withdrawing the feature or
+ * running a permanent 1 ms timer per virtio device, and the timer is not worth it
+ * for a feature whose whole purpose is to do less work.  (An early
  * forced-notification test that booted -smp 8 "only occasionally" is not evidence
  * either way: it ran while the level/edge defect was still present, so the extra
  * notifications ran into that bug instead.)
@@ -116,11 +130,29 @@ bool gzvm_event_idx_allowed(void)
  *   are already in the used ring and it is the guest that is not looking.  The
  *   boot still hangs.
  *
- * The answer, with virtio_pci_intx_irqfd_setup() having removed every
- * de-duplication layer between virtio_notify() and the hypervisor, was
- * host -> guest; see gzvm_event_idx_allowed().  Kept anyway: the per-queue
- * empty -> non-empty accounting is the only way to observe a missing kick at
- * all, and it will want re-running against any future gz.img.
+ * Do not read the hit counter as a count of lost kicks.  An earlier version of
+ * this comment drew a direction verdict from it and had to withdraw it: a run at
+ * 1 ms logged eight virtio-blk hits while still inside UEFI, and EDK2 does not
+ * negotiate EVENT_IDX at all -- VirtioBlkDxe masks the feature set down to
+ * BLK_SIZE | TOPOLOGY | RO | FLUSH | VERSION_1 | IOMMU_PLATFORM -- so those hits
+ * cannot have been suppression, only the timer landing between the guest's write
+ * to avail->idx and our notify handler running.  The same counts, in the same
+ * per-device distribution, showed up in boots that succeeded.
+ *
+ * Hence the two-tick rule below.  A hit now requires the queue to be non-empty on
+ * two consecutive ticks with last_avail_idx unmoved in between, which means we
+ * consumed nothing at all while work was sitting there.  Sub-millisecond races
+ * cannot survive that, so a hit is either a real lost kick or a host-side stall of
+ * a full tick.
+ *
+ * With that rule in place the split came out guest -> host; see
+ * gzvm_event_idx_allowed() for the matrix.  Note that the interval matters much
+ * less than it looks: 1 and 5 ms improve the odds, 10, 50, 100 and 500 are roughly
+ * level with each other, and none of them eliminates the hang.  A single
+ * repairable lost kick should make a long interval slow rather than fatal, so
+ * either something upstream in the guest times out while we dawdle, or there is a
+ * second loss this probe cannot see -- if avail->idx is itself stale to us,
+ * virtio_queue_empty() returns true and we never fire.
  *
  * Use with GZVM_EVENT_IDX=on; with EVENT_IDX withdrawn there is nothing to
  * measure, because the flag forms already re-poll.
@@ -139,6 +171,51 @@ int gzvm_vq_repoll_ms(void)
     }
 
     return ms;
+}
+
+/*
+ * Ignore the guest's used_event when deciding whether to interrupt.  Off by
+ * default; set GZVM_NOTIFY_FORCE=on.
+ *
+ * This is the other half of the direction split, and the half no re-poll can
+ * reach.  EVENT_IDX makes both sides consult a counter the other side publishes:
+ * the guest reads used->avail_event before ringing the doorbell, and we read
+ * avail->used_event in virtio_split_should_notify() before raising an interrupt.
+ * gzvm_vq_repoll_ms() can synthesise a doorbell, so it covers the first.  Nothing
+ * covers the second: by the time we decide not to interrupt, the completions are
+ * already in the used ring and it is the guest that is not looking, so there is
+ * no later event to correct the decision.
+ *
+ * Setting this keeps EVENT_IDX advertised -- the guest's own kick suppression is
+ * left completely alone -- and only stops us acting on used_event, so we notify
+ * unconditionally.  That isolates the host -> guest direction.
+ *
+ * The answer was negative, and that is why this stays in the tree.  At -smp 8
+ * with EVENT_IDX on, this alone still hangs, while GZVM_VQ_REPOLL_MS=1 alone
+ * boots and the two together are no better than the re-poll alone.  So we are not
+ * the side losing events; keep this knob as the negative control that makes the
+ * guest -> host verdict in gzvm_event_idx_allowed() falsifiable by someone else.
+ *
+ * Never a candidate fix, whichever way it had come out.  It throws away every
+ * interrupt EVENT_IDX was meant to elide, which is most of the feature's value,
+ * and it would be a strange thing to ship next to simply withdrawing the feature.
+ * Withdrawing it stays the default; see gzvm_event_idx_allowed().
+ */
+bool gzvm_notify_force(void)
+{
+    static int force = -1;
+
+    if (force < 0) {
+        const char *env = getenv("GZVM_NOTIFY_FORCE");
+
+        force = env && (!strcmp(env, "on") || !strcmp(env, "1"));
+        if (force) {
+            warn_report("gzvm: ignoring used_event; every completion will "
+                        "interrupt the guest");
+        }
+    }
+
+    return force != 0;
 }
 
 static int gzvm_init(MachineState *ms)

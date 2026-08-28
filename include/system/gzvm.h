@@ -53,6 +53,15 @@ int gzvm_remove_irqfd(EventNotifier *n, int gsi);
  */
 int gzvm_vq_repoll_ms(void);
 
+/*
+ * Whether to ignore the guest's used_event and interrupt on every completion.
+ * Off by default; set GZVM_NOTIFY_FORCE=on.  The host -> guest half of the
+ * EVENT_IDX direction split, which came out negative -- it is kept as the
+ * negative control, never as a fix.  See the comment on the definition in
+ * accel/gzvm/gzvm-accel-ops.c.
+ */
+bool gzvm_notify_force(void);
+
 int gzvm_arm_set_dtb(uint64_t dtb_start, uint64_t dtb_size);
 void gzvm_set_gic_bases(uint64_t dist_base, uint64_t redist_base,
                         uint64_t redist_size);

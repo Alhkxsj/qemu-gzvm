@@ -19,6 +19,7 @@
 #include "hw/virtio/virtio-access.h"
 #include "system/dma.h"
 #include "system/runstate.h"
+#include "system/gzvm.h"
 
 #include "standard-headers/linux/virtio_ids.h"
 #include "standard-headers/linux/vhost_types.h"
@@ -2371,6 +2372,17 @@ static bool virtio_split_should_notify(VirtIODevice *vdev, VirtQueue *vq)
     vq->signalled_used_valid = true;
     old = vq->signalled_used;
     new = vq->signalled_used = vq->used_idx;
+
+    /*
+     * The signalled_used bookkeeping above is left intact deliberately, so that
+     * turning this on does not change any state the guest can observe apart from
+     * seeing more interrupts.  Only the decision below is overridden.  See
+     * gzvm_notify_force() in accel/gzvm/gzvm-accel-ops.c.
+     */
+    if (gzvm_enabled() && gzvm_notify_force()) {
+        return true;
+    }
+
     return !v || vring_need_event(vring_get_used_event(vq), new, old);
 }
 
