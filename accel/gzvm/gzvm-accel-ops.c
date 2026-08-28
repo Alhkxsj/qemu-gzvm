@@ -44,15 +44,18 @@ bool gzvm_allowed;
  * indices live in memory the hypervisor maps rather than we do, and with no ITS
  * in this tree every virtio-pci device is on INTx.
  *
- * A four-cell matrix pinned down the direction.  All four ran on one binary with
- * INTx already carried by an irqfd, so that nothing de-duplicates between
- * virtio_notify() and the hypervisor, three or four times each at -smp 8 with
- * EVENT_IDX on:
+ * A four-cell matrix pinned down the direction.  Two temporary knobs did it, both
+ * since removed: one armed a per-device timer that re-polled every virtqueue and
+ * synthesised a notify for any that had work waiting, covering guest -> host, and
+ * one ignored the guest's used_event so that every completion interrupted,
+ * covering host -> guest.  All four cells ran on one binary with INTx already
+ * carried by an irqfd, so that nothing de-duplicates between virtio_notify() and
+ * the hypervisor, three or four times each at -smp 8 with EVENT_IDX on:
  *
- *   nothing else            hangs
- *   GZVM_VQ_REPOLL_MS=1     boots
- *   GZVM_NOTIFY_FORCE=on    hangs
- *   both                    boots, no better than the re-poll alone
+ *   neither knob          hangs
+ *   re-poll at 1 ms       boots
+ *   forced notification   hangs
+ *   both                  boots, no better than the re-poll alone
  *
  * Synthesising the guest's doorbell repairs it and notifying unconditionally does
  * not, so the lost event is the guest -> host kick: the guest reads a stale
@@ -60,22 +63,48 @@ bool gzvm_allowed;
  * avail ring we believe is empty.  Forced notification on top of the re-poll buys
  * nothing, which rules the host -> guest half out as a contributor.
  *
- * Two caveats.  The re-poll here is the two-tick form described on
- * gzvm_vq_repoll_ms(); it kicks an order of magnitude less often than the
- * one-tick form it replaced and is no less stable, so the kicks it does issue are
- * doing real work and "1 ms merely perturbs timing" no longer explains the
- * result.  But those cells are "almost always" rather than always, and one blind
- * spot is known: if avail->idx itself is stale to us then virtio_queue_empty()
- * returns true, the probe never fires, and a loss of that shape is invisible to
- * this instrument.
+ * Three caveats on that matrix, since the knobs are gone and this is the only
+ * record left.
  *
- * None of which makes EVENT_IDX shippable.  For the guest to kick it must read
- * avail_event == new - 1, and virtio_queue_split_set_notification() already
- * writes exactly the value that produces that -- vring_avail_idx(vq), followed by
- * an smp_mb().  No other value forces a kick out of a stale read; 0xffff, for
- * one, actively suppresses it.  So the levers are withdrawing the feature or
- * running a permanent 1 ms timer per virtio device, and the timer is not worth it
- * for a feature whose whole purpose is to do less work.  (An early
+ * The re-poll's own hit counter was never evidence, and an earlier version of this
+ * comment had to withdraw a verdict drawn from it.  Its first form fired whenever a
+ * queue merely looked non-empty, which a run at 1 ms showed to be worthless: it
+ * logged eight virtio-blk hits while still inside UEFI, and EDK2 does not
+ * negotiate EVENT_IDX at all -- VirtioBlkDxe masks the feature set down to
+ * BLK_SIZE | TOPOLOGY | RO | FLUSH | VERSION_1 | IOMMU_PLATFORM -- so those hits
+ * could only have been the timer landing between the guest's write to avail->idx
+ * and our notify handler running.  The same counts, in the same per-device
+ * distribution, showed up in boots that succeeded.  The matrix rests on the
+ * differential between cells, not on any count.
+ *
+ * The final form required two consecutive ticks with work waiting and
+ * last_avail_idx unmoved in between, which no sub-millisecond race survives.  It
+ * kicked an order of magnitude less often than the form it replaced and was no
+ * less stable, so the kicks it did issue were doing real work -- "1 ms merely
+ * perturbs timing" does not explain cell 2.  It still over-reported: on
+ * receive-direction queues, virtio-net's RX ring and virtio-input's eventq, "work
+ * waiting and nothing consumed" is the normal idle state, and those were 24 of the
+ * 32 hits in the cell-2 run.  The eight that meant anything were virtio-blk, at an
+ * advancing avail_idx, during the systemd phase where the hang lands.
+ *
+ * And the boots were "almost always" rather than always.  One blind spot is known:
+ * if avail->idx itself is stale to us then virtio_queue_empty() returns true, the
+ * probe never fires, and a loss of that shape was invisible to the instrument.
+ * The interval bore that out -- 1 and 5 ms improved the odds, 10, 50, 100 and 500
+ * were level with each other, and none eliminated the hang.  A single repairable
+ * lost kick should make a long interval slow rather than fatal, so either
+ * something upstream in the guest times out while we dawdle, or there is a second
+ * loss that probe could not see.
+ *
+ * Neither knob was ever a candidate fix, which is why both are gone.  Forced
+ * notification throws away every interrupt EVENT_IDX exists to elide, and it would
+ * be strange to ship that next to simply withdrawing the feature.  And for the
+ * guest to kick it must read avail_event == new - 1, which is exactly what
+ * virtio_queue_split_set_notification() already writes -- vring_avail_idx(vq),
+ * followed by an smp_mb().  No other value forces a kick out of a stale read;
+ * 0xffff, for one, actively suppresses it.  So the only levers were withdrawing
+ * the feature or running a permanent 1 ms timer per virtio device, and that timer
+ * is not worth it for a feature whose whole purpose is to do less work.  (An early
  * forced-notification test that booted -smp 8 "only occasionally" is not evidence
  * either way: it ran while the level/edge defect was still present, so the extra
  * notifications ran into that bug instead.)
@@ -129,111 +158,6 @@ bool gzvm_event_idx_allowed(void)
     }
 
     return allowed != 0;
-}
-
-/*
- * Virtqueue re-poll interval in milliseconds, 0 to disable (the default).
- *
- * This is a diagnostic, not a fix.  It exists to split the EVENT_IDX failure by
- * direction, which the boot outcome alone cannot do:
- *
- *   guest -> host.  The guest decides whether to ring the doorbell from
- *   used->avail_event, which we write.  If it reads a stale value it suppresses
- *   the kick, and we sit in the main loop in front of an avail ring we think is
- *   empty.  A periodic re-poll synthesises the missing kick, so setting this
- *   makes the boot succeed.
- *
- *   host -> guest.  We decide whether to interrupt from avail->used_event, which
- *   the guest writes.  A re-poll on our side cannot help, because the completions
- *   are already in the used ring and it is the guest that is not looking.  The
- *   boot still hangs.
- *
- * Do not read the hit counter as a count of lost kicks.  An earlier version of
- * this comment drew a direction verdict from it and had to withdraw it: a run at
- * 1 ms logged eight virtio-blk hits while still inside UEFI, and EDK2 does not
- * negotiate EVENT_IDX at all -- VirtioBlkDxe masks the feature set down to
- * BLK_SIZE | TOPOLOGY | RO | FLUSH | VERSION_1 | IOMMU_PLATFORM -- so those hits
- * cannot have been suppression, only the timer landing between the guest's write
- * to avail->idx and our notify handler running.  The same counts, in the same
- * per-device distribution, showed up in boots that succeeded.
- *
- * Hence the two-tick rule below.  A hit now requires the queue to be non-empty on
- * two consecutive ticks with last_avail_idx unmoved in between, which means we
- * consumed nothing at all while work was sitting there.  Sub-millisecond races
- * cannot survive that, so a hit is either a real lost kick or a host-side stall of
- * a full tick.
- *
- * With that rule in place the split came out guest -> host; see
- * gzvm_event_idx_allowed() for the matrix.  Note that the interval matters much
- * less than it looks: 1 and 5 ms improve the odds, 10, 50, 100 and 500 are roughly
- * level with each other, and none of them eliminates the hang.  A single
- * repairable lost kick should make a long interval slow rather than fatal, so
- * either something upstream in the guest times out while we dawdle, or there is a
- * second loss this probe cannot see -- if avail->idx is itself stale to us,
- * virtio_queue_empty() returns true and we never fire.
- *
- * Use with GZVM_EVENT_IDX=on; with EVENT_IDX withdrawn there is nothing to
- * measure, because the flag forms already re-poll.
- */
-int gzvm_vq_repoll_ms(void)
-{
-    static int ms = -1;
-
-    if (ms < 0) {
-        const char *env = getenv("GZVM_VQ_REPOLL_MS");
-
-        ms = env ? atoi(env) : 0;
-        if (ms < 0) {
-            ms = 0;
-        }
-    }
-
-    return ms;
-}
-
-/*
- * Ignore the guest's used_event when deciding whether to interrupt.  Off by
- * default; set GZVM_NOTIFY_FORCE=on.
- *
- * This is the other half of the direction split, and the half no re-poll can
- * reach.  EVENT_IDX makes both sides consult a counter the other side publishes:
- * the guest reads used->avail_event before ringing the doorbell, and we read
- * avail->used_event in virtio_split_should_notify() before raising an interrupt.
- * gzvm_vq_repoll_ms() can synthesise a doorbell, so it covers the first.  Nothing
- * covers the second: by the time we decide not to interrupt, the completions are
- * already in the used ring and it is the guest that is not looking, so there is
- * no later event to correct the decision.
- *
- * Setting this keeps EVENT_IDX advertised -- the guest's own kick suppression is
- * left completely alone -- and only stops us acting on used_event, so we notify
- * unconditionally.  That isolates the host -> guest direction.
- *
- * The answer was negative, and that is why this stays in the tree.  At -smp 8
- * with EVENT_IDX on, this alone still hangs, while GZVM_VQ_REPOLL_MS=1 alone
- * boots and the two together are no better than the re-poll alone.  So we are not
- * the side losing events; keep this knob as the negative control that makes the
- * guest -> host verdict in gzvm_event_idx_allowed() falsifiable by someone else.
- *
- * Never a candidate fix, whichever way it had come out.  It throws away every
- * interrupt EVENT_IDX was meant to elide, which is most of the feature's value,
- * and it would be a strange thing to ship next to simply withdrawing the feature.
- * Withdrawing it stays the default; see gzvm_event_idx_allowed().
- */
-bool gzvm_notify_force(void)
-{
-    static int force = -1;
-
-    if (force < 0) {
-        const char *env = getenv("GZVM_NOTIFY_FORCE");
-
-        force = env && (!strcmp(env, "on") || !strcmp(env, "1"));
-        if (force) {
-            warn_report("gzvm: ignoring used_event; every completion will "
-                        "interrupt the guest");
-        }
-    }
-
-    return force != 0;
 }
 
 static int gzvm_init(MachineState *ms)

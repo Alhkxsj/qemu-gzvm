@@ -22,7 +22,6 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/range.h"
-#include "qemu/timer.h"
 #include "system/gzvm.h"
 #include "standard-headers/linux/virtio_ids.h"
 #include "standard-headers/linux/virtio_pci.h"
@@ -172,86 +171,6 @@ static void virtio_pci_intx_routing_notifier(PCIDevice *pci_dev)
 
     virtio_pci_intx_irqfd_teardown(proxy);
     virtio_pci_intx_irqfd_setup(proxy);
-}
-
-/*
- * GZVM_VQ_REPOLL_MS diagnostic; see gzvm_vq_repoll_ms() for what the outcome
- * means.  The short version: if a -smp 8 boot with GZVM_EVENT_IDX=on only
- * succeeds with this armed, the handshake being lost is guest -> host.
- *
- * Firing on the empty -> non-empty transition rather than on every non-empty
- * queue is deliberate.  Plenty of queues are non-empty as a matter of course --
- * virtio-net's RX ring is permanently stocked with buffers the guest posted and
- * that we only consume when a packet arrives -- so "has avail entries" is not a
- * stall signal, and notifying on it every tick would be noise that also makes
- * the hit count meaningless.  A transition is one kick's worth of new work,
- * which is what a dropped doorbell looks like from here.
- *
- * The reads race with the iothread that owns the queue.  That is acceptable for
- * a diagnostic: the only consequence is a redundant virtio_queue_notify(), which
- * is always safe.
- */
-static void virtio_pci_vq_repoll(void *opaque)
-{
-    VirtIOPCIProxy *proxy = opaque;
-    VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
-    unsigned int last_avail;
-    int n;
-
-    if (!vdev || !virtio_device_started(vdev, vdev->status)) {
-        goto rearm;
-    }
-
-    for (n = 0; n < VIRTIO_QUEUE_MAX; n++) {
-        VirtQueue *vq;
-
-        if (!virtio_queue_get_num(vdev, n)) {
-            break;
-        }
-
-        vq = virtio_get_queue(vdev, n);
-        if (virtio_queue_empty(vq)) {
-            proxy->vq_repoll_pending[n] = false;
-            continue;
-        }
-
-        last_avail = virtio_queue_get_last_avail_idx(vdev, n);
-
-        if (!proxy->vq_repoll_pending[n]) {
-            /*
-             * First sighting.  Do not believe it yet: the guest writing
-             * avail->idx a moment before its kick reaches us looks exactly like
-             * a lost kick from here, and at 1 ms those races are the common
-             * case.  Record where we are and wait one tick.
-             */
-            proxy->vq_repoll_pending[n] = true;
-            proxy->vq_repoll_mark[n] = last_avail;
-            continue;
-        }
-
-        if (last_avail != proxy->vq_repoll_mark[n]) {
-            /* We consumed something, so a kick did reach us.  Re-mark. */
-            proxy->vq_repoll_mark[n] = last_avail;
-            continue;
-        }
-
-        /*
-         * Two consecutive ticks with work waiting and last_avail_idx unmoved, so
-         * we popped nothing at all in that window.  Either the kick was lost or
-         * we stalled for a whole tick; both are worth reporting, and the
-         * synthetic kick is harmless either way.
-         */
-        if (++proxy->vq_repoll_hits <= 8) {
-            info_report("gzvm: re-poll: %s vq %d idle at avail_idx %u for two "
-                        "ticks with work waiting (hit %" PRIu64 ")",
-                        vdev->name, n, last_avail, proxy->vq_repoll_hits);
-        }
-        virtio_queue_notify(vdev, n);
-    }
-
-rearm:
-    timer_mod(proxy->vq_repoll_timer,
-              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + gzvm_vq_repoll_ms());
 }
 
 /*
@@ -1356,8 +1275,8 @@ static int virtio_pci_set_guest_notifiers(DeviceState *d, int nvqs, bool assign)
      *
      * Keep it false: MSI-X is delivered from userspace via msix_notify(), which
      * writes the v2m doorbell and becomes one SPI.  Per-vector irqfd is a
-     * separate step, and that is what gzvm_msi_via_irqfd_enabled() is reserved
-     * for -- it is still unused.
+     * separate step: it needs gzvm_add_irqfd() wired up per vector and a
+     * with_irqfd that tracks msix_enabled() again.  Until that exists, false.
      */
     bool with_irqfd = false;
 
@@ -2204,15 +2123,6 @@ static void virtio_pci_device_plugged(DeviceState *d, Error **errp)
         pci_device_set_intx_routing_notifier(&proxy->pci_dev,
                                             virtio_pci_intx_routing_notifier);
     }
-
-    if (gzvm_enabled() && gzvm_vq_repoll_ms() > 0) {
-        proxy->vq_repoll_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
-                                              virtio_pci_vq_repoll, proxy);
-        timer_mod(proxy->vq_repoll_timer,
-                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + gzvm_vq_repoll_ms());
-        info_report("gzvm: %s virtqueue re-poll armed every %d ms",
-                    vdev->name, gzvm_vq_repoll_ms());
-    }
 }
 
 static void virtio_pci_device_unplugged(DeviceState *d)
@@ -2224,11 +2134,6 @@ static void virtio_pci_device_unplugged(DeviceState *d)
     virtio_pci_stop_ioeventfd(proxy);
     pci_device_set_intx_routing_notifier(&proxy->pci_dev, NULL);
     virtio_pci_intx_irqfd_teardown(proxy);
-
-    if (proxy->vq_repoll_timer) {
-        timer_free(proxy->vq_repoll_timer);
-        proxy->vq_repoll_timer = NULL;
-    }
 
     if (modern) {
         virtio_pci_modern_mem_region_unmap(proxy, &proxy->common);
