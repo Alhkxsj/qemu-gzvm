@@ -23,7 +23,7 @@ static int gzvm_init_vcpu(CPUState *cpu)
     ret = gzvm_vm_ioctl(GZVM_CREATE_VCPU, (void *)(uintptr_t)cpu->cpu_index);
     if (ret < 0) {
         g_free(vcpu);
-        error_report("gzvm: GZVM_CREATE_VCPU failed: %s (errno=%d)",
+        gz_report("gzvm: GZVM_CREATE_VCPU failed: %s (errno=%d)",
                      strerror(errno), errno);
         return ret;
     }
@@ -76,7 +76,7 @@ static int gzvm_cpu_exec(CPUState *cpu)
             gzvm_eat_signals(cpu);
             return EXCP_INTERRUPT;
         }
-        error_report("gzvm: GZVM_RUN failed: %s (errno=%d)", strerror(errno), errno);
+        gz_report("gzvm: GZVM_RUN failed: %s (errno=%d)", strerror(errno), errno);
         return -1;
     }
 
@@ -95,7 +95,7 @@ static int gzvm_cpu_exec(CPUState *cpu)
     case GZVM_EXIT_IRQ:
         return EXCP_INTERRUPT;
     case GZVM_EXIT_HYPERCALL:
-        warn_report("gzvm: VCPU%u unhandled hypercall fn=0x%" PRIx64,
+        gz_report("gzvm: VCPU%u unhandled hypercall fn=0x%" PRIx64,
                     cpu->cpu_index, (uint64_t)run->hypercall.args[0]);
         return EXCP_INTERRUPT;
     case GZVM_EXIT_GZ:
@@ -111,14 +111,14 @@ static int gzvm_cpu_exec(CPUState *cpu)
         }
         return EXCP_INTERRUPT;
     case GZVM_EXIT_EXCEPTION:
-        error_report("gzvm: VCPU%u exception: type=%u error_code=0x%x "
+        gz_report("gzvm: VCPU%u exception: type=%u error_code=0x%x "
                      "fault_gpa=0x%" PRIx64,
                      cpu->cpu_index, run->exception.exception,
                      run->exception.error_code,
                      (uint64_t)run->exception.fault_gpa);
         return -1;
     case 0:
-        warn_report_once("gzvm: VCPU%u exit_reason=0 (vCPU may not have run)",
+        gz_report_once("gzvm: VCPU%u exit_reason=0 (vCPU may not have run)",
                          cpu->cpu_index);
         return 0;
     default:
@@ -131,7 +131,7 @@ static void do_gzvm_cpu_synchronize_post_reset(CPUState *cpu,
 {
     int ret = gzvm_arch_put_registers(cpu, 0);
     if (ret) {
-        warn_report("gzvm: VCPU%u put_registers failed with %d",
+        gz_report("gzvm: VCPU%u put_registers failed with %d",
                     cpu->cpu_index, ret);
     }
 }
@@ -146,7 +146,7 @@ static void do_gzvm_cpu_synchronize_post_init(CPUState *cpu,
 {
     int ret = gzvm_arch_put_registers(cpu, 1);
     if (ret) {
-        warn_report("gzvm: VCPU%u put_registers(post_init) failed with %d",
+        gz_report("gzvm: VCPU%u put_registers(post_init) failed with %d",
                     cpu->cpu_index, ret);
     }
 }
@@ -208,7 +208,7 @@ void *gzvm_cpu_thread_fn(void *arg)
             if (ret == EXCP_DEBUG) {
                 cpu_handle_guest_debug(cpu);
             } else if (ret < 0) {
-                error_report("gzvm: VCPU%u run error ret=%d", cpu->cpu_index, ret);
+                gz_report("gzvm: VCPU%u run error ret=%d", cpu->cpu_index, ret);
                 vm_stop(RUN_STATE_INTERNAL_ERROR);
             }
         }

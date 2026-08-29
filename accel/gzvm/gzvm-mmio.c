@@ -21,7 +21,7 @@ int gzvm_handle_mmio_exit(CPUState *cpu, struct gzvm_vcpu_run *run)
     MemTxResult r;
 
     if (run->mmio.size > 8) {
-        warn_report("gzvm: large MMIO %s at 0x%" PRIx64 " size=%" PRIu64
+        gz_report("gzvm: large MMIO %s at 0x%" PRIx64 " size=%" PRIu64
                      " (max 8 bytes supported, treated as RAZ/WI)",
                      run->mmio.is_write ? "write" : "read",
                      (uint64_t)run->mmio.phys_addr,
@@ -37,7 +37,7 @@ int gzvm_handle_mmio_exit(CPUState *cpu, struct gzvm_vcpu_run *run)
             hwaddr corrected = (addr & 0x0FFFFFFF) | 0x04000000;
             slot = gzvm_find_slot_by_addr_locked(s, corrected);
             if (slot) {
-                warn_report_once("gzvm: MMIO IPA corrected 0x%" PRIx64
+                gz_report_once("gzvm: MMIO IPA corrected 0x%" PRIx64
                                  " to 0x%" PRIx64, addr, corrected);
                 addr = corrected;
             }
@@ -71,7 +71,7 @@ int gzvm_handle_mmio_exit(CPUState *cpu, struct gzvm_vcpu_run *run)
         }
     }
 
-    warn_report("gzvm: %s at 0x%" PRIx64 " size=%" PRIu64 " returned %u, "
+    gz_report("gzvm: %s at 0x%" PRIx64 " size=%" PRIu64 " returned %u, "
                 "treated as RAZ/WI",
                 run->mmio.is_write ? "MMIO write" : "MMIO read",
                 (uint64_t)run->mmio.phys_addr,
@@ -99,7 +99,7 @@ int gzvm_handle_system_event(CPUState *cpu, struct gzvm_vcpu_run *run)
         cpu->halted = 1;
         return EXCP_INTERRUPT;
     case GZVM_SYSTEM_EVENT_SEV_TERM:
-        warn_report("gzvm: SEV_TERM event on VCPU%u (not applicable to GZVM)",
+        gz_report("gzvm: SEV_TERM event on VCPU%u (not applicable to GZVM)",
                     cpu->cpu_index);
         return EXCP_INTERRUPT;
     default:
@@ -109,7 +109,7 @@ int gzvm_handle_system_event(CPUState *cpu, struct gzvm_vcpu_run *run)
 
 int gzvm_handle_fail_entry(CPUState *cpu, struct gzvm_vcpu_run *run)
 {
-    error_report("gzvm: CPU#%d FAIL_ENTRY reason=0x%" PRIx64 " cpu=%u",
+    gz_report("gzvm: CPU#%d FAIL_ENTRY reason=0x%" PRIx64 " cpu=%u",
                  cpu->cpu_index,
                  (uint64_t)run->fail_entry.hardware_entry_failure_reason,
                  run->fail_entry.cpu);
@@ -118,10 +118,10 @@ int gzvm_handle_fail_entry(CPUState *cpu, struct gzvm_vcpu_run *run)
 
 int gzvm_handle_internal_error(CPUState *cpu, struct gzvm_vcpu_run *run)
 {
-    error_report("gzvm: CPU#%d INTERNAL_ERROR suberror=%u ndata=%u",
+    gz_report("gzvm: CPU#%d INTERNAL_ERROR suberror=%u ndata=%u",
                  cpu->cpu_index, run->internal.suberror, run->internal.ndata);
     for (int i = 0; i < run->internal.ndata && i < 16; i++) {
-        error_report("gzvm:   data[%d] = 0x%" PRIx64, i,
+        gz_report("gzvm:   data[%d] = 0x%" PRIx64, i,
                      (uint64_t)run->internal.data[i]);
     }
     return -1;
@@ -129,7 +129,7 @@ int gzvm_handle_internal_error(CPUState *cpu, struct gzvm_vcpu_run *run)
 
 int gzvm_handle_unknown_exit(CPUState *cpu, struct gzvm_vcpu_run *run)
 {
-    error_report("gzvm: CPU#%d unknown exit_reason=0x%x",
+    gz_report("gzvm: CPU#%d unknown exit_reason=0x%x",
                  cpu->cpu_index, run->exit_reason);
     return 0;
 }

@@ -140,7 +140,7 @@ void gzvm_install_sigsegv_handler(void)
     gzvm_signal_page_size = qemu_real_host_page_size();
 
 #ifndef MAP_FIXED_NOREPLACE
-    warn_report("gzvm: MAP_FIXED_NOREPLACE not available (kernel < 4.17), "
+    gz_report("gzvm: MAP_FIXED_NOREPLACE not available (kernel < 4.17), "
                 "falling back to MAP_FIXED");
 #endif
 

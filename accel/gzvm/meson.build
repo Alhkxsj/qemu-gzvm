@@ -2,6 +2,7 @@ gzvm_ss = ss.source_set()
 gzvm_ss.add(files(
   'gzvm.c',
   'gzvm-accel-ops.c',
+  'gzvm-report.c',
   'gzvm-ioctl.c',
   'gzvm-irq.c',
   'gzvm-mem.c',

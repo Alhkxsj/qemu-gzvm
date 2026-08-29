@@ -92,14 +92,14 @@ static void gzvm_arch_set_id_regs(CPUState *cs)
                              GZVM_REG_ARM64_SYSREG | (enc & 0xffff);       \
             if (gzvm_set_one_reg(cs, sysid, &reg)) {                       \
                 if (!warned) {                                             \
-                    warn_report("gzvm: failed to set CPU ID register %s: %s", \
+                    gz_report("gzvm: failed to set CPU ID register %s: %s", \
                                 #NAME, strerror(errno));                   \
                     warned = true;                                         \
                 }                                                          \
             } else {                                                       \
                 pushed++;                                                  \
                 if (!logged) {                                             \
-                    info_report("gzvm:   id %s = 0x%016" PRIx64,           \
+                    gz_report("gzvm:   id %s = 0x%016" PRIx64,           \
                                 #NAME, reg);                               \
                 }                                                          \
             }                                                              \
@@ -109,7 +109,7 @@ static void gzvm_arch_set_id_regs(CPUState *cs)
 #undef X
 
     if (!logged) {
-        info_report("gzvm: programmed %d host ID registers into vcpu", pushed);
+        gz_report("gzvm: programmed %d host ID registers into vcpu", pushed);
         logged = true;
     }
 }
@@ -133,13 +133,13 @@ void gzvm_set_gic_bases(uint64_t dist_base, uint64_t redist_base,
     state->gic_redist_size = redist_size;
 
     if (dist_base != 0x08000000ULL || redist_base != 0x080A0000ULL) {
-        warn_report("gzvm: GIC base address mismatch:");
-        warn_report("  QEMU virt: DIST=0x%08" PRIx64
+        gz_report("gzvm: GIC base address mismatch:");
+        gz_report("  QEMU virt: DIST=0x%08" PRIx64
                     " REDIST=0x%08" PRIx64 " (size=0x%" PRIx64 ")",
                     dist_base, redist_base, redist_size);
-        warn_report("  Kernel:    DIST=0x%08x REDIST=0x%08x",
+        gz_report("  Kernel:    DIST=0x%08x REDIST=0x%08x",
                     0x08000000, 0x080A0000);
-        warn_report("  GIC will likely not work.  The kernel driver "
+        gz_report("  GIC will likely not work.  The kernel driver "
                     "ignores dev_addr and uses fixed addresses.");
     }
 }
@@ -194,7 +194,7 @@ static int gzvm_set_one_reg_err(CPUState *cs, uint64_t reg_id, uint64_t *val,
 {
     int ret = gzvm_set_one_reg(cs, reg_id, val);
     if (ret) {
-        error_report("gzvm: put_registers: %s failed: %s",
+        gz_report("gzvm: put_registers: %s failed: %s",
                      name, strerror(errno));
     }
     return ret;
@@ -642,7 +642,7 @@ void arm_cpu_gzvm_set_irq(void *arm_cpu, int irq, int level)
     irq_level.level = !!level;
 
     if (gzvm_vm_ioctl(GZVM_IRQ_LINE, &irq_level)) {
-        warn_report("gzvm: GZVM_IRQ_LINE failed for CPU irq=%d level=%d: %s",
+        gz_report("gzvm: GZVM_IRQ_LINE failed for CPU irq=%d level=%d: %s",
                     irq, level, strerror(errno));
     }
 }

@@ -6,6 +6,7 @@
 #include "qemu/thread.h"
 #include "qemu/queue.h"
 #include "system/accel-ops.h"
+#include "system/gzvm_report.h"
 #include "exec/memory.h"
 #include "linux-headers/linux/gzvm.h"
 

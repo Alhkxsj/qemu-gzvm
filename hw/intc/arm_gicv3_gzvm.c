@@ -164,7 +164,7 @@ static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
                   level);
 
     if (gzvm_vm_ioctl(GZVM_IRQ_LINE, &irq_level)) {
-        warn_report("gzvm: GZVM_IRQ_LINE failed for irq=%d level=%d: %s",
+        gz_report("gzvm: GZVM_IRQ_LINE failed for irq=%d level=%d: %s",
                     knum, level, strerror(errno));
     }
 }

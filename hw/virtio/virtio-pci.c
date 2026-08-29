@@ -23,6 +23,7 @@
 #include "qemu/module.h"
 #include "qemu/range.h"
 #include "system/gzvm.h"
+#include "system/gzvm_report.h"
 #include "standard-headers/linux/virtio_ids.h"
 #include "standard-headers/linux/virtio_pci.h"
 #include "trace.h"
@@ -112,7 +113,7 @@ static bool virtio_pci_intx_irqfd_setup(VirtIOPCIProxy *proxy)
     }
 
     if (gzvm_add_irqfd(&proxy->intx_notifier, NULL, route.irq) < 0) {
-        warn_report("gzvm: INTx irqfd for %s on gsi %d failed: %s; using ioctl "
+        gz_report("gzvm: INTx irqfd for %s on gsi %d failed: %s; using ioctl "
                     "injection instead",
                     object_get_typename(OBJECT(pci_dev)), route.irq,
                     strerror(errno));
@@ -129,7 +130,7 @@ static bool virtio_pci_intx_irqfd_setup(VirtIOPCIProxy *proxy)
      * fallback boots too.  This line is the only positive evidence that the
      * irqfd is what is carrying interrupts.
      */
-    info_report("gzvm: %s INTx -> irqfd on gsi %d",
+    gz_report("gzvm: %s INTx -> irqfd on gsi %d",
                 object_get_typename(OBJECT(pci_dev)), route.irq);
     return true;
 }
@@ -142,7 +143,7 @@ static void virtio_pci_intx_irqfd_teardown(VirtIOPCIProxy *proxy)
 
     proxy->intx_irqfd = false;
     if (gzvm_remove_irqfd(&proxy->intx_notifier, proxy->intx_gsi) < 0) {
-        error_report("gzvm: releasing INTx irqfd on gsi %d failed: %s",
+        gz_report("gzvm: releasing INTx irqfd on gsi %d failed: %s",
                      proxy->intx_gsi, strerror(errno));
     }
     event_notifier_cleanup(&proxy->intx_notifier);

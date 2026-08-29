@@ -44,7 +44,7 @@ gzvm_mem_ioeventfd_add(MemoryListener *listener, MemoryRegionSection *section,
         return;
     }
     if (r < 0) {
-        error_report("gzvm: ioeventfd_add failed addr=0x%" PRIx64 ": %s",
+        gz_report("gzvm: ioeventfd_add failed addr=0x%" PRIx64 ": %s",
                      (uint64_t)section->offset_within_address_space,
                      strerror(errno));
     }
@@ -61,7 +61,7 @@ gzvm_mem_ioeventfd_del(MemoryListener *listener, MemoryRegionSection *section,
                                  int128_get64(section->size), data,
                                  match_data, false);
     if (r < 0 && errno != ENOENT) {
-        error_report("gzvm: ioeventfd_del failed addr=0x%" PRIx64 ": %s",
+        gz_report("gzvm: ioeventfd_del failed addr=0x%" PRIx64 ": %s",
                      (uint64_t)section->offset_within_address_space,
                      strerror(errno));
     }
@@ -197,7 +197,7 @@ gzvm_io_ioeventfd_add(MemoryListener *listener, MemoryRegionSection *section,
                                match_data, true);
     if (r < 0 && errno == EEXIST) return;
     if (r < 0) {
-        error_report("gzvm: pio ioeventfd_add failed addr=0x%" PRIx64 ": %s",
+        gz_report("gzvm: pio ioeventfd_add failed addr=0x%" PRIx64 ": %s",
                      (uint64_t)section->offset_within_address_space,
                      strerror(errno));
     }
@@ -214,7 +214,7 @@ gzvm_io_ioeventfd_del(MemoryListener *listener, MemoryRegionSection *section,
                                int128_get64(section->size), data,
                                match_data, false);
     if (r < 0 && errno != ENOENT) {
-        error_report("gzvm: pio ioeventfd_del failed addr=0x%" PRIx64 ": %s",
+        gz_report("gzvm: pio ioeventfd_del failed addr=0x%" PRIx64 ": %s",
                      (uint64_t)section->offset_within_address_space,
                      strerror(errno));
     }

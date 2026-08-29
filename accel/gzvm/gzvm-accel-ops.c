@@ -152,7 +152,7 @@ bool gzvm_event_idx_allowed(void)
 
         allowed = env && (!strcmp(env, "on") || !strcmp(env, "1"));
         if (allowed) {
-            warn_report("gzvm: offering VIRTIO_RING_F_EVENT_IDX; expect hangs "
+            gz_report("gzvm: offering VIRTIO_RING_F_EVENT_IDX; expect hangs "
                         "at -smp 4 and above");
         }
     }
@@ -195,7 +195,7 @@ static void gzvm_setup_post(MachineState *ms, AccelState *accel)
 {
     int r = gzvm_start_vm();
     if (r < 0) {
-        warn_report("gzvm: VM start failed");
+        gz_report("gzvm: VM start failed");
     }
 }
 

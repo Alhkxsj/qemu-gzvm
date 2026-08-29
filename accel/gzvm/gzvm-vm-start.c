@@ -21,7 +21,7 @@ int gzvm_start_vm(void)
         dtb.dtb_size = s->dtb_size;
         ret = gzvm_vm_ioctl(GZVM_SET_DTB_CONFIG, &dtb);
         if (ret != 0) {
-            error_report("gzvm: GZVM_SET_DTB_CONFIG failed: %s (errno=%d)",
+            gz_report("gzvm: GZVM_SET_DTB_CONFIG failed: %s (errno=%d)",
                          strerror(errno), errno);
             return -1;
         }

@@ -156,7 +156,7 @@ static int gzvm_remove_mem_slot_locked(GZVMState *s, gzvm_slot *slot)
 
     ret = gzvm_set_memory_region_locked(s, slot->id, 0, 0, 0, NULL);
     if (ret) {
-        error_report("gzvm: remove memory slot %u failed: %s (errno=%d)",
+        gz_report("gzvm: remove memory slot %u failed: %s (errno=%d)",
                      slot->id, strerror(errno), errno);
         return ret;
     }
@@ -175,14 +175,14 @@ static int gzvm_add_mem_slot(GZVMState *s, uint8_t *hva, uint64_t gpa,
 
     slot = gzvm_get_free_slot(s);
     if (!slot) {
-        error_report("gzvm: No free memory slots available!");
+        gz_report("gzvm: No free memory slots available!");
         return -ENOSPC;
     }
 
     ret = gzvm_set_memory_region_locked(s, slot->id, flags,
                                         gpa, size, hva);
     if (ret) {
-        error_report("gzvm: GZVM_SET_USER_MEMORY_REGION failed: %s (errno=%d)",
+        gz_report("gzvm: GZVM_SET_USER_MEMORY_REGION failed: %s (errno=%d)",
                      strerror(errno), errno);
         return ret;
     }
@@ -344,7 +344,7 @@ static int gzvm_create_vgic_device(GZVMState *s,
     };
     int ret = gzvm_vm_ioctl(GZVM_CREATE_DEVICE, &dev);
     if (ret) {
-        error_report("gzvm: create %s failed: %s (errno=%d)",
+        gz_report("gzvm: create %s failed: %s (errno=%d)",
                      name, strerror(errno), errno);
         return ret;
     }
@@ -358,13 +358,13 @@ static int gzvm_open_device(GZVMState *s)
 
     s->fd = qemu_open_old("/dev/gzvm", O_RDWR);
     if (s->fd == -1) {
-        error_report("Could not access /dev/gzvm: %s", strerror(errno));
+        gz_report("Could not access /dev/gzvm: %s", strerror(errno));
         return -1;
     }
 
     ret = gzvm_dev_ioctl(s, GZVM_CREATE_VM, NULL);
     if (ret < 0) {
-        error_report("gzvm: GZVM_CREATE_VM failed: %s (errno=%d)",
+        gz_report("gzvm: GZVM_CREATE_VM failed: %s (errno=%d)",
                      strerror(errno), errno);
         close(s->fd);
         return -1;
@@ -379,9 +379,9 @@ static void gzvm_probe_caps(GZVMState *s)
         uint64_t cap = GZVM_CAP_ARM_VM_IPA_SIZE;
         int r = gzvm_vm_ioctl(GZVM_CHECK_EXTENSION, &cap);
         if (r == 0) {
-            info_report("gzvm: IPA size: %d bits", (int)cap);
+            gz_report("gzvm: IPA size: %d bits", (int)cap);
         } else {
-            warn_report("gzvm: IPA size probe failed (r=%d), "
+            gz_report("gzvm: IPA size probe failed (r=%d), "
                         "assuming 40 bits", r);
         }
     }
@@ -397,7 +397,7 @@ static void gzvm_probe_caps(GZVMState *s)
             uint64_t c = cap_list[i].cap;
             int r = gzvm_vm_ioctl(GZVM_CHECK_EXTENSION, &c);
             if (r == 0) {
-                info_report("gzvm: cap %s = %" PRIu64, cap_list[i].name, c);
+                gz_report("gzvm: cap %s = %" PRIu64, cap_list[i].name, c);
             }
         }
     }
