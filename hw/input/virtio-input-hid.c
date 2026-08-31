@@ -102,14 +102,24 @@ static void virtio_input_handle_event(DeviceState *dev, QemuConsole *src,
         break;
     case INPUT_EVENT_KIND_BTN:
         btn = evt->u.btn.data;
-        if (vhid->wheel_axis &&
+        /*
+         * Map wheel buttons to REL_WHEEL (vertical) or REL_HWHEEL
+         * (horizontal) axis events.  UP/RIGHT = +1, DOWN/LEFT = -1.
+         */
+        if (vhid->wheel_axis && btn->down &&
             (btn->button == INPUT_BUTTON_WHEEL_UP ||
-             btn->button == INPUT_BUTTON_WHEEL_DOWN) &&
-            btn->down) {
+             btn->button == INPUT_BUTTON_WHEEL_DOWN ||
+             btn->button == INPUT_BUTTON_WHEEL_LEFT ||
+             btn->button == INPUT_BUTTON_WHEEL_RIGHT)) {
+            uint16_t code = (btn->button == INPUT_BUTTON_WHEEL_UP ||
+                             btn->button == INPUT_BUTTON_WHEEL_DOWN)
+                            ? REL_WHEEL : REL_HWHEEL;
+            int32_t val = (btn->button == INPUT_BUTTON_WHEEL_UP ||
+                           btn->button == INPUT_BUTTON_WHEEL_RIGHT)
+                          ? 1 : -1;
             event.type  = cpu_to_le16(EV_REL);
-            event.code  = cpu_to_le16(REL_WHEEL);
-            event.value = cpu_to_le32(btn->button == INPUT_BUTTON_WHEEL_UP
-                                      ? 1 : -1);
+            event.code  = cpu_to_le16(code);
+            event.value = cpu_to_le32(val);
             virtio_input_send(vinput, &event);
         } else if (keymap_button[btn->button]) {
             event.type  = cpu_to_le16(EV_KEY);
