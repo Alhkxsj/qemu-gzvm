@@ -1258,27 +1258,6 @@ static int virtio_pci_set_guest_notifiers(DeviceState *d, int nvqs, bool assign)
     VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
     VirtioDeviceClass *k = VIRTIO_DEVICE_GET_CLASS(vdev);
     int r, n;
-    /*
-     * Upstream reads
-     *     msix_enabled(&proxy->pci_dev) && kvm_msi_via_irqfd_enabled()
-     * and this tree kept only the first half.  That was inert as long as
-     * msi_nonbroken was false, because then msix_init() always failed and
-     * msix_enabled() could never be true.  create_gzvm_v2m() makes MSI-X work,
-     * so the missing conjunct would now bite: there is no MSI-via-irqfd routing
-     * anywhere in this tree -- virtio_pci_one_vector_unmask() has no
-     * kvm_irqchip_update_msi_route()/irqfd_use() equivalent and
-     * kvm_msi_via_irqfd_enabled() is referenced nowhere -- while with_irqfd true
-     * makes virtio_queue_set_guest_notifier_fd_handler() install *no* handler on
-     * the guest notifier.  virtio-blk completions go through
-     * virtio_notify_irqfd() (hw/block/virtio-blk.c), so they would set an
-     * eventfd that neither QEMU nor the kernel ever reads and the disk would
-     * simply stop raising interrupts.
-     *
-     * Keep it false: MSI-X is delivered from userspace via msix_notify(), which
-     * writes the v2m doorbell and becomes one SPI.  Per-vector irqfd is a
-     * separate step: it needs gzvm_add_irqfd() wired up per vector and a
-     * with_irqfd that tracks msix_enabled() again.  Until that exists, false.
-     */
     bool with_irqfd = false;
 
     nvqs = MIN(nvqs, VIRTIO_QUEUE_MAX);

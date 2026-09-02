@@ -40,6 +40,7 @@ struct GZVMState {
     uint64_t gic_redist_base;
     uint64_t gic_redist_size;
     uint64_t ram_base;
+    uint32_t msi_vectors;
     QSIMPLEQ_HEAD(, GZVMMemoryUpdate) transaction_add;
     QSIMPLEQ_HEAD(, GZVMMemoryUpdate) transaction_del;
 };

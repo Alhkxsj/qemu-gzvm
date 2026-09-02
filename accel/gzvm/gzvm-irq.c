@@ -100,33 +100,6 @@ bool gzvm_intx_irqfd_allowed(void)
 }
 
 /*
- * Whether to expose an MSI controller to the guest.
- *
- * GZ has no ITS: enum gzvm_device_type only has VGIC_V3_DIST and VGIC_V3_REDIST,
- * so there is no LPI injection primitive and an emulated ITS is not an option.
- * What is available is an SPI, and the GICv2m frame is exactly the standard way
- * to spell "an MSI write becomes an SPI".  The guest reaches it without any
- * driver changes: irq-gic-v3.c calls gicv2m_init() unconditionally on the
- * !gic_dist_supports_lpis() path, and arm64 selects ARM_GIC_V2M if PCI.
- *
- * On by default under gzvm.  Set GZVM_MSI=off to hide the frame again, which
- * leaves msi_nonbroken false, makes msix_init() fail with -ENOTSUP as before and
- * puts every virtio-pci device back on its shared INTx line.
- */
-bool gzvm_msi_allowed(void)
-{
-    static int allowed = -1;
-
-    if (allowed < 0) {
-        const char *val = getenv("GZVM_MSI");
-
-        allowed = !(val && (!strcmp(val, "off") || !strcmp(val, "0")));
-    }
-
-    return allowed;
-}
-
-/*
  * rn must be NULL.  GZVM_IRQFD_FLAG_RESAMPLE is accepted by the driver's
  * validity mask and then ignored -- nothing in drivers/virt/geniezone/ ever
  * reads it -- so there is no EOI notification to be had and a resample eventfd

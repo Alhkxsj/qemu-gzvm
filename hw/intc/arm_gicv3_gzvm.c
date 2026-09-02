@@ -28,11 +28,32 @@ typedef struct GZVMARMGICv3Class GZVMARMGICv3Class;
 DECLARE_OBJ_CHECKERS(GICv3State, GZVMARMGICv3Class,
                      GZVM_ARM_GICV3, TYPE_GZVM_ARM_GICV3)
 
-/*
- * Serialises the shadow level state in gzvm_arm_gicv3_set_irq() against the
- * GZVM_IRQ_LINE ioctl that acts on it.  See the comment in that function.
- */
+static EventNotifier *irq_notify;
+static int irq_notify_count;
 static QemuMutex gzvm_irq_level_lock;
+
+void gzvm_gic_register_irq_notifiers(EventNotifier *notifiers,
+                                     int count, int base_spi)
+{
+    int total = base_spi + count;
+    int i;
+
+    if (!irq_notify || irq_notify_count < total) {
+        EventNotifier *old = irq_notify;
+        int old_count = irq_notify_count;
+
+        irq_notify = g_new0(EventNotifier, total);
+        if (old && old_count > 0) {
+            memcpy(irq_notify, old, old_count * sizeof(EventNotifier));
+            g_free(old);
+        }
+        irq_notify_count = total;
+    }
+
+    for (i = 0; i < count; i++) {
+        irq_notify[base_spi + i] = notifiers[i];
+    }
+}
 
 static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
 {
@@ -42,6 +63,12 @@ static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
     int irqtype;
     int cpu;
     int knum;
+
+    if (level && irq_notify && irq >= GZVM_MSI_SPI_BASE &&
+        irq < irq_notify_count && irq_notify[irq].initialized) {
+        event_notifier_set(&irq_notify[irq]);
+        return;
+    }
 
     if (irq < (int)(s->num_irq - GIC_INTERNAL)) {
         irqtype = GZVM_IRQ_TYPE_SPI;
@@ -59,80 +86,6 @@ static void gzvm_arm_gicv3_set_irq(void *opaque, int irq, int level)
     cs = &s->cpu[cpu];
     level = !!level;
 
-    /*
-     * The shadow level state and the ioctl that acts on it have to move as one
-     * unit, hence the lock.
-     *
-     * This function is not guaranteed to run under the BQL.  The caller that
-     * used to prove it -- a virtio-blk completion arriving from its iothread as
-     * virtio_notify() -> virtio_pci_notify() -> pci_set_irq(), because this tree
-     * has no ITS and therefore no MSI-X to route it through an irqfd -- now goes
-     * through a GZVM_IRQFD instead and never reaches us.  The lock stays anyway:
-     * the shadow test-then-set has to be atomic against a vCPU thread driving
-     * the same line low from its ISR read, and nothing here can tell whether a
-     * given qemu_irq is only ever pulsed from the main loop.
-     *
-     * Two threads doing an unlocked test-then-set on one line lose transitions.
-     * On a shared level-triggered INTx line a lost 0->1 is not a hiccup, it is
-     * terminal: the line stays deasserted with work still pending in the used
-     * ring and the guest never gets another edge, so the disk simply stops
-     * answering.  That is the "dracut-initqueue / dev-disk-by-uuid" stall and
-     * the "kworker blocked for more than 122 seconds" traces, and it gets more
-     * likely the more vCPUs there are to race with.  Before this function
-     * suppressed anything the redundant injections happened to paper over it.
-     *
-     * Only suppress redundant *deassertions*.  A redundant assertion has to go
-     * through, and that asymmetry is a correctness requirement, not a tuning
-     * choice.
-     *
-     * Letting them through here cannot rescue a PCI device on its own, because
-     * PCI devices do not reach us via qemu_set_irq() directly: pci_irq_handler()
-     * de-duplicates in both directions one layer above us and returns before
-     * pci_change_irq_level(), so a re-assertion from a device that already holds
-     * INTx high never becomes a call into this function at all.  virtio-pci
-     * gets around that by bypassing this path entirely and driving INTx through
-     * a GZVM_IRQFD; see virtio_pci_intx_irqfd_setup().  What is left here is the
-     * platform devices -- pl011, the RTC, gpio -- which have no irqfd and for
-     * which the asymmetry above is the only thing between a shared
-     * level-triggered line and permanent silence.
-     *
-     * GZ gives userspace no way to read back or resample a line.  The only
-     * primitive is GZVM_IRQ_LINE -> gzvm_irqchip_inject_irq() -> an HVC into the
-     * hypervisor, and GZVM_GET_ONE_REG answers -EOPNOTSUPP.  The behaviour says
-     * GZ treats an injection as "make this INTID pending" rather than "hold this
-     * line at this level": once the guest acks and EOIs, the pending bit is
-     * consumed and nothing re-presents it, because GZ is not tracking a level to
-     * re-present from.  A real GICv3 keeps re-asserting for as long as the
-     * device holds the line high.
-     *
-     * So QEMU's shadow is not authoritative and cannot be used to skip work.
-     * See level=1 with shadow=1, stay quiet, and if GZ has meanwhile consumed
-     * that pending bit the guest never gets another interrupt on that line --
-     * permanently, because a level-triggered INTx device just holds the line
-     * high and waits.  Every device sharing the line dies with it.  At -smp 8
-     * that showed up as virtio-net going silent ~2s in (its watchdog reported
-     * the last good TX 6031 ms before the first timeout at t=8.16) with
-     * virtio-blk following, then jbd2, ext4lazyinit and systemd itself blocked
-     * forever -- on separate SPIs, which is what rules out a single racing line.
-     * More vCPUs make it likelier because there are more chances for an EOI to
-     * land between our shadow update and the next notify.  Before this function
-     * suppressed anything, the redundant injections re-armed the pending bit
-     * constantly and hid the problem entirely, which is why multicore worked
-     * before the de-duplication existed.
-     *
-     * Suppressing redundant level=0 stays safe: nothing has to be re-armed to
-     * remain quiescent, and that is where nearly all the waste was.
-     * qemu_set_irq() de-duplicates nothing, and several device models re-assert
-     * their current level on every register access -- pl011_update() runs from
-     * every UART read and write, which produced ~157 redundant level=0
-     * injections per real assertion in a "-d int" trace (44526 against 284 on
-     * SPI 1, 99.2% of all interrupt traffic).  Each one is an ioctl plus an HVC,
-     * and gzvm_irqchip_inject_irq() also calls gzvm_vcpu_wakeup_all(), which
-     * wakes *every* vCPU in the VM, so the cost scales with -smp.
-     *
-     * The shadow state is still tracked in both directions to keep the 0->0
-     * test meaningful.
-     */
     QEMU_LOCK_GUARD(&gzvm_irq_level_lock);
 
     if (irqtype == GZVM_IRQ_TYPE_SPI) {
@@ -228,6 +181,8 @@ static void gzvm_arm_gicv3_realize(DeviceState *dev, Error **errp)
     }
 
     qemu_mutex_init(&gzvm_irq_level_lock);
+    irq_notify = NULL;
+    irq_notify_count = 0;
 
     gicv3_init_irqs_and_mmio(s, gzvm_arm_gicv3_set_irq, gzvm_gicv3_ops);
 }
