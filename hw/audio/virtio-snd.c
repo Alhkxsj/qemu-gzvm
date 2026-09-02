@@ -530,10 +530,6 @@ process_cmd(VirtIOSound *s, virtio_snd_ctrl_command *cmd)
         qemu_log_mask(LOG_GUEST_ERROR,
                 "%s: virtio-snd command size incorrect %zu vs \
                 %zu\n", __func__, msg_sz, sizeof(virtio_snd_hdr));
-        /*
-         * Respond with VIRTIO_SND_S_BAD_MSG so the driver does not
-         * stall waiting for a completion on this virtqueue element.
-         */
         cmd->resp.code = cpu_to_le32(VIRTIO_SND_S_BAD_MSG);
         iov_from_buf(cmd->elem->in_sg,
                      cmd->elem->in_num,
@@ -649,15 +645,6 @@ static void virtio_snd_handle_event(VirtIODevice *vdev, VirtQueue *vq)
     trace_virtio_snd_handle_event();
 }
 
-/*
- * Send an asynchronous event to the driver via the event virtqueue.
- * Silently drops the event when the queue is not ready or the driver
- * has not provided buffers.
- *
- * @s: VirtIOSound device
- * @event: VIRTIO_SND_EVT_*
- * @data: event-specific payload (e.g. stream id)
- */
 static void virtio_snd_send_event(VirtIOSound *s, uint32_t event, uint32_t data)
 {
     VirtQueue *evq = s->queues[VIRTIO_SND_VQ_EVENT];
@@ -975,7 +962,6 @@ static inline void return_tx_buffer(VirtIOSoundPCMStream *stream,
                     VirtIOSoundPCMBuffer,
                     entry);
     virtio_snd_pcm_buffer_free(buffer);
-    /* Notify the driver that one playback period has been consumed. */
     virtio_snd_send_event(stream->s,
                           VIRTIO_SND_EVT_PCM_PERIOD_ELAPSED,
                           stream->id);
@@ -1057,7 +1043,6 @@ static inline void return_rx_buffer(VirtIOSoundPCMStream *stream,
                     VirtIOSoundPCMBuffer,
                     entry);
     virtio_snd_pcm_buffer_free(buffer);
-    /* Notify the driver that one capture period has been filled. */
     virtio_snd_send_event(stream->s,
                           VIRTIO_SND_EVT_PCM_PERIOD_ELAPSED,
                           stream->id);
