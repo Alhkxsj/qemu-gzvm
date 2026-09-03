@@ -13,11 +13,11 @@
 
 static void gzvm_assert_mutex_locked(QemuMutex *m)
 {
-    int ret = pthread_mutex_trylock(&m->lock);
+    int ret = qemu_mutex_trylock(m);
     if (ret == 0) {
-        pthread_mutex_unlock(&m->lock);
+        qemu_mutex_unlock(m);
     }
-    assert(ret == EBUSY);
+    assert(ret == -EBUSY);
 }
 
 static int gzvm_find_first_ge(GZVMState *s, uint64_t addr)
@@ -275,7 +275,10 @@ static void gzvm_set_phys_mem_locked(GZVMState *s,
         flags = GZVM_USER_MEM_REGION_PROTECT_FW;
     }
 
-    gzvm_add_mem(s, section, flags);
+    if (gzvm_add_mem(s, section, flags) < 0) {
+        gz_report("gzvm: failed to register memory region at GPA 0x%lx",
+                  (unsigned long)section->offset_within_address_space);
+    }
 }
 
 static void gzvm_region_add(MemoryListener *listener, MemoryRegionSection *section)
@@ -311,6 +314,19 @@ static void gzvm_drain_updates(GZVMState *s, bool add)
     }
 }
 
+static void gzvm_free_pending_updates(GZVMState *s)
+{
+    GZVMMemoryUpdate *u;
+    while ((u = QSIMPLEQ_FIRST(&s->transaction_add))) {
+        QSIMPLEQ_REMOVE_HEAD(&s->transaction_add, next);
+        g_free(u);
+    }
+    while ((u = QSIMPLEQ_FIRST(&s->transaction_del))) {
+        QSIMPLEQ_REMOVE_HEAD(&s->transaction_del, next);
+        g_free(u);
+    }
+}
+
 static void gzvm_region_commit(MemoryListener *listener)
 {
     GZVMState *s = GZVM_STATE(current_accel());
@@ -331,6 +347,14 @@ static MemoryListener gzvm_memory_listener = {
     .region_del = gzvm_region_del,
     .commit = gzvm_region_commit,
 };
+
+void gzvm_cleanup_mem_state(GZVMState *s)
+{
+    memory_listener_unregister(&gzvm_memory_listener);
+    memory_listener_unregister(&gzvm_ioeventfd_listener);
+    memory_listener_unregister(&gzvm_io_listener);
+    gzvm_free_pending_updates(s);
+}
 
 static int gzvm_create_vgic_device(GZVMState *s,
                                     int dev_type, uint64_t dev_addr,

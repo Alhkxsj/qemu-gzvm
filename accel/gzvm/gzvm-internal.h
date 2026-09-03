@@ -32,4 +32,6 @@ int gzvm_handle_unknown_exit(CPUState *cpu, struct gzvm_vcpu_run *run);
 extern MemoryListener gzvm_ioeventfd_listener;
 extern MemoryListener gzvm_io_listener;
 
+void gzvm_cleanup_mem_state(GZVMState *s);
+
 #endif

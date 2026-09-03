@@ -31,6 +31,7 @@ int gzvm_start_vm(void)
             }
             registered++;
         }
+
         gzvm_gic_register_irq_notifiers(notifiers, s->msi_vectors,
                                         GZVM_MSI_SPI_BASE);
         g_free(notifiers);

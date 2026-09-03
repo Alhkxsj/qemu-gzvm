@@ -172,12 +172,22 @@ static int gzvm_init(MachineState *ms)
 static void gzvm_accel_instance_finalize(Object *obj)
 {
     GZVMState *s = GZVM_STATE(obj);
+
+    /* Close device file descriptors first to prevent any ioctl calls. */
     if (s->fd >= 0) {
         close(s->fd);
     }
     if (s->vmfd >= 0) {
         close(s->vmfd);
     }
+
+    /* Unregister memory listeners and free pending transaction items. */
+    gzvm_cleanup_mem_state(s);
+
+    /* Destroy the mutex that protected slot operations. */
+    qemu_mutex_destroy(&s->slots_lock);
+
+    /* Free the slot arrays. */
     g_free(s->slots);
     g_free(s->sorted_ids);
 }

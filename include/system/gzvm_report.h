@@ -10,8 +10,11 @@ void gz_report_at(const char *file, const char *func, int line,
                   const char *fmt, ...);
 #define gz_report(...) gz_report_at(__FILE__, __func__, __LINE__, __VA_ARGS__)
 #define gz_report_once(...) ({ \
-    static bool print_once_; \
-    !print_once_ && (print_once_ = true, gz_report(__VA_ARGS__), true); \
+    static bool print_once_ = false; \
+    if (__sync_bool_compare_and_swap(&print_once_, false, true)) { \
+        gz_report(__VA_ARGS__); \
+    } \
+    true; \
 })
 
 #endif
