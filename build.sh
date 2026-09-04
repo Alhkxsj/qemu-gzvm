@@ -594,6 +594,9 @@ buildQemu() {
     -Dspice=disabled
     -Dspice_protocol=disabled
     -Dopengl=enabled
+    --extra-cflags=-fsanitize=undefined
+    --extra-cflags=-fno-omit-frame-pointer
+    --extra-ldflags=-fsanitize=undefined
   )
   rm -rf "$qemuBuild"
   mkdir -p "$qemuBuild"
