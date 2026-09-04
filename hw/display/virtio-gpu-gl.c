@@ -16,6 +16,8 @@ struct virgl_box {
 };
 
 static struct virgl_renderer_callbacks virgl_cbs;
+static QEMUTimer *fence_poll_timer;
+static void virtio_gpu_gl_fence_poll(void *opaque);
 
 static void virtio_gpu_gl_resource_destroy(VirtIOGPU *g,
                                            struct virtio_gpu_simple_resource *res,
@@ -86,15 +88,27 @@ static int virgl_make_current(void *cookie, int scanout,
     return dpy_gl_ctx_make_current(g->parent_obj.scanout[scanout].con, ctx);
 }
 
+/*
+ * virgl_process_fence - complete pending commands whose fence_id <= @fence_id
+ *
+ * virglrenderer may signal fences out of order, so we scan the entire
+ * fenceq and complete all commands with fence_id <= the reported one.
+ * This matches upstream QEMU behavior (see virtio-gpu-virgl.c).
+ */
 static void virgl_process_fence(VirtIOGPU *g, uint64_t fence_id)
 {
     struct virtio_gpu_ctrl_command *cmd, *tmp;
 
     QTAILQ_FOREACH_SAFE(cmd, &g->fenceq, next, tmp) {
-        if (cmd->cmd_hdr.fence_id != fence_id) {
+        /*
+         * Use <= instead of ==: the guest can emit fences out of order,
+         * and virglrenderer may signal a later fence before an earlier one.
+         * All commands with fence_id <= the reported one are considered done.
+         */
+        if (cmd->cmd_hdr.fence_id > fence_id) {
             continue;
         }
-        trace_virtio_gpu_fence_resp(fence_id);
+        trace_virtio_gpu_fence_resp(cmd->cmd_hdr.fence_id);
         virtio_gpu_ctrl_response_nodata(g, cmd, cmd->error ? cmd->error :
                                         VIRTIO_GPU_RESP_OK_NODATA);
         QTAILQ_REMOVE(&g->fenceq, cmd, next);
@@ -104,6 +118,16 @@ static void virgl_process_fence(VirtIOGPU *g, uint64_t fence_id)
     }
 }
 
+/*
+ * virgl_write_fence / virgl_write_context_fence
+ *
+ * Called by virglrenderer when a GL fence completes.  These callbacks
+ * are invoked from the rendering thread (or from virgl_renderer_poll).
+ * They drain the fenceq and send responses back to the guest.
+ *
+ * write_fence: legacy fence callback (virglrenderer < 1.0)
+ * write_context_fence: per-context fence (virglrenderer >= 1.0)
+ */
 static void virgl_write_fence(void *cookie, uint32_t fence)
 {
     VirtIOGPU *g = cookie;
@@ -151,6 +175,10 @@ static int virtio_gpu_gl_init(VirtIOGPU *g)
     virgl_add_capset(g, VIRTIO_GPU_CAPSET_VIRGL2);
     g->parent_obj.virtio_config.num_capsets = cpu_to_le32(g->capset_ids->len);
     g->virgl_inited = true;
+
+    fence_poll_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                    virtio_gpu_gl_fence_poll, g);
+
     return 0;
 }
 
@@ -450,7 +478,6 @@ static bool virtio_gpu_gl_scanout(VirtIOGPU *g,
     fb.stride = info.stride;
     fb.bytes_pp = 4;
     g->parent_obj.enable = 1;
-    virgl_renderer_force_ctx_0();
     qemu_console_resize(g->parent_obj.scanout[ss.scanout_id].con,
                         ss.r.width, ss.r.height);
     virtio_gpu_update_scanout(g, ss.scanout_id, res, &fb, &ss.r);
@@ -490,11 +517,37 @@ static bool virtio_gpu_gl_flush(VirtIOGPU *g,
     return true;
 }
 
+static void virtio_gpu_gl_fence_poll(void *opaque)
+{
+    VirtIOGPU *g = opaque;
+
+    if (!g->virgl_inited) {
+        return;
+    }
+    virgl_renderer_poll();
+    virtio_gpu_process_cmdq(g);
+    if (!QTAILQ_EMPTY(&g->cmdq) || !QTAILQ_EMPTY(&g->fenceq)) {
+        timer_mod(fence_poll_timer,
+                  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 10);
+    }
+}
+
 static void virtio_gpu_gl_process_cmd(VirtIOGPU *g,
                                       struct virtio_gpu_ctrl_command *cmd)
 {
+    int ret;
+
     VIRTIO_GPU_FILL_CMD(cmd->cmd_hdr);
     virtio_gpu_ctrl_hdr_bswap(&cmd->cmd_hdr);
+
+    /*
+     * virgl_renderer_force_ctx_0() ensures GL context 0 (the display
+     * context) is current before processing any command.  virglrenderer
+     * creates textures in various guest contexts, but the EGL/AGL display
+     * layer reads them from context 0.  This call is required for correct
+     * scanout — upstream QEMU calls it on every command too.
+     */
+    virgl_renderer_force_ctx_0();
 
     switch (cmd->cmd_hdr.type) {
     case VIRTIO_GPU_CMD_GET_CAPSET_INFO:
@@ -600,12 +653,59 @@ static void virtio_gpu_gl_process_cmd(VirtIOGPU *g,
         virtio_gpu_simple_process_cmd(g, cmd);
         break;
     }
-    if (!cmd->finished) {
-        virtio_gpu_ctrl_response_nodata(g, cmd, cmd->error ? cmd->error :
-                                        VIRTIO_GPU_RESP_OK_NODATA);
+
+    if (cmd->finished) {
+        return;
     }
+    if (cmd->error) {
+        virtio_gpu_ctrl_response_nodata(g, cmd, cmd->error);
+        return;
+    }
+
+    /*
+     * Commands without the FENCE flag get an immediate response.
+     * Commands with the FENCE flag are queued in fenceq; we ask
+     * virglrenderer to create a real GL fence, and the write_fence
+     * callback will send the response when the GPU finishes.
+     */
+    if (!(cmd->cmd_hdr.flags & VIRTIO_GPU_FLAG_FENCE)) {
+        virtio_gpu_ctrl_response_nodata(g, cmd, VIRTIO_GPU_RESP_OK_NODATA);
+        return;
+    }
+
+    trace_virtio_gpu_fence_ctrl(cmd->cmd_hdr.fence_id, cmd->cmd_hdr.type);
+
+    /*
+     * Unlike other virglrenderer functions, virgl_renderer_create_fence
+     * returns a positive error code (not negative).  If it fails, we must
+     * send an error response now — otherwise the command would be moved
+     * to fenceq by process_cmdq() and never complete.
+     */
+    ret = virgl_renderer_create_fence((uint32_t)cmd->cmd_hdr.fence_id, 0);
+    if (ret) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "%s: virgl_renderer_create_fence(%u) failed: %s\n",
+                      __func__, cmd->cmd_hdr.fence_id, strerror(ret));
+        virtio_gpu_ctrl_response_nodata(g, cmd,
+                                        VIRTIO_GPU_RESP_ERR_UNSPEC);
+        return;
+    }
+
+    /*
+     * Kick the fence poll timer so the callback fires even if the
+     * rendering thread doesn't call virgl_renderer_poll() itself.
+     */
+    timer_mod(fence_poll_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 10);
 }
 
+/*
+ * virtio_gpu_gl_update_cursor_data - get cursor pixels from virglrenderer
+ *
+ * virgl_renderer_get_cursor_data() allocates memory with calloc() and
+ * returns the cursor pixel data.  The caller MUST free() the returned
+ * pointer after use (not g_free — virglrenderer uses standard malloc).
+ */
 static void virtio_gpu_gl_update_cursor_data(VirtIOGPU *g,
                                              struct virtio_gpu_scanout *s,
                                              uint32_t resource_id)
@@ -621,7 +721,7 @@ static void virtio_gpu_gl_update_cursor_data(VirtIOGPU *g,
     data = virgl_renderer_get_cursor_data(resource_id, &w, &h);
     if (data && s->current_cursor && w == s->current_cursor->width &&
         h == s->current_cursor->height) {
-        memcpy(s->current_cursor->data, data, w * h * 4);
+        memcpy(s->current_cursor->data, data, (size_t)w * h * 4);
     }
     free(data);
 }
@@ -678,6 +778,8 @@ static void virtio_gpu_gl_device_unrealize(DeviceState *qdev)
         }
     }
     if (g->virgl_inited) {
+        timer_free(fence_poll_timer);
+        fence_poll_timer = NULL;
         virgl_renderer_cleanup(g);
         g->virgl_inited = false;
     }
