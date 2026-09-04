@@ -642,22 +642,3 @@ buildEpoxy
 buildVirglrenderer
 buildQemu
 packageQemu
-cat <<'EOF'
-──────────────────────────────────────
-  运行时检测（在 Android 设备上）：
-  
-  # 开启内存泄漏检测
-  export ASAN_OPTIONS=detect_leaks=1
-  
-  # 限制内存防止 OOM（可选）
-  export ASAN_OPTIONS=detect_leaks=1:halt_on_error=0
-  
-  # TSan（需单独编译，不能和 ASan 同用）
-  # 编译时改 commonCFlags 为：
-  #   -fsanitize=thread -fno-omit-frame-pointer
-  #   去掉 -fsanitize=address,undefined
-  
-  # Valgrind（需 root，很慢）
-  #   valgrind --leak-check=full --track-origins=yes ./qemu-system-aarch64 ...
-──────────────────────────────────────
-EOF
