@@ -594,7 +594,7 @@ buildQemu() {
     -Dspice=disabled
     -Dspice_protocol=disabled
     -Dopengl=enabled
-    -Dubsan=enabled
+    -Dubsan=true
     --extra-cflags=-fno-omit-frame-pointer
   )
   rm -rf "$qemuBuild"
