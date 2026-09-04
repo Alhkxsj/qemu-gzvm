@@ -41,7 +41,7 @@ toolchain="$ndkPath/toolchains/llvm/prebuilt/$hostTag"
 hostCC="${HOST_CC:-$(command -v cc || true)}"
 readelf="$toolchain/bin/llvm-readelf"
 strip="$toolchain/bin/llvm-strip"
-commonCFlags="-O3 -fsanitize=address,undefined -fno-omit-frame-pointer -flto=thin -ffunction-sections -fdata-sections -mcpu=oryon-1 -fPIC -fno-semantic-interposition -ftls-model=global-dynamic"
+commonCFlags="-O3 -fsanitize=address,undefined -fno-omit-frame-pointer -flto=thin -ffunction-sections -fdata-sections -mcpu=oryon-1 -fPIC -fno-semantic-interposition -ftls-model=global-dynamic -fsanitize-address-use-after-scope"
 libraryCFlags="$commonCFlags -DNDEBUG"
 commonLdFlags="-fsanitize=address,undefined -flto=thin -Wl,--lto-O3 -Wl,-O3 -Wl,--gc-sections -Wl,--icf=all"
 qemuCFlags="$commonCFlags -fno-unwind-tables -fno-asynchronous-unwind-tables -mbranch-protection=none -Wno-error -I$prefix/include -I$prefix/include/pixman-1"
@@ -642,3 +642,22 @@ buildEpoxy
 buildVirglrenderer
 buildQemu
 packageQemu
+cat <<'EOF'
+──────────────────────────────────────
+  运行时检测（在 Android 设备上）：
+  
+  # 开启内存泄漏检测
+  export ASAN_OPTIONS=detect_leaks=1
+  
+  # 限制内存防止 OOM（可选）
+  export ASAN_OPTIONS=detect_leaks=1:halt_on_error=0
+  
+  # TSan（需单独编译，不能和 ASan 同用）
+  # 编译时改 commonCFlags 为：
+  #   -fsanitize=thread -fno-omit-frame-pointer
+  #   去掉 -fsanitize=address,undefined
+  
+  # Valgrind（需 root，很慢）
+  #   valgrind --leak-check=full --track-origins=yes ./qemu-system-aarch64 ...
+──────────────────────────────────────
+EOF
