@@ -1,4 +1,5 @@
 #include "qemu/osdep.h"
+#include <inttypes.h>
 #include <virgl/virglrenderer.h>
 #include "hw/qdev-properties.h"
 #include "hw/virtio/virtio-gpu-bswap.h"
@@ -684,7 +685,7 @@ static void virtio_gpu_gl_process_cmd(VirtIOGPU *g,
     ret = virgl_renderer_create_fence((uint32_t)cmd->cmd_hdr.fence_id, 0);
     if (ret) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "%s: virgl_renderer_create_fence(%u) failed: %s\n",
+                      "%s: virgl_renderer_create_fence(%" PRIu64 ") failed: %s\n",
                       __func__, cmd->cmd_hdr.fence_id, strerror(ret));
         virtio_gpu_ctrl_response_nodata(g, cmd,
                                         VIRTIO_GPU_RESP_ERR_UNSPEC);
