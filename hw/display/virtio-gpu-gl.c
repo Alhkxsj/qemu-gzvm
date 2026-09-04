@@ -8,6 +8,7 @@
 #include "qemu/iov.h"
 #include "qemu/module.h"
 #include "system/system.h"
+#include "trace.h"
 #include "ui/console.h"
 
 struct virgl_box {
@@ -85,13 +86,37 @@ static int virgl_make_current(void *cookie, int scanout,
     return dpy_gl_ctx_make_current(g->parent_obj.scanout[scanout].con, ctx);
 }
 
+static void virgl_process_fence(VirtIOGPU *g, uint64_t fence_id)
+{
+    struct virtio_gpu_ctrl_command *cmd, *tmp;
+
+    QTAILQ_FOREACH_SAFE(cmd, &g->fenceq, next, tmp) {
+        if (cmd->cmd_hdr.fence_id != fence_id) {
+            continue;
+        }
+        trace_virtio_gpu_fence_resp(fence_id);
+        virtio_gpu_ctrl_response_nodata(g, cmd, cmd->error ? cmd->error :
+                                        VIRTIO_GPU_RESP_OK_NODATA);
+        QTAILQ_REMOVE(&g->fenceq, cmd, next);
+        g->inflight--;
+        trace_virtio_gpu_dec_inflight_fences(g->inflight);
+        g_free(cmd);
+    }
+}
+
 static void virgl_write_fence(void *cookie, uint32_t fence)
 {
+    VirtIOGPU *g = cookie;
+
+    virgl_process_fence(g, (uint64_t)fence);
 }
 
 static void virgl_write_context_fence(void *cookie, uint32_t ctx_id,
                                       uint32_t ring_idx, uint64_t fence_id)
 {
+    VirtIOGPU *g = cookie;
+
+    virgl_process_fence(g, fence_id);
 }
 
 static void virgl_add_capset(VirtIOGPU *g, uint32_t id)
@@ -598,6 +623,7 @@ static void virtio_gpu_gl_update_cursor_data(VirtIOGPU *g,
         h == s->current_cursor->height) {
         memcpy(s->current_cursor->data, data, w * h * 4);
     }
+    free(data);
 }
 
 static void virtio_gpu_gl_resource_destroy(VirtIOGPU *g,
